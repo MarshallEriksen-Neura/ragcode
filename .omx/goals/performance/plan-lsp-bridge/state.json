@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "workflow": "performance-goal",
+  "slug": "plan-lsp-bridge",
+  "objective": "Implement PLAN_STABILITY_AND_TOPOLOGY Phase 4 TypeScript Language Service bridge for definition-based call resolution, reference-aware impact, graceful fallback, and regression tests",
+  "status": "complete",
+  "createdAt": "2026-06-08T09:26:15.208Z",
+  "updatedAt": "2026-06-08T09:36:59.297Z",
+  "evaluator": {
+    "command": "bun run check && bun run test && bun run build",
+    "contract": "PASS when TypeScript check, tests proving LSP definition resolution for unresolved calls, trace_flow exposes LSP target files, impact_analysis includes LSP-resolved callers, unresolved calls remain explicit, LSP failures degrade to AST graph, and production build pass"
+  },
+  "artifactPaths": {
+    "state": ".omx/goals/performance/plan-lsp-bridge/state.json",
+    "ledger": ".omx/goals/performance/plan-lsp-bridge/ledger.jsonl",
+    "evaluator": ".omx/goals/performance/plan-lsp-bridge/evaluator.md"
+  },
+  "startedAt": "2026-06-08T09:26:58.314Z",
+  "lastValidation": {
+    "status": "pass",
+    "evidence": "Implemented Phase 4 TypeScript Language Service bridge: AST call edges carry target identifier positions; TypeScriptLanguageService resolves definitions from indexed source snapshots; definition resolver upgrades unresolved call edges to resolved_lsp with targetFile/targetSymbol metadata and falls back to original edges if LS fails; chunking pipeline runs import/export resolver then LSP resolver. Tests cover namespace import property calls resolved by LS, impact_analysis and trace_flow using LSP edges, unresolved calls staying explicit, and LS failure fallback. Evaluator passed: bun run check && bun run test && bun run build.",
+    "recordedAt": "2026-06-08T09:35:25.416Z"
+  },
+  "completedAt": "2026-06-08T09:36:59.297Z"
+}

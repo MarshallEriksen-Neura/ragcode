@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "workflow": "performance-goal",
+  "slug": "plan-agent-tools",
+  "objective": "Implement PLAN_STABILITY_AND_TOPOLOGY Phase 6 agent tool upgrades with topology_map, index_status, refresh_index, typed engine contracts, MCP handlers, and regression tests",
+  "status": "complete",
+  "createdAt": "2026-06-08T09:59:57.603Z",
+  "updatedAt": "2026-06-08T10:11:32.005Z",
+  "evaluator": {
+    "command": "bun run check && bun run test && bun run build",
+    "contract": "PASS when TypeScript check, tests proving topology_map returns owner/topology evidence, index_status reports freshness counts, refresh_index clears stale/pending state, MCP tool definitions/handlers expose the new tools, and production build pass"
+  },
+  "artifactPaths": {
+    "state": ".omx/goals/performance/plan-agent-tools/state.json",
+    "ledger": ".omx/goals/performance/plan-agent-tools/ledger.jsonl",
+    "evaluator": ".omx/goals/performance/plan-agent-tools/evaluator.md"
+  },
+  "startedAt": "2026-06-08T10:00:33.586Z",
+  "lastValidation": {
+    "status": "pass",
+    "evidence": "Implemented Phase 6 agent tool upgrades: added IndexStatus, TopologyMap, and TopologyMapRequest contracts; RagCodeEngine now supports refreshIndex, indexStatus, and topologyMap; MCP definitions and callTool handlers expose refresh_index, index_status, and topology_map; tests cover tool listing, freshness counts, refresh clearing stale/pending state, and topology_map owner/topology evidence. Evaluator passed: bun run check && bun run test && bun run build.",
+    "recordedAt": "2026-06-08T10:09:47.885Z"
+  },
+  "completedAt": "2026-06-08T10:11:32.005Z"
+}

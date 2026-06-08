@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+.ragcode/
+.codegraph/
+.understand-anything/intermediate/
+.understand-anything/diff-overlay.json
+*.log

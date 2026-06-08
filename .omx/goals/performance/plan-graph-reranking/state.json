@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "workflow": "performance-goal",
+  "slug": "plan-graph-reranking",
+  "objective": "Implement PLAN_STABILITY_AND_TOPOLOGY Phase 8 graph-based reranking with topology distance, ranking signals, project-scoped traversal, and regression tests",
+  "status": "complete",
+  "createdAt": "2026-06-08T10:34:40.297Z",
+  "updatedAt": "2026-06-08T10:54:55.644Z",
+  "evaluator": {
+    "command": "bun run check && bun run test && bun run build",
+    "contract": "PASS when tests prove direct callers/callees/framework-adjacent results outrank disconnected semantic/text matches, review/debug promotes related tests while feature/explain demotes them unless explicit, ranking reasons expose graph signals, and check/test/build pass"
+  },
+  "artifactPaths": {
+    "state": ".omx/goals/performance/plan-graph-reranking/state.json",
+    "ledger": ".omx/goals/performance/plan-graph-reranking/ledger.jsonl",
+    "evaluator": ".omx/goals/performance/plan-graph-reranking/evaluator.md"
+  },
+  "startedAt": "2026-06-08T10:35:00.526Z",
+  "lastValidation": {
+    "status": "pass",
+    "evidence": "bun run check && bun run test && bun run build passed; graph reranking regression covers direct caller/callee promotion, project-scoped traversal, payment-flow owner ranking, and debug/review test promotion",
+    "recordedAt": "2026-06-08T10:53:10.357Z"
+  },
+  "completedAt": "2026-06-08T10:54:55.644Z"
+}

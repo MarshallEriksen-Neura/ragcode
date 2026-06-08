@@ -1,0 +1,33 @@
+{
+  "name": "ragcode-context-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local code intelligence foundation: structural code graph, LanceDB semantic layer, retrieval, context packing, and MCP tools.",
+  "bin": {
+    "ragcode": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "audit:plan": "tsx scripts/audit-plan.ts",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "eval:context": "tsx scripts/eval-context.ts",
+    "dev": "tsx src/cli/index.ts"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.30.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^14.0.2",
+    "typescript": "^5.9.3",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.2",
+    "tsx": "^4.21.0",
+    "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

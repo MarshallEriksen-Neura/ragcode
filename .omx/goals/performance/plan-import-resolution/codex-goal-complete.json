@@ -1,0 +1,13 @@
+{
+  "goal": {
+    "threadId": "019ea5d2-873a-7851-aac4-8d28bb61dfd6",
+    "objective": "Implement PLAN_STABILITY_AND_TOPOLOGY Phase 3 TypeScript import/export resolution with resolved cross-file call edges and regression tests",
+    "status": "complete",
+    "tokensUsed": 920668,
+    "timeUsedSeconds": 504,
+    "createdAt": 1780909995,
+    "updatedAt": 1780910500
+  },
+  "remainingTokens": null,
+  "completionBudgetReport": "Goal achieved. Report final usage from this tool result's structured goal fields."
+}

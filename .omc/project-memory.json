@@ -1,0 +1,299 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1780902839433,
+  "projectRoot": "d:\\20260302170616\\ragcode",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": ">=20.0.0",
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "vitest",
+        "version": "4.1.8",
+        "category": "testing"
+      }
+    ],
+    "packageManager": "npm",
+    "runtime": "Node.js 20.0.0"
+  },
+  "build": {
+    "buildCommand": "npm run build",
+    "testCommand": "cd d:/20260302170616/ragcode && npm test 2>&1 | tail -40",
+    "lintCommand": null,
+    "devCommand": "npm run dev",
+    "scripts": {
+      "build": "tsc -p tsconfig.json",
+      "check": "tsc -p tsconfig.json --noEmit",
+      "test": "vitest run",
+      "dev": "tsx src/cli/index.ts"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": "*.test.ts",
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "src",
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 4,
+      "lastAccessed": 1780902839359,
+      "keyFiles": [
+        "ARCHITECTURE.md",
+        "CONTEXT_PACK_CONTRACT.md",
+        "INDEX_SCHEMA.md",
+        "RETRIEVAL_MODES.md"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1780902839393,
+      "keyFiles": [
+        "index.ts"
+      ]
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 1,
+      "lastAccessed": 1780902839394,
+      "keyFiles": [
+        "foundation.test.ts"
+      ]
+    },
+    "src\\types": {
+      "path": "src\\types",
+      "purpose": "Type definitions",
+      "fileCount": 1,
+      "lastAccessed": 1780902839395,
+      "keyFiles": [
+        "optional-lancedb.d.ts"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "README.md",
+      "accessCount": 1,
+      "lastAccessed": 1780921461931,
+      "type": "file"
+    },
+    {
+      "path": "tsconfig.json",
+      "accessCount": 1,
+      "lastAccessed": 1780921461999,
+      "type": "file"
+    },
+    {
+      "path": "package.json",
+      "accessCount": 1,
+      "lastAccessed": 1780921462054,
+      "type": "file"
+    },
+    {
+      "path": "src\\core\\types.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921532134,
+      "type": "file"
+    },
+    {
+      "path": "src\\core\\contracts.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921533302,
+      "type": "file"
+    },
+    {
+      "path": "src\\core\\engine.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921533364,
+      "type": "file"
+    },
+    {
+      "path": "src\\index.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921536342,
+      "type": "file"
+    },
+    {
+      "path": "docs\\ARCHITECTURE.md",
+      "accessCount": 1,
+      "lastAccessed": 1780921536362,
+      "type": "file"
+    },
+    {
+      "path": "src\\retrieval\\query-planner.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921551850,
+      "type": "file"
+    },
+    {
+      "path": "src\\retrieval\\hybrid-retriever.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921551896,
+      "type": "file"
+    },
+    {
+      "path": "src\\indexing\\indexer.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921552974,
+      "type": "file"
+    },
+    {
+      "path": "src\\mcp\\tools.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921554989,
+      "type": "file"
+    },
+    {
+      "path": "docs\\PLAN_STABILITY_AND_TOPOLOGY_COMPLETION_AUDIT.md",
+      "accessCount": 1,
+      "lastAccessed": 1780921555021,
+      "type": "file"
+    },
+    {
+      "path": "src\\indexing\\ast-analyzer.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921580041,
+      "type": "file"
+    },
+    {
+      "path": "src\\graph\\sqlite-graph-store.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921580146,
+      "type": "file"
+    },
+    {
+      "path": "src\\cli\\index.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921580193,
+      "type": "file"
+    },
+    {
+      "path": "src\\indexing\\chunker.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921613859,
+      "type": "file"
+    },
+    {
+      "path": "src\\config\\semantic-runtime.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921617337,
+      "type": "file"
+    },
+    {
+      "path": "src\\topology\\framework-topology.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921617364,
+      "type": "file"
+    },
+    {
+      "path": "C:\\Users\\timeline\\AppData\\Local\\Temp\\claude\\d--20260302170616-ragcode\\68c7d2c9-3c0a-4dd4-b7b6-f3bfd8bd2de8\\tasks\\bn7j0jw61.output",
+      "accessCount": 1,
+      "lastAccessed": 1780921637474,
+      "type": "file"
+    },
+    {
+      "path": "src\\context\\skeletonizer.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921637585,
+      "type": "file"
+    },
+    {
+      "path": "src\\retrieval\\graph-reranker.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921637631,
+      "type": "file"
+    },
+    {
+      "path": "src\\context\\expansion-policy.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921637733,
+      "type": "file"
+    },
+    {
+      "path": "src\\indexing\\scanner.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921637809,
+      "type": "file"
+    },
+    {
+      "path": "src\\lsp\\typescript-language-service.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921638683,
+      "type": "file"
+    },
+    {
+      "path": "src\\indexing\\ignore-policy.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921654406,
+      "type": "file"
+    },
+    {
+      "path": "src\\semantic\\lance-semantic-store.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921654518,
+      "type": "file"
+    },
+    {
+      "path": "src\\topology\\symbol-resolver.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921654575,
+      "type": "file"
+    },
+    {
+      "path": "src\\semantic\\deterministic-embedding.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921665763,
+      "type": "file"
+    },
+    {
+      "path": "src\\semantic\\openai-compatible-embedding.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780921809897,
+      "type": "file"
+    },
+    {
+      "path": "scripts\\audit-plan.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780923799321,
+      "type": "file"
+    },
+    {
+      "path": "docs\\PLAN_STABILITY_AND_TOPOLOGY.md",
+      "accessCount": 1,
+      "lastAccessed": 1780923863167,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

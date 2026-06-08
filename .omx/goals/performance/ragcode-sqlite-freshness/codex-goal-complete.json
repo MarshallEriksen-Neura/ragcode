@@ -1,0 +1,13 @@
+{
+  "goal": {
+    "threadId": "019ea5d2-873a-7851-aac4-8d28bb61dfd6",
+    "objective": "Implement RagCode SQLite graph store with project-scoped freshness state and transactional per-file replacement",
+    "status": "complete",
+    "tokensUsed": 1782229,
+    "timeUsedSeconds": 882,
+    "createdAt": 1780907323,
+    "updatedAt": 1780908205
+  },
+  "remainingTokens": null,
+  "completionBudgetReport": "Goal achieved. Report final usage from this tool result's structured goal fields."
+}

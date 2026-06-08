@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "workflow": "performance-goal",
+  "slug": "plan-evaluation-harness",
+  "objective": "Implement PLAN_STABILITY_AND_TOPOLOGY Phase 9 evaluation harness with reusable fixtures, scenario metrics, eval tests, and a scriptable context evaluator",
+  "status": "complete",
+  "createdAt": "2026-06-08T10:59:29.365Z",
+  "updatedAt": "2026-06-08T11:11:58.313Z",
+  "evaluator": {
+    "command": "bun run eval:context && bun run check && bun run test && bun run build",
+    "contract": "PASS when eval fixtures and tests prove deleted/stale files are rejected, payment flow includes service and webhook nodes, unresolved edge count is reported, large unrelated files are not returned in full, graph-proximate owners outrank disconnected semantic matches, and check/test/build pass"
+  },
+  "artifactPaths": {
+    "state": ".omx/goals/performance/plan-evaluation-harness/state.json",
+    "ledger": ".omx/goals/performance/plan-evaluation-harness/ledger.jsonl",
+    "evaluator": ".omx/goals/performance/plan-evaluation-harness/evaluator.md"
+  },
+  "startedAt": "2026-06-08T10:59:57.689Z",
+  "lastValidation": {
+    "status": "pass",
+    "evidence": "bun run eval:context && bun run check && bun run test && bun run build passed; eval metrics: ownerHitRate=1, flowPathCompleteness=1, unresolvedEdgeCount=3, staleHitRate=0, deletedHitRate=0, graphRerankLift=5, largeFullBodyViolations=0; vitest 14 files 41 tests passed",
+    "recordedAt": "2026-06-08T11:10:05.990Z"
+  },
+  "completedAt": "2026-06-08T11:11:58.313Z"
+}

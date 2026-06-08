@@ -1,0 +1,13 @@
+{
+  "goal": {
+    "threadId": "019ea5d2-873a-7851-aac4-8d28bb61dfd6",
+    "objective": "Implement PLAN_STABILITY_AND_TOPOLOGY Phase 2 semantic vector consistency with delete-before-upsert, project-scoped LanceDB filtering, generation metadata, and regression tests",
+    "status": "complete",
+    "tokensUsed": 793815,
+    "timeUsedSeconds": 526,
+    "createdAt": 1780909184,
+    "updatedAt": 1780909711
+  },
+  "remainingTokens": null,
+  "completionBudgetReport": "Goal achieved. Report final usage from this tool result's structured goal fields."
+}

@@ -1,0 +1,170 @@
+import type { ContextPack, ContextRequest, ContextSnippet, FreshnessReport, GraphEdge, OwnerNode, RelationshipEvidence, SearchHit, TopologyEdge } from "../core/types.js";
+import { nextQueriesForMode, resolveContextMode } from "../retrieval/query-planner.js";
+import { renderSnippet } from "./snippet-renderer.js";
+
+const DEFAULT_BUDGET_CHARS = 18_000;
+
+export interface ContextBuildMetadata {
+  projectId: string;
+  repoRoot: string;
+  indexedAtMs: number;
+  skippedFiles: Array<{ filePath: string; reason: string }>;
+  indexGeneration?: number;
+  staleFiles?: string[];
+  pendingFiles?: string[];
+  indexingFiles?: string[];
+}
+
+export class ContextBuilder {
+  build(request: ContextRequest, hits: SearchHit[], edges: GraphEdge[] = [], metadata: ContextBuildMetadata): ContextPack {
+    const budgetChars = request.budgetChars ?? DEFAULT_BUDGET_CHARS;
+    const mode = resolveContextMode(request.query, request.mode);
+    const snippets: ContextSnippet[] = [];
+    let usedChars = 0;
+
+    for (const hit of hits) {
+      const snippet = renderSnippet(hit, request.query, mode);
+      const cost = estimateSnippetCost(snippet);
+      if (usedChars + cost > budgetChars) continue;
+      snippets.push(snippet);
+      usedChars += cost;
+    }
+    const ownerChain = ownerNodes(snippets);
+    const ownerPaths = ownerChain.map((owner) => owner.filePath);
+    const relationships = relationshipEvidence(edges, ownerPaths);
+    const topology = topologyEdges(edges, ownerPaths);
+    const confidence = confidenceFor(snippets);
+
+    return {
+      query: request.query,
+      repoRoot: metadata.repoRoot,
+      projectId: metadata.projectId,
+      mode,
+      answerable: snippets.length > 0,
+      confidence,
+      brief: briefFor(request.query, mode, confidence, ownerChain),
+      freshness: freshnessFor(metadata),
+      ownerChain,
+      topology,
+      snippets,
+      relationships,
+      nextQueries: nextQueriesForMode(request.query, mode),
+      missingEvidence: missingEvidenceFor(snippets, metadata),
+      budgetChars,
+      usedChars
+    };
+  }
+}
+
+function missingEvidenceFor(snippets: ContextSnippet[], metadata: ContextBuildMetadata): string[] {
+  const missing: string[] = [];
+  if (snippets.length === 0) missing.push("No indexed context matched the query.");
+  if (metadata.staleFiles?.length) missing.push(`Stale indexed files excluded: ${metadata.staleFiles.slice(0, 8).join(", ")}.`);
+  if (metadata.pendingFiles?.length) missing.push(`Pending files need indexing: ${metadata.pendingFiles.slice(0, 8).join(", ")}.`);
+  return missing;
+}
+
+function estimateSnippetCost(snippet: ContextSnippet): number {
+  return snippet.filePath.length + snippet.reason.length + snippet.content.length + 80;
+}
+
+function confidenceFor(snippets: ContextSnippet[]): ContextPack["confidence"] {
+  if (snippets.length >= 3 && (snippets[0]?.score ?? 0) > 1) return "high";
+  if (snippets.length > 0) return "medium";
+  return "low";
+}
+
+function relationshipEvidence(edges: GraphEdge[], ownerChain: string[]): RelationshipEvidence[] {
+  if (ownerChain.length === 0) return [];
+  const ownerSet = new Set(ownerChain);
+  return edges
+    .filter((edge) => typeof edge.metadata?.sourceFile === "string" && ownerSet.has(edge.metadata.sourceFile))
+    .slice(0, 12)
+    .map((edge) => ({
+      source: String(edge.metadata?.sourceFile ?? edge.sourceId),
+      target: String(edge.metadata?.targetName ?? edge.metadata?.source ?? edge.targetId),
+      kind: edge.kind,
+      reason: `Graph ${edge.kind} edge from indexed structure`
+    }));
+}
+
+function ownerNodes(snippets: ContextSnippet[]): OwnerNode[] {
+  const byFile = new Map<string, OwnerNode>();
+  for (const snippet of snippets) {
+    const current = byFile.get(snippet.filePath) ?? {
+      filePath: snippet.filePath,
+      role: snippet.role,
+      reason: snippet.reason,
+      score: 0,
+      symbols: []
+    };
+    current.score += snippet.score;
+    current.reason = current.reason.length <= snippet.reason.length ? current.reason : snippet.reason;
+    byFile.set(snippet.filePath, current);
+  }
+  return [...byFile.values()].sort((a, b) => b.score - a.score);
+}
+
+function topologyEdges(edges: GraphEdge[], ownerPaths: string[]): TopologyEdge[] {
+  const ownerSet = new Set(ownerPaths);
+  return edges
+    .filter((edge) => isTopologyEdge(edge.kind) && typeof edge.metadata?.sourceFile === "string" && ownerSet.has(edge.metadata.sourceFile))
+    .sort((a, b) => topologyEdgePriority(b) - topologyEdgePriority(a))
+    .slice(0, 12)
+    .map((edge) => ({
+      from: String(edge.metadata?.sourceFile ?? edge.sourceId),
+      to: String(edge.metadata?.route ?? edge.metadata?.targetName ?? edge.targetId),
+      edge: edge.kind,
+      confidence: confidenceForEdge(edge),
+      reason: reasonForEdge(edge),
+      sourceFile: typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : undefined,
+      targetFile: typeof edge.metadata?.targetFile === "string" ? edge.metadata.targetFile : undefined
+    }));
+}
+
+function isTopologyEdge(kind: GraphEdge["kind"]): boolean {
+  return kind === "calls" || kind === "calls_api" || kind === "routes_to" || kind === "handles_webhook";
+}
+
+function topologyEdgePriority(edge: GraphEdge): number {
+  if (edge.kind === "handles_webhook") return 100;
+  if (edge.kind === "calls_api") return 90;
+  if (edge.kind === "routes_to") return 85;
+  if (edge.metadata?.resolution === "resolved_lsp") return 80;
+  if (edge.metadata?.resolution === "resolved") return 75;
+  if (edge.kind === "calls") return 20;
+  return 10;
+}
+
+function confidenceForEdge(edge: GraphEdge): TopologyEdge["confidence"] {
+  if (typeof edge.metadata?.framework === "string") return "high";
+  if (edge.metadata?.resolution === "resolved" || edge.metadata?.resolution === "resolved_lsp") return "high";
+  if (edge.metadata?.targetName) return "medium";
+  return "low";
+}
+
+function reasonForEdge(edge: GraphEdge): string {
+  if (edge.kind === "calls_api") return "Static framework topology edge from client API call to route handler.";
+  if (edge.kind === "routes_to") return "Framework route-to-service edge derived from resolved call graph.";
+  if (edge.kind === "handles_webhook") return "Framework webhook route recognized from route path.";
+  if (edge.metadata?.resolution === "resolved") return "Resolved AST import/export call edge.";
+  if (edge.metadata?.resolution === "resolved_lsp") return "Resolved TypeScript Language Service definition edge.";
+  return "AST call edge; may be unresolved until import/LSP resolution lands.";
+}
+
+function freshnessFor(metadata: ContextBuildMetadata): FreshnessReport {
+  return {
+    projectId: metadata.projectId,
+    indexGeneration: metadata.indexGeneration ?? 1,
+    indexedAtMs: metadata.indexedAtMs,
+    staleFiles: metadata.staleFiles ?? [],
+    pendingFiles: metadata.pendingFiles ?? [],
+    indexingFiles: metadata.indexingFiles ?? [],
+    skippedFiles: metadata.skippedFiles
+  };
+}
+
+function briefFor(query: string, mode: ContextPack["mode"], confidence: ContextPack["confidence"], owners: OwnerNode[]): string {
+  const ownerText = owners.length > 0 ? owners.slice(0, 3).map((owner) => owner.filePath).join(", ") : "no indexed owner";
+  return `${mode} context for "${query}" (${confidence} confidence). Primary owner evidence: ${ownerText}.`;
+}

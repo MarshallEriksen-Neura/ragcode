@@ -1,0 +1,7 @@
+{
+  "tool_name": "mcp__codegraph__codegraph_status",
+  "tool_input_preview": "{\"projectPath\":\"d:/20260302170616/ragcode\"}",
+  "error": "Error: Tool execution failed: CodeGraph not initialized in d:/20260302170616/ragcode. Run 'codegraph init' in that project first.",
+  "timestamp": "2026-06-08T12:24:24.614Z",
+  "retry_count": 2
+}

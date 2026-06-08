@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "workflow": "performance-goal",
+  "slug": "plan-stability-topology",
+  "objective": "Implement PLAN_STABILITY_AND_TOPOLOGY starting with Phase 1 index freshness core, SQLite graph persistence, transactional per-file reindexing, and freshness-aware context packs",
+  "status": "complete",
+  "createdAt": "2026-06-08T07:40:34.802Z",
+  "updatedAt": "2026-06-08T08:56:28.367Z",
+  "evaluator": {
+    "command": "bun run check && bun run test && bun run build",
+    "contract": "PASS when TypeScript check, regression tests covering changed/deleted/ignored/stale freshness behavior, and production build pass after the Phase 1 stability implementation"
+  },
+  "artifactPaths": {
+    "state": ".omx/goals/performance/plan-stability-topology/state.json",
+    "ledger": ".omx/goals/performance/plan-stability-topology/ledger.jsonl",
+    "evaluator": ".omx/goals/performance/plan-stability-topology/evaluator.md"
+  },
+  "startedAt": "2026-06-08T07:40:51.450Z",
+  "lastValidation": {
+    "status": "pass",
+    "evidence": "Implemented Phase 1 freshness core on top of SQLite persistence: filesystem freshness snapshots compare indexed hashes with current scan state; stale/deleted cache hits and stale topology edges are filtered before ContextPack; ContextPack reports staleFiles, pendingFiles, skippedFiles, and missingEvidence; regression tests cover changed, deleted, new pending, ignored sensitive files plus SQLite persistence/project isolation. Evaluator passed: bun run check && bun run test && bun run build.",
+    "recordedAt": "2026-06-08T08:55:00.589Z"
+  },
+  "completedAt": "2026-06-08T08:56:28.367Z"
+}

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "workflow": "performance-goal",
+  "slug": "plan-final-completion-audit",
+  "objective": "Complete PLAN_STABILITY_AND_TOPOLOGY final audit by mapping every completion definition item to executable evidence, adding an audit script and report, and verifying the full evaluator",
+  "status": "complete",
+  "createdAt": "2026-06-08T12:07:13.732Z",
+  "updatedAt": "2026-06-08T12:14:00.751Z",
+  "evaluator": {
+    "command": "bun run audit:plan && bun run eval:context && bun run check && bun run test && bun run build",
+    "contract": "PASS when the final audit script proves every PLAN_STABILITY_AND_TOPOLOGY completion definition item has executable evidence, emits a stable report, and audit/eval/check/test/build all pass"
+  },
+  "artifactPaths": {
+    "state": ".omx/goals/performance/plan-final-completion-audit/state.json",
+    "ledger": ".omx/goals/performance/plan-final-completion-audit/ledger.jsonl",
+    "evaluator": ".omx/goals/performance/plan-final-completion-audit/evaluator.md"
+  },
+  "startedAt": "2026-06-08T12:07:29.596Z",
+  "lastValidation": {
+    "status": "pass",
+    "evidence": "bun run audit:plan && bun run eval:context && bun run check && bun run test && bun run build passed; audit status=pass for every PLAN_STABILITY_AND_TOPOLOGY completion item; metrics ownerHitRate=1 flowPathCompleteness=1 staleHitRate=0 deletedHitRate=0 resolvedEdgeRate=0.4 unresolvedEdgeCount=3 graphRerankLift=5 largeFullBodyViolations=0; vitest 14 files 41 tests passed",
+    "recordedAt": "2026-06-08T12:12:30.953Z"
+  },
+  "completedAt": "2026-06-08T12:14:00.751Z"
+}
