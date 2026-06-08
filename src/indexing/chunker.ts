@@ -3,7 +3,9 @@ import type { CodeChunk, CodeFile, GraphEdge, SymbolNode } from "../core/types.j
 import { resolveCallDefinitionsWithTypeScript } from "../lsp/definition-resolver.js";
 import type { TypeScriptSourceFile } from "../lsp/typescript-language-service.js";
 import { buildFrameworkTopologyEdges } from "../topology/framework-topology.js";
+import { buildRuntimeTopologyEdges } from "../topology/runtime-topology.js";
 import { resolveGraphEdges } from "../topology/symbol-resolver.js";
+import { buildTestTopologyEdges } from "../topology/test-topology.js";
 import { analyzeFile } from "./ast-analyzer.js";
 
 export interface ChunkingResult {
@@ -35,6 +37,8 @@ export async function chunkFiles(repoRoot: string, files: CodeFile[], options: C
 
   const importResolvedEdges = resolveGraphEdges(files, symbols, edges);
   const lspResolvedEdges = resolveCallDefinitionsWithTypeScript(repoRoot, sources, symbols, importResolvedEdges);
+  const testEdges = buildTestTopologyEdges(symbols, lspResolvedEdges);
   const frameworkEdges = buildFrameworkTopologyEdges(files, sources, symbols, lspResolvedEdges);
-  return { chunks, symbols, edges: [...lspResolvedEdges, ...frameworkEdges] };
+  const runtimeEdges = buildRuntimeTopologyEdges(repoRoot, files, sources, symbols);
+  return { chunks, symbols, edges: [...lspResolvedEdges, ...testEdges, ...frameworkEdges, ...runtimeEdges] };
 }

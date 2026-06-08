@@ -92,13 +92,13 @@ export function analyzeFile(repoRoot: string, file: CodeFile, content: string): 
   ts.forEachChild(sourceFile, visit);
 
   if (chunks.length === 0) {
-    return fallbackFileAnalysis(repoRoot, file, content, fileSymbol);
+    return fallbackFileAnalysis(repoRoot, file, content, fileSymbol, edges);
   }
 
   return { chunks, symbols, edges };
 }
 
-function fallbackFileAnalysis(repoRoot: string, file: CodeFile, content: string, existingFileSymbol?: SymbolNode): FileAnalysis {
+function fallbackFileAnalysis(repoRoot: string, file: CodeFile, content: string, existingFileSymbol?: SymbolNode, existingEdges: GraphEdge[] = []): FileAnalysis {
   const lines = content.split(/\r?\n/);
   const fileSymbol = existingFileSymbol ?? createFileSymbol(repoRoot, file, lines.length);
   const chunks: CodeChunk[] = [];
@@ -119,7 +119,7 @@ function fallbackFileAnalysis(repoRoot: string, file: CodeFile, content: string,
       contentHash: sha256(chunkContent)
     });
   }
-  return { chunks, symbols: [fileSymbol], edges: [] };
+  return { chunks, symbols: [fileSymbol], edges: existingEdges };
 }
 
 function createFileSymbol(repoRoot: string, file: CodeFile, lineCount: number): SymbolNode {

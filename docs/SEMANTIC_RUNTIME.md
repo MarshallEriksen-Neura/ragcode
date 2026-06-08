@@ -36,9 +36,10 @@ RagCode has two semantic pieces:
 
 ```sh
 bun install
+bun install --frozen-lockfile
 ```
 
-`@lancedb/lancedb` is a normal dependency in this app. The MCP SDK remains optional because the core engine can run without an MCP transport.
+`@lancedb/lancedb` and `@modelcontextprotocol/sdk` are normal dependencies. LanceDB backs the semantic store; the MCP SDK backs the stdio server entrypoint.
 
 ## Environment
 
@@ -55,6 +56,29 @@ RAGCODE_EMBEDDING_DIMENSIONS=1536
 ```
 
 Only set `RAGCODE_EMBEDDING_REQUEST_DIMENSIONS=true` when the endpoint accepts a `dimensions` field in the request body.
+
+## Readiness Smoke
+
+Use deterministic embeddings first so the local runtime can be verified without an API key:
+
+```sh
+RAGCODE_GRAPH_STORE=sqlite
+RAGCODE_SQLITE_PATH=.ragcode/graph.sqlite
+RAGCODE_SEMANTIC_STORE=lancedb
+RAGCODE_LANCEDB_URI=.ragcode/lancedb
+RAGCODE_EMBEDDING_PROVIDER=deterministic
+bun --silent run dev -- doctor . --query "context engine"
+```
+
+Then switch `RAGCODE_EMBEDDING_PROVIDER=openai-compatible` when you want real semantic quality from your embedding endpoint.
+
+## MCP Server
+
+```sh
+bun --silent run dev -- mcp
+```
+
+The MCP client should pass the same runtime env used by the CLI. Repository scope is resolved by explicit `repoRoot`, by `workspace.root`, or by the active workspace established after `index_repo`.
 
 ## Why This Matters
 

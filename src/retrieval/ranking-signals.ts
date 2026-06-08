@@ -60,6 +60,7 @@ export function edgeKindBoost(kinds: EdgeKind[]): number {
 export function edgeKindWeight(kind: EdgeKind): number {
   if (kind === "calls" || kind === "calls_api" || kind === "routes_to" || kind === "handles_event" || kind === "handles_webhook") return 1;
   if (kind === "tested_by") return 0.9;
+  if (kind === "uses_middleware") return 0.85;
   if (kind === "imports" || kind === "exports") return 0.75;
   if (kind === "reads_from" || kind === "writes_to" || kind === "references") return 0.55;
   if (kind === "contains") return 0.2;

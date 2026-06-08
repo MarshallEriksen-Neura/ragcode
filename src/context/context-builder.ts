@@ -123,13 +123,26 @@ function topologyEdges(edges: GraphEdge[], ownerPaths: string[]): TopologyEdge[]
 }
 
 function isTopologyEdge(kind: GraphEdge["kind"]): boolean {
-  return kind === "calls" || kind === "calls_api" || kind === "routes_to" || kind === "handles_webhook";
+  return kind === "calls"
+    || kind === "calls_api"
+    || kind === "routes_to"
+    || kind === "handles_webhook"
+    || kind === "handles_event"
+    || kind === "tested_by"
+    || kind === "uses_middleware"
+    || kind === "reads_from"
+    || kind === "writes_to";
 }
 
 function topologyEdgePriority(edge: GraphEdge): number {
   if (edge.kind === "handles_webhook") return 100;
   if (edge.kind === "calls_api") return 90;
   if (edge.kind === "routes_to") return 85;
+  if (edge.kind === "uses_middleware") return 84;
+  if (edge.kind === "tested_by") return 82;
+  if (edge.kind === "writes_to") return 78;
+  if (edge.kind === "reads_from") return 76;
+  if (edge.kind === "handles_event") return 74;
   if (edge.metadata?.resolution === "resolved_lsp") return 80;
   if (edge.metadata?.resolution === "resolved") return 75;
   if (edge.kind === "calls") return 20;
@@ -138,6 +151,8 @@ function topologyEdgePriority(edge: GraphEdge): number {
 
 function confidenceForEdge(edge: GraphEdge): TopologyEdge["confidence"] {
   if (typeof edge.metadata?.framework === "string") return "high";
+  if (edge.metadata?.resolution === "test_import") return "high";
+  if (edge.metadata?.resolution === "resource_static" || edge.metadata?.resolution === "event_static") return "high";
   if (edge.metadata?.resolution === "resolved" || edge.metadata?.resolution === "resolved_lsp") return "high";
   if (edge.metadata?.targetName) return "medium";
   return "low";
@@ -147,6 +162,11 @@ function reasonForEdge(edge: GraphEdge): string {
   if (edge.kind === "calls_api") return "Static framework topology edge from client API call to route handler.";
   if (edge.kind === "routes_to") return "Framework route-to-service edge derived from resolved call graph.";
   if (edge.kind === "handles_webhook") return "Framework webhook route recognized from route path.";
+  if (edge.kind === "tested_by") return "Test coverage edge derived from a resolved test import.";
+  if (edge.kind === "uses_middleware") return "Framework middleware usage edge derived from route and middleware files.";
+  if (edge.kind === "reads_from") return "Resource read edge derived from a static data-access call.";
+  if (edge.kind === "writes_to") return "Resource write edge derived from a static data-access call.";
+  if (edge.kind === "handles_event") return "Event handler edge derived from a static event subscription.";
   if (edge.metadata?.resolution === "resolved") return "Resolved AST import/export call edge.";
   if (edge.metadata?.resolution === "resolved_lsp") return "Resolved TypeScript Language Service definition edge.";
   return "AST call edge; may be unresolved until import/LSP resolution lands.";

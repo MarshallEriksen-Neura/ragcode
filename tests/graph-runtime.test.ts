@@ -7,8 +7,13 @@ import { createGraphRuntimeFromEnv, RagCodeEngine, readGraphRuntimeConfig, SQLit
 const tempRoots: string[] = [];
 
 afterEach(async () => {
-  for (const root of tempRoots.splice(0)) {
-    await fs.rm(root, { recursive: true, force: true });
+  // Skip cleanup on Windows due to bun:sqlite file handle release timing
+  if (process.platform !== "win32") {
+    for (const root of tempRoots.splice(0)) {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  } else {
+    tempRoots.splice(0);
   }
 });
 

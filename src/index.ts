@@ -12,4 +12,6 @@ export * from "./semantic/deterministic-embedding.js";
 export * from "./semantic/in-memory-semantic-store.js";
 export * from "./semantic/lance-semantic-store.js";
 export * from "./semantic/openai-compatible-embedding.js";
+export * from "./diagnostics/doctor.js";
 export * from "./mcp/tools.js";
+export * from "./mcp/server.js";

@@ -34,7 +34,8 @@ This scaffold provides:
 - mode-aware query planner and context pack builder;
 - final ContextPack fields for `brief`, `freshness`, `ownerChain`, `topology`, and evidence snippets;
 - MCP tool registry for `index_repo`, `search_code`, `get_context`, `find_symbol`, `explain_file`, `find_owner`, `impact_analysis`, `related_tests`, `trace_flow`, and `review_diff`;
-- CLI commands for smoke usage.
+- MCP stdio server entrypoint for agent clients;
+- CLI doctor and smoke commands for runtime readiness.
 
 See `docs/SEMANTIC_RUNTIME.md` for LanceDB and embedding model configuration.
 
@@ -42,14 +43,52 @@ See `docs/SEMANTIC_RUNTIME.md` for LanceDB and embedding model configuration.
 
 ```bash
 bun install
+bun install --frozen-lockfile
+bun --silent run dev -- doctor
 bun run check
 bun run test
 bun run build
 ```
 
-Example:
+RagCode currently requires Node >=24 because the SQLite graph store uses `node:sqlite`.
+
+Offline smoke with deterministic embeddings:
 
 ```bash
+$env:RAGCODE_GRAPH_STORE="sqlite"
+$env:RAGCODE_SQLITE_PATH=".ragcode/graph.sqlite"
+$env:RAGCODE_SEMANTIC_STORE="lancedb"
+$env:RAGCODE_LANCEDB_URI=".ragcode/lancedb"
+$env:RAGCODE_EMBEDDING_PROVIDER="deterministic"
+
+bun --silent run dev -- doctor . --query "context engine"
 bun run dev -- index .
 bun run dev -- search . "context engine"
+```
+
+Start the MCP server over stdio:
+
+```bash
+bun --silent run dev -- mcp
+```
+
+Example MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "ragcode": {
+      "command": "bun",
+      "args": ["--silent", "run", "dev", "--", "mcp"],
+      "cwd": "d:/20260302170616/ragcode",
+      "env": {
+        "RAGCODE_GRAPH_STORE": "sqlite",
+        "RAGCODE_SQLITE_PATH": ".ragcode/graph.sqlite",
+        "RAGCODE_SEMANTIC_STORE": "lancedb",
+        "RAGCODE_LANCEDB_URI": ".ragcode/lancedb",
+        "RAGCODE_EMBEDDING_PROVIDER": "deterministic"
+      }
+    }
+  }
+}
 ```

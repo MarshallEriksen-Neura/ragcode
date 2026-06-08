@@ -20,6 +20,7 @@ export interface RagCodeEngineOptions {
   embeddingProvider?: EmbeddingProvider;
   workspaceRoots?: string[];
   cwd?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 export class RagCodeEngine implements ContextEngine {
@@ -32,15 +33,17 @@ export class RagCodeEngine implements ContextEngine {
   private readonly indexedAtByRepo = new Map<string, number>();
 
   constructor(options: RagCodeEngineOptions = {}) {
-    const graphRuntime = options.graphStore ? undefined : createGraphRuntimeFromEnv(process.env, options.cwd ?? process.cwd());
+    const env = options.env ?? process.env;
+    const cwd = options.cwd ?? process.cwd();
+    const graphRuntime = options.graphStore ? undefined : createGraphRuntimeFromEnv(env, cwd);
     this.graphStore = options.graphStore ?? graphRuntime?.graphStore ?? new InMemoryGraphStore();
     const semanticRuntime = (options.semanticStore && options.embeddingProvider)
       ? undefined
-      : createSemanticRuntimeFromEnv(process.env, options.cwd ?? process.cwd());
+      : createSemanticRuntimeFromEnv(env, cwd);
     this.semanticStore = options.semanticStore ?? semanticRuntime?.semanticStore ?? new InMemorySemanticStore();
     this.embeddingProvider = options.embeddingProvider ?? semanticRuntime?.embeddingProvider ?? new DeterministicEmbeddingProvider();
     this.workspaceResolver = new WorkspaceResolver(this.projectRegistry, {
-      cwd: options.cwd ?? process.cwd(),
+      cwd,
       roots: options.workspaceRoots
     });
   }

@@ -1,5 +1,7 @@
 # Stability And Topology Plan
 
+Status: historical/completed planning baseline. For the active next-phase execution plan, use `docs/NEXT_PHASE_STRUCTURED_RELATION_RETRIEVAL.md`.
+
 This plan covers the two missing foundations that must be solved before RagCode can become a serious context engine:
 
 1. index freshness under fast, messy file changes;

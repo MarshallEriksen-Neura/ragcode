@@ -14,6 +14,7 @@ import type {
   SymbolNode,
   TraceFlow
 } from "../core/types.js";
+import { buildImpactAnalysis, impactReference } from "./impact-report.js";
 import { normalizeUserPath } from "../utils/path.js";
 
 interface RepoGraphState {
@@ -170,35 +171,40 @@ export class InMemoryGraphStore implements GraphStore {
     const matchedIds = new Set(matchedSymbols.map((symbol) => symbol.id));
     const incomingEdges = state.edges.filter((edge) => matchedIds.has(edge.targetId) || String(edge.metadata?.targetName ?? "").toLowerCase().includes(target.toLowerCase()));
     const outgoingEdges = state.edges.filter((edge) => matchedIds.has(edge.sourceId) || String(edge.metadata?.sourceFile ?? "") === normalized);
-    const impactedFiles = new Set<string>();
-    for (const edge of [...incomingEdges, ...outgoingEdges]) {
-      const source = state.symbols.get(edge.sourceId);
-      const targetNode = state.symbols.get(edge.targetId);
-      if (source) impactedFiles.add(source.filePath);
-      if (targetNode) impactedFiles.add(targetNode.filePath);
-      if (typeof edge.metadata?.sourceFile === "string") impactedFiles.add(edge.metadata.sourceFile);
-    }
-    for (const symbol of matchedSymbols) impactedFiles.add(symbol.filePath);
-
-    const impactCount = impactedFiles.size + incomingEdges.length;
-    return {
+    return buildImpactAnalysis({
       target,
       matchedSymbols,
-      impactedFiles: [...impactedFiles].sort(),
       incomingEdges,
       outgoingEdges,
-      riskLevel: impactCount > 12 ? "high" : impactCount > 4 ? "medium" : "low"
-    };
+      symbols: [...state.symbols.values()]
+    });
   }
 
   async relatedTests(repoRoot: string, target: string): Promise<RelatedTests> {
     const state = this.ensureRepo(repoRoot);
     const normalized = normalizeUserPath(target);
     const basename = normalized.split("/").pop()?.replace(/\.[^.]+$/, "") ?? normalized;
-    const tests = [...state.files.values()].filter((file) => isTestFile(file.path) && (file.path.toLowerCase().includes(basename.toLowerCase()) || normalized === target));
+    const matchedIds = new Set([...state.symbols.values()]
+      .filter((symbol) => matchesTarget(symbol, normalized, target))
+      .map((symbol) => symbol.id));
+    const graphTestsByPath = new Map<string, CodeFile>();
+    const references = [];
+    for (const edge of state.edges) {
+      if (edge.kind !== "tested_by") continue;
+      const sourceFile = typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : undefined;
+      if (!matchedIds.has(edge.sourceId) && sourceFile !== normalized) continue;
+      const targetSymbol = state.symbols.get(edge.targetId);
+      if (!targetSymbol || !isTestFile(targetSymbol.filePath)) continue;
+      const file = state.files.get(targetSymbol.filePath);
+      if (file) graphTestsByPath.set(file.path, file);
+      references.push(impactReference(edge, state.symbols));
+    }
+    const testsByPath = graphTestsByPath.size > 0 ? graphTestsByPath : filenameTestMatches(state.files, basename, normalized, target);
+    const tests = [...testsByPath.values()].sort((a, b) => a.path.localeCompare(b.path));
     return {
       target,
       tests,
+      references,
       missingLikelyTests: tests.length === 0 ? [`No indexed test file matched ${basename}.`] : []
     };
   }
@@ -275,6 +281,16 @@ function isTestFile(filePath: string): boolean {
   return /(^|\/)(__tests__|tests?)(\/|$)|\.(test|spec)\.[jt]sx?$/.test(filePath);
 }
 
+function filenameTestMatches(files: Map<string, CodeFile>, basename: string, normalized: string, target: string): Map<string, CodeFile> {
+  const tests = new Map<string, CodeFile>();
+  for (const file of files.values()) {
+    if (isTestFile(file.path) && (file.path.toLowerCase().includes(basename.toLowerCase()) || normalized === target)) {
+      tests.set(file.path, file);
+    }
+  }
+  return tests;
+}
+
 function extractChangedFiles(diff: string): string[] {
   const files = new Set<string>();
   for (const line of diff.split(/\r?\n/)) {
@@ -285,5 +301,18 @@ function extractChangedFiles(diff: string): string[] {
 }
 
 function isTraceEdge(kind: EdgeKind): boolean {
-  return kind === "calls" || kind === "calls_api" || kind === "routes_to" || kind === "handles_webhook";
+  return kind === "calls"
+    || kind === "calls_api"
+    || kind === "routes_to"
+    || kind === "handles_webhook"
+    || kind === "handles_event"
+    || kind === "tested_by"
+    || kind === "uses_middleware"
+    || kind === "reads_from"
+    || kind === "writes_to";
+}
+
+function matchesTarget(symbol: SymbolNode, normalized: string, target: string): boolean {
+  const lowered = target.toLowerCase();
+  return symbol.name.toLowerCase().includes(lowered) || symbol.filePath === normalized || symbol.filePath.includes(normalized);
 }

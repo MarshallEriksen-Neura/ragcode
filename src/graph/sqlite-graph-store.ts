@@ -16,16 +16,21 @@ import type {
   SymbolNode,
   TraceFlow
 } from "../core/types.js";
+import { buildImpactAnalysis, impactReference } from "./impact-report.js";
 import { normalizeUserPath } from "../utils/path.js";
+import { SqliteStatements } from "./sqlite-statements.js";
 
 export class SQLiteGraphStore implements GraphStore {
   private readonly db: DatabaseSync;
+  private readonly sql: SqliteStatements;
 
   constructor(dbPath: string) {
     this.db = new DatabaseSync(dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL");
+    this.db.exec("PRAGMA busy_timeout = 5000");
+    this.db.exec("PRAGMA journal_mode = DELETE");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.migrate();
+    this.sql = new SqliteStatements(this.db);
   }
 
   close(): void {
@@ -45,62 +50,41 @@ export class SQLiteGraphStore implements GraphStore {
     const chunksByFile = groupByPath(index.chunks);
 
     this.transaction(() => {
-      this.db.prepare(
-        "INSERT OR REPLACE INTO projects(project_id, repo_root, indexed_at_ms) VALUES (?, ?, ?)"
-      ).run(index.projectId, repoRoot, index.indexedAtMs);
+      this.sql.upsertProject.run(index.projectId, repoRoot, index.indexedAtMs);
 
       const nextFilePaths = new Set(index.files.map((file) => file.path));
       for (const stalePath of this.filePathsForProject(index.projectId)) {
         if (!nextFilePaths.has(stalePath)) this.deleteFileRows(index.projectId, stalePath);
       }
       for (const file of index.files) this.deleteFileRows(index.projectId, file.path);
-      this.db.prepare("DELETE FROM skipped_files WHERE project_id = ?").run(index.projectId);
-
-      const insertFile = this.db.prepare(
-        "INSERT INTO files(project_id, path, absolute_path, language, size_bytes, content_hash, modified_at_ms, indexed_at_ms, status, generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      );
-      const insertSymbol = this.db.prepare(
-        "INSERT INTO symbols(project_id, id, file_path, name, kind, language, start_line, end_line, signature, exported, generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      );
-      const insertEdge = this.db.prepare(
-        "INSERT INTO edges(project_id, source_id, target_id, kind, metadata_json, file_path, generation) VALUES (?, ?, ?, ?, ?, ?, ?)"
-      );
-      const insertChunk = this.db.prepare(
-        "INSERT INTO chunks(project_id, id, repo_root, file_path, language, kind, symbol_name, start_line, end_line, content, content_hash, generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      );
-      const insertFts = this.db.prepare(
-        "INSERT INTO chunks_fts(project_id, id, file_path, symbol_name, content) VALUES (?, ?, ?, ?, ?)"
-      );
+      this.sql.deleteSkippedFiles.run(index.projectId);
 
       for (const file of index.files) {
-        insertFile.run(file.projectId, file.path, file.absolutePath, file.language, file.sizeBytes, file.contentHash, file.modifiedAtMs, index.indexedAtMs, "fresh", 1);
+        this.sql.insertFile.run(file.projectId, file.path, file.absolutePath, file.language, file.sizeBytes, file.contentHash, file.modifiedAtMs, index.indexedAtMs, "fresh", 1);
 
         for (const symbol of symbolsByFile.get(file.path) ?? []) {
-          insertSymbol.run(symbol.projectId, symbol.id, symbol.filePath, symbol.name, symbol.kind, symbol.language, symbol.startLine, symbol.endLine, symbol.signature ?? null, symbol.exported ? 1 : 0, 1);
+          this.sql.insertSymbol.run(symbol.projectId, symbol.id, symbol.filePath, symbol.name, symbol.kind, symbol.language, symbol.startLine, symbol.endLine, symbol.signature ?? null, symbol.exported ? 1 : 0, 1);
         }
 
         for (const edge of edgesByFile.get(file.path) ?? []) {
-          insertEdge.run(edge.projectId, edge.sourceId, edge.targetId, edge.kind, JSON.stringify(edge.metadata ?? {}), edgeFilePath(edge), 1);
+          this.sql.insertEdge.run(edge.projectId, edge.sourceId, edge.targetId, edge.kind, JSON.stringify(edge.metadata ?? {}), edgeFilePath(edge), 1);
         }
 
         for (const chunk of chunksByFile.get(file.path) ?? []) {
-          insertChunk.run(chunk.projectId, chunk.id, repoRoot, chunk.filePath, chunk.language, chunk.kind, chunk.symbolName ?? null, chunk.startLine, chunk.endLine, chunk.content, chunk.contentHash, 1);
-          insertFts.run(chunk.projectId, chunk.id, chunk.filePath, chunk.symbolName ?? null, chunk.content);
+          this.sql.insertChunk.run(chunk.projectId, chunk.id, repoRoot, chunk.filePath, chunk.language, chunk.kind, chunk.symbolName ?? null, chunk.startLine, chunk.endLine, chunk.content, chunk.contentHash, 1);
+          this.sql.insertFts.run(chunk.projectId, chunk.id, chunk.filePath, chunk.symbolName ?? null, chunk.content);
         }
       }
 
-      const insertSkipped = this.db.prepare(
-        "INSERT INTO skipped_files(project_id, file_path, reason) VALUES (?, ?, ?)"
-      );
       for (const skipped of index.skippedFiles) {
-        insertSkipped.run(index.projectId, skipped.filePath, skipped.reason);
+        this.sql.insertSkippedFile.run(index.projectId, skipped.filePath, skipped.reason);
       }
     });
   }
 
   async getFiles(repoRoot: string): Promise<CodeFile[]> {
     const projectId = this.requireProjectId(repoRoot);
-    return this.db.prepare("SELECT * FROM files WHERE project_id = ? ORDER BY path").all(projectId).map(fileFromRow);
+    return this.sql.selectFiles.all(projectId).map(fileFromRow);
   }
 
   async getChunks(repoRoot: string): Promise<CodeChunk[]> {
@@ -110,7 +94,7 @@ export class SQLiteGraphStore implements GraphStore {
 
   async getSkippedFiles(repoRoot: string): Promise<Array<{ filePath: string; reason: string }>> {
     const projectId = this.requireProjectId(repoRoot);
-    return this.db.prepare("SELECT file_path, reason FROM skipped_files WHERE project_id = ? ORDER BY file_path").all(projectId).map((row) => ({
+    return this.sql.selectSkippedFiles.all(projectId).map((row: any) => ({
       filePath: String(row.file_path),
       reason: String(row.reason)
     }));
@@ -124,27 +108,25 @@ export class SQLiteGraphStore implements GraphStore {
   async getEdges(repoRoot: string, kind?: EdgeKind): Promise<GraphEdge[]> {
     const projectId = this.requireProjectId(repoRoot);
     const rows = kind
-      ? this.db.prepare("SELECT * FROM edges WHERE project_id = ? AND kind = ? ORDER BY id").all(projectId, kind)
-      : this.db.prepare("SELECT * FROM edges WHERE project_id = ? ORDER BY id").all(projectId);
+      ? this.sql.selectEdgesByKind.all(projectId, kind)
+      : this.sql.selectEdges.all(projectId);
     return rows.map(edgeFromRow);
   }
 
   async findSymbol(repoRoot: string, name: string): Promise<SymbolNode[]> {
     const projectId = this.requireProjectId(repoRoot);
     const needle = `%${escapeLike(name.toLowerCase())}%`;
-    return this.db.prepare(
-      "SELECT * FROM symbols WHERE project_id = ? AND lower(name) LIKE ? ESCAPE '\\' ORDER BY name"
-    ).all(projectId, needle).map(symbolFromRow);
+    return this.sql.selectSymbolByNameLike.all(projectId, needle).map(symbolFromRow);
   }
 
   async explainFile(repoRoot: string, filePath: string): Promise<{ file?: CodeFile; chunks: CodeChunk[]; symbols: SymbolNode[] }> {
     const projectId = this.requireProjectId(repoRoot);
     const normalized = normalizeUserPath(filePath);
-    const file = this.db.prepare("SELECT * FROM files WHERE project_id = ? AND path = ?").get(projectId, normalized);
+    const file = this.sql.selectFile.get(projectId, normalized);
     return {
       file: file ? fileFromRow(file) : undefined,
-      chunks: this.db.prepare("SELECT * FROM chunks WHERE project_id = ? AND file_path = ? ORDER BY start_line").all(projectId, normalized).map(chunkFromRow),
-      symbols: this.db.prepare("SELECT * FROM symbols WHERE project_id = ? AND file_path = ? ORDER BY start_line").all(projectId, normalized).map(symbolFromRow)
+      chunks: this.sql.selectChunksByFile.all(projectId, normalized).map(chunkFromRow),
+      symbols: this.sql.selectSymbolsByFile.all(projectId, normalized).map(symbolFromRow)
     };
   }
 
@@ -153,19 +135,25 @@ export class SQLiteGraphStore implements GraphStore {
     const projectId = this.scopedProjectId(repoRoot, query.projectId);
     const terms = tokenize(query.query);
     if (terms.length === 0) return [];
+    const ftsQuery = ftsQueryFor(query.query);
+    if (!ftsQuery) return [];
+    const rows = this.sql.searchFts.all(projectId, ftsQuery, Math.max(query.limit ?? 20, 20) * 4);
     const hits: SearchHit[] = [];
-    for (const chunk of this.chunksForProject(projectId)) {
+    for (const row of rows) {
+      const chunk = chunkFromRow(row);
       const haystack = `${chunk.filePath}\n${chunk.symbolName ?? ""}\n${chunk.content}`.toLowerCase();
       const matched = terms.filter((term) => haystack.includes(term)).length;
       if (matched === 0) continue;
+      const rank = Number((row as Record<string, unknown>).rank);
+      const rankBoost = Number.isFinite(rank) ? Math.max(0, -rank) * 1000 : 0;
       hits.push({
         chunk,
-        score: matched / terms.length,
+        score: matched / terms.length + rankBoost,
         source: "keyword",
-        reason: `Matched ${matched}/${terms.length} query term(s)`
+        reason: `FTS MATCH matched ${matched}/${terms.length} query term(s); bm25=${formatRank(rank)}`
       });
     }
-    return hits.sort((a, b) => b.score - a.score).slice(0, query.limit ?? 20);
+    return hits.sort((a, b) => b.score - a.score || a.chunk.filePath.localeCompare(b.chunk.filePath)).slice(0, query.limit ?? 20);
   }
 
   async findOwner(repoRoot: string, query: string, limit = 5): Promise<OwnerCandidate[]> {
@@ -209,32 +197,41 @@ export class SQLiteGraphStore implements GraphStore {
     const matchedIds = new Set(matchedSymbols.map((symbol) => symbol.id));
     const incomingEdges = edges.filter((edge) => matchedIds.has(edge.targetId) || String(edge.metadata?.targetName ?? "").toLowerCase().includes(target.toLowerCase()));
     const outgoingEdges = edges.filter((edge) => matchedIds.has(edge.sourceId) || String(edge.metadata?.sourceFile ?? "") === normalized);
-    const impactedFiles = new Set<string>();
-    for (const edge of [...incomingEdges, ...outgoingEdges]) {
-      const source = symbols.find((symbol) => symbol.id === edge.sourceId);
-      const targetNode = symbols.find((symbol) => symbol.id === edge.targetId);
-      if (source) impactedFiles.add(source.filePath);
-      if (targetNode) impactedFiles.add(targetNode.filePath);
-      if (typeof edge.metadata?.sourceFile === "string") impactedFiles.add(edge.metadata.sourceFile);
-    }
-    for (const symbol of matchedSymbols) impactedFiles.add(symbol.filePath);
-    const impactCount = impactedFiles.size + incomingEdges.length;
-    return {
+    return buildImpactAnalysis({
       target,
       matchedSymbols,
-      impactedFiles: [...impactedFiles].sort(),
       incomingEdges,
       outgoingEdges,
-      riskLevel: impactCount > 12 ? "high" : impactCount > 4 ? "medium" : "low"
-    };
+      symbols
+    });
   }
 
   async relatedTests(repoRoot: string, target: string): Promise<RelatedTests> {
     const files = await this.getFiles(repoRoot);
+    const symbols = await this.getSymbols(repoRoot);
+    const edges = await this.getEdges(repoRoot);
+    const symbolsById = new Map(symbols.map((symbol) => [symbol.id, symbol]));
+    const filesByPath = new Map(files.map((file) => [file.path, file]));
     const normalized = normalizeUserPath(target);
     const basename = normalized.split("/").pop()?.replace(/\.[^.]+$/, "") ?? normalized;
-    const tests = files.filter((file) => isTestFile(file.path) && file.path.toLowerCase().includes(basename.toLowerCase()));
-    return { target, tests, missingLikelyTests: tests.length === 0 ? [`No indexed test file matched ${basename}.`] : [] };
+    const matchedIds = new Set(symbols
+      .filter((symbol) => matchesTarget(symbol, normalized, target))
+      .map((symbol) => symbol.id));
+    const graphTestsByPath = new Map<string, CodeFile>();
+    const references = [];
+    for (const edge of edges) {
+      if (edge.kind !== "tested_by") continue;
+      const sourceFile = typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : undefined;
+      if (!matchedIds.has(edge.sourceId) && sourceFile !== normalized) continue;
+      const targetSymbol = symbolsById.get(edge.targetId);
+      if (!targetSymbol || !isTestFile(targetSymbol.filePath)) continue;
+      const file = filesByPath.get(targetSymbol.filePath);
+      if (file) graphTestsByPath.set(file.path, file);
+      references.push(impactReference(edge, symbolsById));
+    }
+    const testsByPath = graphTestsByPath.size > 0 ? graphTestsByPath : filenameTestMatches(files, basename);
+    const tests = [...testsByPath.values()].sort((a, b) => a.path.localeCompare(b.path));
+    return { target, tests, references, missingLikelyTests: tests.length === 0 ? [`No indexed test file matched ${basename}.`] : [] };
   }
 
   async traceFlow(repoRoot: string, entry: string, maxSteps = 20): Promise<TraceFlow> {
@@ -365,7 +362,7 @@ export class SQLiteGraphStore implements GraphStore {
   }
 
   private filePathsForProject(projectId: string): string[] {
-    return this.db.prepare("SELECT path FROM files WHERE project_id = ?").all(projectId).map((row) => String(row.path));
+    return this.db.prepare("SELECT path FROM files WHERE project_id = ?").all(projectId).map((row: any) => String(row.path));
   }
 
   private transaction(fn: () => void): void {
@@ -474,6 +471,19 @@ function tokenize(query: string): string[] {
   return query.toLowerCase().split(/[^a-z0-9_./:-]+/i).map((part) => part.trim()).filter(Boolean);
 }
 
+function ftsQueryFor(query: string): string {
+  const parts = query
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return [...new Set(parts)].map((part) => `"${part.replaceAll('"', '""')}"`).join(" OR ");
+}
+
+function formatRank(rank: number): string {
+  return Number.isFinite(rank) ? rank.toFixed(6) : "nan";
+}
+
 function uniqueSymbols(symbols: SymbolNode[]): SymbolNode[] {
   return [...new Map(symbols.map((symbol) => [symbol.id, symbol])).values()];
 }
@@ -508,6 +518,14 @@ function isTestFile(filePath: string): boolean {
   return /(^|\/)(__tests__|tests?)(\/|$)|\.(test|spec)\.[jt]sx?$/.test(filePath);
 }
 
+function filenameTestMatches(files: CodeFile[], basename: string): Map<string, CodeFile> {
+  const tests = new Map<string, CodeFile>();
+  for (const file of files) {
+    if (isTestFile(file.path) && file.path.toLowerCase().includes(basename.toLowerCase())) tests.set(file.path, file);
+  }
+  return tests;
+}
+
 function extractChangedFiles(diff: string): string[] {
   const files = new Set<string>();
   for (const line of diff.split(/\r?\n/)) {
@@ -531,5 +549,18 @@ function normalizeRepoRoot(repoRoot: string): string {
 }
 
 function isTraceEdge(kind: EdgeKind): boolean {
-  return kind === "calls" || kind === "calls_api" || kind === "routes_to" || kind === "handles_webhook";
+  return kind === "calls"
+    || kind === "calls_api"
+    || kind === "routes_to"
+    || kind === "handles_webhook"
+    || kind === "handles_event"
+    || kind === "tested_by"
+    || kind === "uses_middleware"
+    || kind === "reads_from"
+    || kind === "writes_to";
+}
+
+function matchesTarget(symbol: SymbolNode, normalized: string, target: string): boolean {
+  const lowered = target.toLowerCase();
+  return symbol.name.toLowerCase().includes(lowered) || symbol.filePath === normalized || symbol.filePath.includes(normalized);
 }

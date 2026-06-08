@@ -7,10 +7,28 @@ import { RagCodeEngine, SQLiteGraphStore } from "../src/index.js";
 const tempRoots: string[] = [];
 
 afterEach(async () => {
-  for (const root of tempRoots.splice(0)) {
-    await fs.rm(root, { recursive: true, force: true });
+  // Skip cleanup on Windows due to bun:sqlite file handle release timing
+  // Temp files are cleaned by OS tmpdir policy
+  if (process.platform !== "win32") {
+    for (const root of tempRoots.splice(0)) {
+      await rmWithRetry(root);
+    }
+  } else {
+    tempRoots.splice(0);
   }
 });
+
+async function rmWithRetry(dirPath: string, maxRetries = 3): Promise<void> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await fs.rm(dirPath, { recursive: true, force: true });
+      return;
+    } catch (err: unknown) {
+      if (i === maxRetries - 1) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (i + 1)));
+    }
+  }
+}
 
 describe("SQLiteGraphStore", () => {
   it("persists graph rows and skipped file freshness metadata", async () => {
@@ -90,6 +108,28 @@ describe("SQLiteGraphStore", () => {
     }
   });
 
+  it("uses SQLite FTS bm25 ranking for keyword search", async () => {
+    const repeatedTerm = Array.from({ length: 20 }, () => "critical-marker").join(" ");
+    const repoRoot = await createRepo("sqlite-fts", {
+      "src/a-low.ts": "export function lowPriority() { return 'critical-marker'; }\n",
+      "src/z-high.ts": `export function highPriority() { return '${repeatedTerm}'; }\n`
+    });
+    const store = new SQLiteGraphStore(await tempDbPath());
+    const engine = new RagCodeEngine({ graphStore: store });
+
+    try {
+      await engine.indexRepo(repoRoot);
+
+      const hits = await store.searchText({ repoRoot, query: "critical-marker", limit: 5 });
+
+      expect(hits[0]?.chunk.filePath).toBe("src/z-high.ts");
+      expect(hits[0]?.reason).toContain("FTS MATCH");
+      expect(hits[0]?.reason).toContain("bm25");
+    } finally {
+      store.close();
+    }
+  });
+
   it("keeps projects isolated inside one SQLite database", async () => {
     const firstRoot = await createRepo("sqlite-project-a", {
       "src/auth.ts": "export function alphaOnlyLogin() { return 'alpha-project-only'; }\n"
@@ -106,7 +146,9 @@ describe("SQLiteGraphStore", () => {
       expect(first.projectId).not.toBe(second.projectId);
 
       expect(await store.searchText({ repoRoot: firstRoot, query: "beta-project-only", limit: 10 })).toEqual([]);
-      expect((await store.searchText({ repoRoot: secondRoot, query: "beta-project-only", limit: 10 }))[0]?.chunk.projectId).toBe(second.projectId);
+      const secondHits = await store.searchText({ repoRoot: secondRoot, query: "beta-project-only", limit: 10 });
+      expect(secondHits[0]?.chunk.projectId).toBe(second.projectId);
+      expect(secondHits[0]?.reason).toContain("FTS MATCH");
       await expect(store.searchText({ repoRoot: firstRoot, projectId: second.projectId, query: "beta-project-only" })).rejects.toThrow(/Project scope mismatch/);
     } finally {
       store.close();

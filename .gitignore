@@ -6,3 +6,5 @@ coverage/
 .understand-anything/intermediate/
 .understand-anything/diff-overlay.json
 *.log
+.omc/
+.omx/

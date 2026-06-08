@@ -40,72 +40,86 @@ export interface McpToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
+export interface McpRuntimeToolDefinition {
+  name: ToolName;
+  description: string;
+  inputSchema: z.ZodType;
+}
+
 export function listToolDefinitions(): McpToolDefinition[] {
+  return listRuntimeToolDefinitions().map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: zodToJsonShape(tool.inputSchema)
+  }));
+}
+
+export function listRuntimeToolDefinitions(): McpRuntimeToolDefinition[] {
   return [
     {
       name: "index_repo",
       description: "Index or re-index a local repository into the structural graph and semantic store.",
-      inputSchema: zodToJsonShape(IndexRepoInput)
+      inputSchema: IndexRepoInput
     },
     {
       name: "refresh_index",
       description: "Force refresh the active indexed repository. Currently performs a full reindex; future versions can narrow to changed files.",
-      inputSchema: zodToJsonShape(RefreshIndexInput)
+      inputSchema: RefreshIndexInput
     },
     {
       name: "index_status",
       description: "Report indexed file/chunk/symbol/edge counts plus freshness, stale, pending, and skipped file state for the active repository.",
-      inputSchema: zodToJsonShape(IndexStatusInput)
+      inputSchema: IndexStatusInput
     },
     {
       name: "search_code",
       description: "Run hybrid code search over keyword and semantic indexes.",
-      inputSchema: zodToJsonShape(SearchCodeInput)
+      inputSchema: SearchCodeInput
     },
     {
       name: "get_context",
       description: "Build an agent-ready context pack for a code question under a character budget.",
-      inputSchema: zodToJsonShape(GetContextInput)
+      inputSchema: GetContextInput
     },
     {
       name: "topology_map",
       description: "Return owner-chain and topology edges for a feature/domain query without full evidence snippets.",
-      inputSchema: zodToJsonShape(TopologyMapInput)
+      inputSchema: TopologyMapInput
     },
     {
       name: "find_symbol",
       description: "Find indexed symbols by name.",
-      inputSchema: zodToJsonShape(FindSymbolInput)
+      inputSchema: FindSymbolInput
     },
     {
       name: "explain_file",
       description: "Return indexed file metadata, chunks, and symbols for a file.",
-      inputSchema: zodToJsonShape(ExplainFileInput)
+      inputSchema: ExplainFileInput
     },
     {
       name: "find_owner",
       description: "Find likely owner files and symbols for a feature, bug, or architecture question.",
-      inputSchema: zodToJsonShape(FindOwnerInput)
+      inputSchema: FindOwnerInput
     },
     {
       name: "impact_analysis",
       description: "Estimate direct structural impact for a file or symbol using graph edges.",
-      inputSchema: zodToJsonShape(ImpactAnalysisInput)
+      inputSchema: ImpactAnalysisInput
     },
     {
       name: "related_tests",
       description: "Find likely related test files for a file or symbol target.",
-      inputSchema: zodToJsonShape(RelatedTestsInput)
+      inputSchema: RelatedTestsInput
     },
     {
       name: "trace_flow",
       description: "Trace outgoing call edges from an entry symbol or file hint.",
-      inputSchema: zodToJsonShape(TraceFlowInput)
+      inputSchema: TraceFlowInput
     },
     {
       name: "review_diff",
       description: "Review changed files or a unified diff for risk and related tests.",
-      inputSchema: zodToJsonShape(ReviewDiffInput)
+      inputSchema: ReviewDiffInput
     }
   ];
 }

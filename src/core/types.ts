@@ -246,6 +246,9 @@ export interface OwnerCandidate {
 
 export interface ImpactAnalysis {
   target: string;
+  minimalPack: ImpactPackItem[];
+  references: ImpactReference[];
+  nextQueries: string[];
   matchedSymbols: SymbolNode[];
   impactedFiles: string[];
   incomingEdges: GraphEdge[];
@@ -253,9 +256,33 @@ export interface ImpactAnalysis {
   riskLevel: "low" | "medium" | "high";
 }
 
+export interface ImpactPackItem {
+  filePath: string;
+  role: "target" | "caller" | "callee" | "test" | "route" | "middleware" | "resource_owner" | "event_owner";
+  reason: string;
+  symbols: Array<{
+    name: string;
+    kind: SymbolKind;
+    startLine: number;
+    endLine: number;
+  }>;
+}
+
+export interface ImpactReference {
+  edge: EdgeKind;
+  sourceFile?: string;
+  targetFile?: string;
+  sourceSymbol?: string;
+  targetSymbol?: string;
+  targetName?: string;
+  reason: string;
+  confidence: "low" | "medium" | "high";
+}
+
 export interface RelatedTests {
   target: string;
   tests: CodeFile[];
+  references: ImpactReference[];
   missingLikelyTests: string[];
 }
 

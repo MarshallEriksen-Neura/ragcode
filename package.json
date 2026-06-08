@@ -18,6 +18,7 @@
   "dependencies": {
     "@lancedb/lancedb": "^0.30.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.10.0",
     "commander": "^14.0.2",
     "typescript": "^5.9.3",
     "zod": "^4.1.13"
@@ -28,6 +29,6 @@
     "vitest": "^4.1.8"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   }
 }

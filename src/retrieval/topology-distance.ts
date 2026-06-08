@@ -135,6 +135,7 @@ function strongestKinds(kinds: EdgeKind[]): EdgeKind[] {
 
 function edgeKindStrength(kind: EdgeKind): number {
   if (kind === "calls" || kind === "calls_api" || kind === "routes_to" || kind === "handles_event" || kind === "handles_webhook") return 1;
+  if (kind === "uses_middleware") return 0.9;
   if (kind === "imports" || kind === "exports" || kind === "tested_by") return 0.8;
   if (kind === "reads_from" || kind === "writes_to" || kind === "references") return 0.6;
   if (kind === "contains") return 0.25;
