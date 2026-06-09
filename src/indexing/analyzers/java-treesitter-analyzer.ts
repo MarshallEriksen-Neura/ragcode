@@ -60,12 +60,11 @@ const javaConfig: TreeSitterLanguageConfig = {
   importPatterns: [
     {
       type: "import_declaration",
-      sourceField: "name",
+      sourceExtractor: javaImportName,
       bindingsExtractor: (node) => {
-        const nameNode = node.child(1); // Skip 'import' keyword
-        if (!nameNode) return [];
+        const fullPath = javaImportName(node);
+        if (!fullPath) return [];
 
-        const fullPath = nameNode.text;
         const className = fullPath.split(".").pop() ?? fullPath;
 
         return [{ imported: fullPath, local: className }];
@@ -90,3 +89,7 @@ export const javaTreeSitterAnalyzer: LanguageAnalyzer = {
     return analyzeWithTreeSitter(getParser(), javaConfig, repoRoot, file, content);
   }
 };
+
+function javaImportName(node: Parser.SyntaxNode): string | undefined {
+  return node.children.find((child) => child.type === "scoped_identifier" || child.type === "identifier")?.text;
+}

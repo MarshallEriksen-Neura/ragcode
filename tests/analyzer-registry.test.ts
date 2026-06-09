@@ -1,9 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { analyzerFor, analyzeFile } from "../src/index.js";
+import {
+  analyzerFor,
+  analyzeFile,
+  goTreeSitterAnalyzer,
+  javaTreeSitterAnalyzer,
+  javascriptAnalyzer,
+  pythonTreeSitterAnalyzer,
+  rustTreeSitterAnalyzer,
+  typescriptAnalyzer
+} from "../src/index.js";
 import type { CodeFile } from "../src/index.js";
 
 describe("language analyzer registry", () => {
-  it("routes TypeScript and JavaScript through structural analyzers", () => {
+  it("routes JavaScript through compiler analyzers and other languages through tree-sitter", () => {
+    expect(analyzerFor("typescript")).toBe(typescriptAnalyzer);
+    expect(analyzerFor("javascript")).toBe(javascriptAnalyzer);
+    expect(analyzerFor("python")).toBe(pythonTreeSitterAnalyzer);
+    expect(analyzerFor("go")).toBe(goTreeSitterAnalyzer);
+    expect(analyzerFor("rust")).toBe(rustTreeSitterAnalyzer);
+    expect(analyzerFor("java")).toBe(javaTreeSitterAnalyzer);
+
     expect(analyzerFor("typescript").capabilities).toEqual(expect.arrayContaining(["symbols", "imports", "exports", "calls"]));
     expect(analyzerFor("javascript").capabilities).toEqual(expect.arrayContaining(["symbols", "imports", "exports", "calls"]));
     expect(analyzerFor("python").capabilities).toEqual(expect.arrayContaining(["symbols", "imports", "exports", "calls"]));

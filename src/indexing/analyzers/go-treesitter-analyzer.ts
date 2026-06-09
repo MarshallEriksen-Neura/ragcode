@@ -37,14 +37,9 @@ const goConfig: TreeSitterLanguageConfig = {
     {
       type: "type_declaration",
       kind: "type",
-      nameField: "name",
+      nameExtractor: typeDeclarationName,
       exportModifierCheck: (node) => {
-        // Type declarations can have multiple specs, check the first one
-        const specNode = node.childForFieldName("type");
-        if (!specNode) return false;
-
-        const nameNode = specNode.childForFieldName("name");
-        const name = nameNode?.text;
+        const name = typeDeclarationName(node);
         return name ? /^[A-Z]/.test(name) : false;
       }
     }
@@ -92,3 +87,8 @@ export const goTreeSitterAnalyzer: LanguageAnalyzer = {
     return analyzeWithTreeSitter(getParser(), goConfig, repoRoot, file, content);
   }
 };
+
+function typeDeclarationName(node: Parser.SyntaxNode): string | undefined {
+  const specNode = node.children.find((child) => child.type === "type_spec");
+  return specNode?.childForFieldName("name")?.text;
+}

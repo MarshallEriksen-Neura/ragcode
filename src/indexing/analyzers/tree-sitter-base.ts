@@ -8,13 +8,15 @@ export interface TreeSitterNodePattern {
   type: string;
   kind: SymbolKind;
   nameField?: string;
+  nameExtractor?: (node: Parser.SyntaxNode) => string | undefined;
   signatureField?: string;
   exportModifierCheck?: (node: Parser.SyntaxNode) => boolean;
 }
 
 export interface TreeSitterImportPattern {
   type: string;
-  sourceField: string;
+  sourceField?: string;
+  sourceExtractor?: (node: Parser.SyntaxNode) => string | undefined;
   bindingsExtractor?: (node: Parser.SyntaxNode) => Array<{ imported: string; local: string }>;
 }
 
@@ -107,8 +109,11 @@ function extractSymbol(
 ): SymbolNode | undefined {
   for (const pattern of patterns) {
     if (node.type === pattern.type) {
-      const nameNode = pattern.nameField ? node.childForFieldName(pattern.nameField) : null;
-      const name = nameNode?.text;
+      const name = pattern.nameExtractor
+        ? pattern.nameExtractor(node)
+        : pattern.nameField
+          ? node.childForFieldName(pattern.nameField)?.text
+          : undefined;
 
       if (!name) continue;
 
@@ -146,8 +151,11 @@ function extractImports(
   function visit(node: Parser.SyntaxNode): void {
     for (const pattern of patterns) {
       if (node.type === pattern.type) {
-        const sourceNode = node.childForFieldName(pattern.sourceField);
-        const source = sourceNode?.text.replace(/['"]/g, "");
+        const source = pattern.sourceExtractor
+          ? pattern.sourceExtractor(node)
+          : pattern.sourceField
+            ? node.childForFieldName(pattern.sourceField)?.text.replace(/['"]/g, "")
+            : undefined;
 
         if (source) {
           const bindings = pattern.bindingsExtractor ? pattern.bindingsExtractor(node) : [];
