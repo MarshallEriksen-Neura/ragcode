@@ -99,6 +99,16 @@ export function normalizeIdentifier(value: string): string {
   return splitIdentifier(value).join("");
 }
 
+export function textContainsTerm(text: string, term: string): boolean {
+  if (!term) return false;
+  if (!/^[a-z0-9]+$/i.test(term)) return text.includes(term.toLowerCase());
+  const escaped = term.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pluralPattern = term.endsWith("y")
+    ? `(?:${escaped}|${term.slice(0, -1).toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}ies)`
+    : `${escaped}(?:s|es)?`;
+  return new RegExp(`(^|[^a-z0-9])${pluralPattern}([^a-z0-9]|$)`).test(text);
+}
+
 function isCamelOrPascalIdentifier(value: string): boolean {
   return !/[._/:-]/.test(value) && /(?:[a-z0-9][A-Z]|[A-Z]{2,}[a-z])/.test(value);
 }
@@ -163,7 +173,7 @@ function stemTerm(term: string): string | undefined {
 function countMatches(text: string, terms: string[]): number {
   let count = 0;
   for (const term of terms) {
-    if (term && text.includes(term)) count += 1;
+    if (textContainsTerm(text, term)) count += 1;
   }
   return count;
 }
@@ -171,7 +181,7 @@ function countMatches(text: string, terms: string[]): number {
 function countQueryTermMatches(text: string, terms: string[]): number {
   let count = 0;
   for (const term of terms) {
-    if (expandTermVariants([term]).some((variant) => text.includes(variant))) count += 1;
+    if (expandTermVariants([term]).some((variant) => textContainsTerm(text, variant))) count += 1;
   }
   return count;
 }

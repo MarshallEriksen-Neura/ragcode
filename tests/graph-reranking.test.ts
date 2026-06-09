@@ -121,6 +121,151 @@ describe("graph-based reranking", () => {
     expect(containerHit.reason).toContain("graph expansion");
   });
 
+  it("keeps enough owner-like expansion candidates for multi-file owner chains", async () => {
+    const projectId = "project-a";
+    const symbols = [
+      symbol(projectId, "context", "Context", "src/context.ts"),
+      symbol(projectId, "types", "ContextTypes", "src/types.ts"),
+      symbol(projectId, "streaming", "ContextStreaming", "src/jsx/streaming.ts"),
+      symbol(projectId, "cookie", "CookieHelpers", "src/helper/cookie/index.ts"),
+      symbol(projectId, "renderer", "RequestContext", "src/middleware/jsx-renderer/index.ts"),
+      symbol(projectId, "request", "HonoRequest", "src/request.ts")
+    ];
+    const edges: GraphEdge[] = symbols
+      .filter((candidate) => candidate.id !== "context")
+      .map((candidate) => edge(projectId, "context", candidate.id, "imports", {
+        sourceFile: "src/context.ts",
+        targetFile: candidate.filePath
+      }));
+    const chunks = [
+      codeChunk(projectId, "src/context.ts", "Context", "export class Context {}"),
+      codeChunk(projectId, "src/types.ts", "ContextTypes", "context request response helpers types"),
+      codeChunk(projectId, "src/jsx/streaming.ts", "ContextStreaming", "context request response helpers streaming"),
+      codeChunk(projectId, "src/helper/cookie/index.ts", "CookieHelpers", "context request response helpers cookie"),
+      codeChunk(projectId, "src/middleware/jsx-renderer/index.ts", "RequestContext", "context request response helpers renderer"),
+      codeChunk(projectId, "src/request.ts", "HonoRequest", "request response helper")
+    ];
+    const hits: SearchHit[] = [
+      hit("src/context.ts", "typescript", 1.2, "keyword", "Matched context request response helpers")
+    ];
+
+    const reranked = await rerankWithGraph(hits, { repoRoot: tempRoot, projectId, query: "context request response helpers", mode: "explain", limit: 8 }, "explain", {
+      graphStore: graphStore(symbols, edges, chunks),
+      maxSeeds: 1
+    });
+
+    expect(requireFileHit(reranked, "src/request.ts").reason).toContain("graph expansion");
+  });
+
+  it("adds command owner files from path intent when semantic hits point at app noise", async () => {
+    const projectId = "project-a";
+    const symbols = [
+      symbol(projectId, "app-action", "ActionMenu", "apps/v4/app/create/components/action-menu.tsx"),
+      symbol(projectId, "resolver", "resolveRegistryTree", "packages/shadcn/src/registry/resolver.ts"),
+      symbol(projectId, "add-command", "add", "packages/shadcn/src/commands/add.ts")
+    ];
+    const edges: GraphEdge[] = [
+      edge(projectId, "app-action", "resolver", "imports", {
+        sourceFile: "apps/v4/app/create/components/action-menu.tsx",
+        targetFile: "packages/shadcn/src/registry/resolver.ts"
+      })
+    ];
+    const chunks = [
+      codeChunk(projectId, "apps/v4/app/create/components/action-menu.tsx", "ActionMenu", "add component registry resolver UI"),
+      codeChunk(projectId, "packages/shadcn/src/registry/resolver.ts", "resolveRegistryTree", "registry resolver component dependencies"),
+      codeChunk(projectId, "packages/shadcn/src/commands/add.ts", "add", "command add component registry")
+    ];
+    const hits: SearchHit[] = [
+      hit("apps/v4/app/create/components/action-menu.tsx", "typescript", 1.2, "semantic", "add component command registry resolver")
+    ];
+
+    const reranked = await rerankWithGraph(hits, { repoRoot: tempRoot, projectId, query: "add component command registry resolver", mode: "feature", limit: 10 }, "feature", {
+      graphStore: graphStore(symbols, edges, chunks),
+      maxSeeds: 1
+    });
+
+    expect(requireFileHit(reranked, "packages/shadcn/src/commands/add.ts").reason).toContain("owner intent");
+  });
+
+  it("promotes compound core owner hits over adapter package noise", async () => {
+    const projectId = "project-a";
+    const symbols = [
+      symbol(projectId, "react-use-query", "useQuery", "packages/react-query/src/useQuery.ts"),
+      symbol(projectId, "vue-use-query", "useQuery", "packages/vue-query/src/useQuery.ts"),
+      symbol(projectId, "solid-use-query", "useQuery", "packages/solid-query/src/useQuery.ts"),
+      symbol(projectId, "observer", "QueryObserver", "packages/query-core/src/queryObserver.ts")
+    ];
+    const edges: GraphEdge[] = [
+      edge(projectId, "react-use-query", "observer", "imports", {
+        sourceFile: "packages/react-query/src/useQuery.ts",
+        targetFile: "packages/query-core/src/queryObserver.ts"
+      }),
+      edge(projectId, "vue-use-query", "observer", "imports", {
+        sourceFile: "packages/vue-query/src/useQuery.ts",
+        targetFile: "packages/query-core/src/queryObserver.ts"
+      }),
+      edge(projectId, "solid-use-query", "observer", "imports", {
+        sourceFile: "packages/solid-query/src/useQuery.ts",
+        targetFile: "packages/query-core/src/queryObserver.ts"
+      })
+    ];
+    const hits: SearchHit[] = [
+      hit("packages/vue-query/src/useQuery.ts", "typescript", 6.0, "graph", "adapter useQuery"),
+      hit("packages/react-query/src/useQuery.ts", "typescript", 5.9, "graph", "react adapter useQuery"),
+      hit("packages/solid-query/src/useQuery.ts", "typescript", 5.8, "graph", "adapter useQuery"),
+      hit("packages/query-core/src/queryObserver.ts", "typescript", 3.4, "keyword", "core query observer")
+    ];
+
+    const reranked = await rerankWithGraph(hits, { repoRoot: tempRoot, projectId, query: "useQuery react hook observer", mode: "explain", limit: 10 }, "explain", {
+      graphStore: graphStore(symbols, edges),
+      maxSeeds: 3
+    });
+
+    expect(indexOfFile(reranked, "packages/query-core/src/queryObserver.ts")).toBeLessThanOrEqual(3);
+    expect(requireFileHit(reranked, "packages/query-core/src/queryObserver.ts").reason).toContain("owner intent rerank");
+  });
+
+  it("promotes exact collection operation owners over endpoint and version noise", async () => {
+    const projectId = "project-a";
+    const symbols = [
+      symbol(projectId, "endpoint-find", "findHandler", "packages/payload/src/collections/endpoints/find.ts"),
+      symbol(projectId, "version-find", "findVersionByIDOperation", "packages/payload/src/collections/operations/findVersionByID.ts"),
+      symbol(projectId, "local-find", "findLocal", "packages/payload/src/collections/operations/local/find.ts"),
+      symbol(projectId, "operation-find", "findOperation", "packages/payload/src/collections/operations/find.ts")
+    ];
+    const edges: GraphEdge[] = [
+      edge(projectId, "endpoint-find", "operation-find", "imports", {
+        sourceFile: "packages/payload/src/collections/endpoints/find.ts",
+        targetFile: "packages/payload/src/collections/operations/find.ts"
+      }),
+      edge(projectId, "operation-find", "local-find", "imports", {
+        sourceFile: "packages/payload/src/collections/operations/find.ts",
+        targetFile: "packages/payload/src/collections/operations/local/find.ts"
+      }),
+      edge(projectId, "version-find", "operation-find", "imports", {
+        sourceFile: "packages/payload/src/collections/operations/findVersionByID.ts",
+        targetFile: "packages/payload/src/collections/operations/find.ts"
+      })
+    ];
+    const hits: SearchHit[] = [
+      hit("packages/payload/src/collections/endpoints/find.ts", "typescript", 5.4, "graph", "endpoint find handler"),
+      hit("packages/payload/src/collections/operations/findVersionByID.ts", "typescript", 5.2, "graph", "version operation"),
+      hit("packages/payload/src/collections/operations/local/find.ts", "typescript", 3.2, "keyword", "local collection find operation"),
+      hit("packages/payload/src/collections/operations/find.ts", "typescript", 3.1, "keyword", "collection find operation")
+    ];
+
+    const reranked = await rerankWithGraph(hits, { repoRoot: tempRoot, projectId, query: "local collection find operation access pagination", mode: "debug", limit: 10 }, "debug", {
+      graphStore: graphStore(symbols, edges),
+      maxSeeds: 2
+    });
+
+    expect(indexOfFile(reranked, "packages/payload/src/collections/operations/local/find.ts")).toBeLessThanOrEqual(5);
+    expect(indexOfFile(reranked, "packages/payload/src/collections/operations/find.ts")).toBeLessThanOrEqual(5);
+    expect(indexOfFile(reranked, "packages/payload/src/collections/operations/find.ts")).toBeLessThan(indexOfFile(reranked, "packages/payload/src/collections/operations/findVersionByID.ts"));
+    expect(requireFileHit(reranked, "packages/payload/src/collections/operations/local/find.ts").reason).toContain("owner intent rerank");
+    expect(requireFileHit(reranked, "packages/payload/src/collections/operations/find.ts").reason).toContain("owner intent rerank");
+  });
+
   it("reranks a payment-flow fixture toward real owners instead of isolated docs and mocks", async () => {
     await writePaymentFixture(tempRoot);
     const engine = new RagCodeEngine();

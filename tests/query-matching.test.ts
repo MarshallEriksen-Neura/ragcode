@@ -19,6 +19,13 @@ describe("query matching", () => {
     expect(scoreSymbolText(symbol, profile)?.matchedSymbolName).toBe("resolveUserClasses");
     expect(scoreChunkText(codeChunk("src/users.ts", "function resolveUserClass() {}"), profile)).toBeDefined();
   });
+
+  it("does not match query terms inside larger path tokens", () => {
+    const profile = buildQueryMatchProfile("react query hook", []);
+
+    expect(scoreChunkText(codeChunk("packages/react-query/src/useQuery.ts", "export function useQuery() {}"), profile)?.matchedQueryTerms).toBe(2);
+    expect(scoreChunkText(codeChunk("packages/preact-query/src/useQuery.ts", "export function useQuery() {}"), profile)?.matchedQueryTerms).toBe(1);
+  });
 });
 
 function symbolNode(filePath: string, name: string): SymbolNode {

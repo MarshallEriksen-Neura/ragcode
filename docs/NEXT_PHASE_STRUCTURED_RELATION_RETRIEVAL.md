@@ -35,13 +35,34 @@ Already implemented or no longer accurate:
 Still true or partially true after the base implementation:
 
 - The default deterministic embedding is not semantic; it is an offline smoke-test signal. Real embedding model evals still need separate calibration.
-- File watching is a persisted dirty-event intake and coalescer, not a long-running OS watcher daemon with background indexing.
+- File watching now has a long-running `chokidar` daemon, event journal replay, and background batch indexing as a base implementation. It is not yet production-hardened for stress, supervision, dropped-event reconciliation, or embedding-rate control.
 - Incremental indexing avoids rewriting unchanged persisted rows and vectors, but the analysis pass still rebuilds a full in-memory file/chunk/symbol/edge snapshot to preserve cross-file relationship quality.
 - Framework topology remains mostly Next.js and static-pattern based. Dynamic URLs, axios/API wrappers, other frameworks, and richer repository/ORM patterns are incomplete.
 - `related` remains an unused edge kind and should either gain a producer or be removed from the public contract.
 - `impact_analysis` and `trace_flow` remain legacy flat tools for compatibility. The path-shaped contract is now `explain_impact` / `trace_request_flow` over `VerifiedCodeSubgraph`.
-- Python, Go, Rust, and Java have non-trivial structural indexing, but these analyzers are lightweight static extractors, not full tree-sitter/LSP-backed resolvers.
+- Python, Go, Rust, and Java now use tree-sitter-backed syntax analyzers for symbols/imports/exports/calls. They are not yet LSP-backed or cross-file resolver-backed language analyzers.
 - `find_reuse_candidates` exists and catches basic naming gaps, but duplicate detection is still heuristic and should be deepened before treating it as a hard gate.
+
+## Current Completion Marker
+
+Checked on 2026-06-09.
+
+`NEXT_PHASE_STRUCTURED_RELATION_RETRIEVAL` is complete as a base slice, not complete as final-form relation intelligence. The base slice means the engine has durable indexing, freshness, verified subgraph contracts, impact/flow/reuse tools, compact expansion, analyzer seams, and an executable eval/audit gate.
+
+Completion evidence:
+
+- `npm run audit:plan` passes with `ownerHitRate=1`, `flowPathCompleteness=1`, `verifiedSubgraphPathCompleteness=1`, `reuseCandidateRecall=1`, `staleHitRate=0`, and `deletedHitRate=0`.
+- The historical stability/topology audit is closed in `docs/PLAN_STABILITY_AND_TOPOLOGY_COMPLETION_AUDIT.md`.
+- Performance goals completed on 2026-06-09:
+  - `benchmark-reuse-index`: warmed benchmark smoke can reuse persisted indexes.
+  - `incremental-index-analysis`: changed/deleted-file incremental persistence behavior is covered by tests and typecheck.
+  - `vite-owner-quality`: Vite `plugin config` warmed retrieval now includes `build.ts`, `pluginContainer.ts`, and `plugin-legacy`.
+
+Current boundary:
+
+- Do not keep treating this phase as unfinished foundation work.
+- Do treat the deferred sections below as hardening work driven by benchmark and dogfooding evidence.
+- The next optimization stream should be `core-owner-quality`: make real multi-repo owner recall stable before adding deeper framework/dataflow claims.
 
 ## Implementation Self-Audit
 
@@ -51,7 +72,7 @@ This section marks which delivered pieces are base slices rather than final-form
 | --- | --- | --- | --- |
 | SQLite persistence | Runtime can select SQLite, persist project/files/chunks/symbols/edges/dirty state, and support no-reindex reads across processes. | Schema is intentionally compact; migrations are inline; relationship rows still use JSON metadata for many source-specific fields. | Add versioned migrations, richer edge evidence columns, query indexes for subgraph traversal, and stress tests on large repos. |
 | Incremental indexing | Changed/deleted files update graph/FTS/vector rows without re-embedding unchanged chunks. | Analysis still reads/analyzes the full scanned file set before selecting changed rows to write. | Add dependency-aware affected-file analysis, neighbor invalidation, and partial resolver passes so huge repos do not rebuild full snapshots. |
-| Watcher/burst state | `record_file_events` coalesces noisy events, persists dirty files, reports burst mode, and retrieval excludes dirty indexed files. | It is not an always-on filesystem daemon; no background worker schedules reindex batches yet. | Add OS watcher service, event journal replay, background batch indexing, rate-limited embedding queues, and recovery from dropped watcher events. |
+| Watcher/burst state | `record_file_events` coalesces noisy events, persists dirty files, reports burst mode, and retrieval excludes dirty indexed files. `FileWatchDaemon`, `FileEventJournal`, and `WatchIndexScheduler` provide daemon, replay, and background refresh base behavior. | The daemon/scheduler/journal path is new and still needs production hardening; retry/backoff, rate limits, supervision, and recovery semantics are thin. | Add stress tests, process supervision guidance, dropped-event reconciliation, embedding queue rate limits, progress reporting, and large-repo concurrency controls. |
 | LanceDB profile guard | Sidecar profile catches provider/model/dimension/table mismatches before search/upsert. | Uses JSON sidecar metadata; does not inspect/migrate LanceDB table schema or automatically rebuild incompatible tables. | Add migration strategy, table/schema introspection, explicit repair command, and real-model eval profiles. |
 | Verified subgraph | `VerifiedCodeSubgraph` returns nodes, verified edges, paths, coverage, missing evidence, next queries, and budgeted snippets. | Builder is a prioritized BFS over existing graph edges; path scoring and coverage are still heuristic. | Add weighted path search, edge provenance normalization, branch pruning, dynamic dispatch handling, and coverageSummary/edit-readiness across all subgraph tools. |
 | `explain_impact` | MCP/CLI returns blast-radius subgraph plus risk score, reasons, and edit-readiness. | Risk scoring is rule-based; diff seed support is not first-class; public API detection is mostly export-based. | Add diff input, API boundary taxonomy, changed-field/type impact, test gap scoring, and same-name false-positive controls. |
@@ -59,12 +80,28 @@ This section marks which delivered pieces are base slices rather than final-form
 | `expand_node` | Agent can expand one compact node as file card, skeleton, focused body, or full body under budget. | Expansion is chunk/symbol based and does not yet use per-language AST body extraction everywhere. | Add exact AST range expansion, multi-node expansion packs, stable citations, and language-specific skeletons. |
 | Output presets | `compact` removes snippets for low-token first-pass reads; other presets preserve full subgraph output. | Presets are simple response shaping, not deeply different narrative contracts. | Add `agent_edit`, `debug_trace`, and `review_risk` tailored summaries with `why_these_files`, enough-context verdicts, and required next reads. |
 | Reuse discovery | `find_reuse_candidates` merges search hits, owner candidates, symbol similarity, exports, callers, tests, synonyms, and duplicate risk. | Similarity and duplicate detection are heuristic; synonym list is small; no normalized body/signature/import/callee comparison yet. | Add embedding-backed behavior matching, normalized AST-body similarity, import/callee overlap, API compatibility scoring, and stricter false-positive evals. |
-| Analyzer plugins | Analyzer interface/registry is in place; TS/JS is reference; Python/Go/Rust/Java emit symbols/imports/exports/calls. | Non-TS analyzers are regex/lightweight static extractors, not tree-sitter parsers or language-service resolvers. | Move Python/Go/Rust/Java to tree-sitter, add cross-file import/call resolution, framework route/test edges, and per-language golden evals. |
+| Analyzer plugins | Analyzer interface/registry is in place; TS/JS is reference; Python/Go/Rust/Java tree-sitter analyzers emit symbols/imports/exports/calls. | Non-TS analyzers are syntax extractors, not language-service resolvers; cross-file resolution and framework/test topology remain shallow. | Add cross-file import/call resolution, framework route/test edges, per-language golden evals, and optional LSP/resolver passes where tree-sitter is insufficient. |
 | Evaluation | Eval now separates grep-solvable lookup from graph-only flow/reuse wins and tracks path/reuse/freshness/budget metrics. | Fixture set is small and synthetic; grep baseline is literal file search, not a full benchmark suite. | Add multi-repo fixtures, same-name false positives, dynamic routing cases, language matrix dashboards, and regression thresholds per metric. |
 
-## Not Yet Implemented
+## Deferred / Partial Hardening Items
 
-These are not done yet. Some have scaffolding or a base slice, but the explicit capability below is still missing and should not be claimed as implemented.
+These are the remaining non-final capabilities. Some are absent; some now have a working base implementation but still need hardening before they should be claimed as complete product behavior.
+
+### Status Correction From Current Code
+
+Checked on 2026-06-09 against current source.
+
+Reclassified from "missing" to implemented base slice:
+
+- Watch daemon and background indexing: `src/watch/watch-daemon.ts`, `src/watch/index-scheduler.ts`, `src/watch/event-journal.ts`, and CLI `watch` exist. The remaining work is hardening, not first implementation.
+- Watcher event journal replay: journal append/replay/truncate is wired through `FileWatchDaemon.start()` and buffered event flushing. The remaining work is reconciliation after dropped OS watcher events and stress recovery.
+- Non-TS analyzer tree-sitter migration: Python, Go, Rust, and Java analyzers now import tree-sitter parsers and share `analyzeWithTreeSitter`. The remaining work is resolver/framework depth, not parser adoption.
+
+Still partial rather than complete:
+
+- Output presets: `compact` has distinct response shaping; `agent_edit`, `debug_trace`, and `review_risk` currently mostly return full reports.
+- `expand_node`: file card, skeleton, focused body, and full body exist; exact language-aware AST expansion packs remain future work.
+- Citation and reuse evidence: citation fields, `whyReuse`, and `duplicateRisk` exist; normalized evidence across every edge/source and strict duplicate detection remain future work.
 
 ### Why These Are Deferred
 
@@ -74,7 +111,7 @@ Most of the gaps are not blocked by feasibility. They were deferred deliberately
 | --- | --- | --- |
 | Correctness risk | dataflow, dynamic dispatch, same-name disambiguation, non-TS cross-file resolution | Wrong graph edges are worse than missing edges. The base slice prefers explicit missing evidence over invented high-confidence paths. |
 | Operational risk | watcher daemon, background indexing, embedding queues, LanceDB migration/repair | These can run continuously, consume paid embeddings, or mutate durable state. They need stronger scheduling, rate limits, retry, and recovery semantics before being automatic. |
-| Dependency choice | tree-sitter per language, language servers, watcher libraries, framework-specific parsers | Adding parser/runtime dependencies too early can lock the architecture. The analyzer plugin seam landed first so each dependency can be evaluated per language. |
+| Dependency choice | language servers, watcher supervision/runtime choices, framework-specific parsers/resolvers | Parser adoption has started with tree-sitter for Python/Go/Rust/Java. The remaining dependency choices are resolver depth, LSP integration, framework modules, and production watcher/runtime behavior. |
 | Scale uncertainty | large repos, monorepos, generated files, concurrent writes | Synthetic tests prove behavior, not performance ceilings. The next pass needs stress fixtures and instrumentation before optimizing hot paths. |
 | Product contract maturity | output presets, reuse guard, enough-context verdicts, review-risk summaries | The base slice establishes raw contracts. The product-shaped response layer should be driven by real agent traces so it does not become decorative JSON. |
 | Evaluation coverage | false positives, dynamic routes, incorrect reuse, wrong tests, real embedding quality | Current eval proves several graph-only wins, but not enough negative cases. Harder automation needs stricter eval first. |
@@ -82,23 +119,50 @@ Most of the gaps are not blocked by feasibility. They were deferred deliberately
 The practical split is:
 
 - Base slice completed: enough to run the engine, call tools, get verified subgraphs, detect obvious reuse, and measure wins over grep.
-- Deferred intentionally: anything that needs background automation, deeper language semantics, framework-specific precision, or strong false-positive guarantees.
+- Deferred intentionally: anything that needs production-grade background automation, deeper language semantics, framework-specific precision, or strong false-positive guarantees.
 - Not a blocker: none of the listed gaps require a redesign of the current foundation. They should extend the current contracts rather than replace them.
+
+## Benchmark-Driven Optimization Items
+
+Checked on 2026-06-09 with warmed local sample repositories.
+
+The audit gate proves the base slice. The real repository benchmark matrix shows where the next quality work should go.
+
+Current warmed benchmark observations:
+
+- `bun run benchmark -- --suite core --reuse-index --assert` currently cannot complete because `payload` has no persisted index yet. This is a benchmark-readiness item, not a retrieval-quality result.
+- `vite` gated case passes. Diagnostic `vite-resolve-plugins` still misses `packages/vite/src/node/plugins/index.ts` and `packages/vite/src/node/build.ts`.
+- `hono-compose-middleware` passes. `hono-context-request` still misses `src/request.ts`.
+- `tanstack-query` has two gated failures:
+  - `tanstack-react-use-query`: `packages/query-core/src/queryObserver.ts` appears at rank 7, but the gate requires rank <= 6.
+  - `tanstack-query-cache-notify`: `packages/query-core/src/notifyManager.ts` is missing.
+- `shadcn-ui` has one gated failure:
+  - `shadcn-add-registry-resolver`: `packages/shadcn/src/commands/add.ts` is missing while `packages/shadcn/src/registry/resolver.ts` is present.
+
+Next optimization queue:
+
+1. `hono-context-request`: improve request/context relationship retrieval so `src/request.ts` is paired with `src/context.ts` instead of being displaced by helper/middleware/adapter matches.
+2. `tanstack-query`: add package/core ownership signals so core files such as `queryObserver.ts` and `notifyManager.ts` are not displaced by adapter packages or examples.
+3. `shadcn-ui`: add command-owner and package-scope signals so CLI command files outrank app/example semantic noise when the query asks for a command.
+4. `payload`: build or repair the persisted benchmark index so it participates in warmed core gates.
+5. Re-run warmed core matrix and promote the gate only after all indexed core repositories pass.
+
+Do not start deeper dynamic dataflow or framework-specific expansion until this owner-quality queue is green. Otherwise new graph depth will amplify the same ranking failures.
 
 ### Runtime And Indexing
 
 - Long-running filesystem watcher daemon:
-  - Current state: `record_file_events` can record dirty paths, coalesce bursts, and persist watcher state.
-  - Missing: a daemon/service that watches project roots continuously, survives restarts, and triggers background indexing.
+  - Current state: `FileWatchDaemon` watches project roots through `chokidar`, records events into `FileEventJournal`, replays journal paths on start, and is exposed by CLI `watch`.
+  - Still missing/hardening: process supervision, long soak tests, dropped-event reconciliation, restart semantics under crashes, and operational guidance for always-on use.
 - Background batch index scheduler:
-  - Current state: refresh/index commands are explicit.
-  - Missing: dirty-file queue worker, batch sizing, retry/backoff, embedding rate limits, and progress reporting for long-running updates.
+  - Current state: `WatchIndexScheduler` schedules quiet-period background refreshes, marks dirty files as indexing, calls `refreshIndex`, and reschedules while pending/indexing files remain.
+  - Still missing/hardening: retry/backoff, embedding rate limits, richer progress reporting, tuned batch sizing, and large-repo concurrency controls.
 - True affected-file analysis:
   - Current state: persisted writes are incremental; unchanged graph/vector rows are preserved.
   - Missing: analyzer/resolver work is still broad. It does not yet recompute only the changed file plus dependency neighbors.
 - Watcher event journal replay:
-  - Current state: dirty files are persisted.
-  - Missing: append-only event journal, replay on process restart, and reconciliation after dropped OS watcher events.
+  - Current state: `FileEventJournal` appends JSONL events, replays paths, and is replayed/truncated by `FileWatchDaemon`.
+  - Still missing/hardening: reconciliation scans after dropped OS watcher events, journal compaction/retention policy, and stress coverage for crash/restart windows.
 - Large-repo stress and concurrency controls:
   - Current state: base tests use small synthetic fixtures.
   - Missing: limits for parallel analyzer jobs, concurrent LanceDB writes, very large file counts, permission errors, path-case changes, and generated directory churn.
@@ -181,8 +245,8 @@ The practical split is:
 ### Multi-Language Structural Support
 
 - Tree-sitter-backed analyzers:
-  - Current state: Python/Go/Rust/Java use lightweight static extraction.
-  - Missing: real parsers with robust syntax handling, comments/docstrings, nested symbols, decorators/annotations, generics, traits/interfaces, and error-tolerant parsing.
+  - Current state: Python/Go/Rust/Java use tree-sitter parsers through `analyzeWithTreeSitter`.
+  - Still missing/hardening: richer syntax coverage for comments/docstrings, nested symbols, decorators/annotations, generics, traits/interfaces, parser-error reporting, and per-language golden evals.
 - Cross-file resolution for non-TS languages:
   - Current state: non-TS calls/imports are mostly local/unresolved graph facts.
   - Missing: import/package/module resolution, symbol definition resolution, call target resolution, and alias handling.
@@ -252,7 +316,7 @@ Acceptance:
 
 ### Phase 0C: Watcher And Burst-Change Resistance
 
-Status: completed base slice on 2026-06-08. The runtime now has a reusable event coalescer, persisted dirty-file state, burst-mode/dropped-event accounting, `record_file_events` MCP support, CLI `record-events` and `status` commands, and `index_status`/context freshness surfaces that report dirty pending files across process restarts. Retrieval filters dirty indexed files while continuing to serve clean last-known-good indexed context. A long-running OS file watcher daemon, dirty-event journal replay worker, and background batch index scheduler remain the next optimization layer.
+Status: completed base slice on 2026-06-09. The runtime now has a reusable event coalescer, persisted dirty-file state, burst-mode/dropped-event accounting, `record_file_events` MCP support, CLI `record-events` and `status` commands, and `index_status`/context freshness surfaces that report dirty pending files across process restarts. Retrieval filters dirty indexed files while continuing to serve clean last-known-good indexed context. The long-running `FileWatchDaemon`, `FileEventJournal` replay, and `WatchIndexScheduler` are also implemented as base behavior. The next optimization layer is production hardening: supervision, stress tests, dropped-event reconciliation, retry/backoff, embedding-rate limits, and large-repo concurrency controls.
 
 - Add a repository watcher service after changed-file indexing exists:
   - watch project roots;
@@ -423,7 +487,7 @@ Acceptance:
 
 Goal: add languages without rewriting the core graph, retrieval, or context pack pipeline.
 
-Status: completed base slice on 2026-06-08. The analyzer plugin interface, registry, fallback analyzer, and TypeScript/JavaScript reference analyzer are in place. Python, Go, Rust, and Java now produce non-trivial symbols/imports/exports/calls instead of falling back to 80-line chunks only. These analyzers are intentionally lightweight static extractors; richer resolver/framework passes remain future hardening work.
+Status: completed base slice on 2026-06-09. The analyzer plugin interface, registry, fallback analyzer, and TypeScript/JavaScript reference analyzer are in place. Python, Go, Rust, and Java now use tree-sitter-backed analyzers that produce non-trivial symbols/imports/exports/calls instead of falling back to 80-line chunks only. These analyzers are intentionally syntax extractors, not full LSP/cross-file resolvers; richer resolver/framework passes remain future hardening work.
 
 Deliverables:
 

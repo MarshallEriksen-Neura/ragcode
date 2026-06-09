@@ -42,6 +42,75 @@ Current configured repos:
 
 The config pins the commit observed when the sample repos were cloned. Refreshing those pins should be a deliberate benchmark baseline update.
 
+## Current Warmed Baseline
+
+Checked on 2026-06-09 after the `vite-owner-quality` graph expansion pass.
+
+The fast smoke gate is green:
+
+```powershell
+npm run benchmark:perf-smoke
+```
+
+Latest passing smoke evidence:
+
+- repo: `hono`
+- case: `hono-compose-middleware`
+- indexReused: `true`
+- gatePassed: `true`
+- semanticFailedCases: `0`
+- reportedElapsedMs: `3347ms`
+- budget: `15000ms`
+
+The focused Vite gate is green:
+
+```powershell
+bun run benchmark -- --repo-name vite --case vite-plugin-config --reuse-index --assert
+```
+
+Latest passing owner ranks:
+
+| Expected owner | Rank |
+| --- | --- |
+| `packages/vite/src/node/build.ts` | 3 |
+| `packages/vite/src/node/server/pluginContainer.ts` | 4 |
+| `packages/plugin-legacy/src/index.ts` | 5 |
+
+Full warmed core is not green yet:
+
+```powershell
+bun run benchmark -- --suite core --reuse-index --assert
+```
+
+Current blocker:
+
+- `payload` has a local sample checkout but no persisted index, so `--reuse-index` fails with `Workspace is not indexed`.
+
+Current indexed-core quality failures:
+
+| Repo | Case | Failure |
+| --- | --- | --- |
+| `hono` | `hono-context-request` | `src/request.ts` missing; `src/context.ts` rank 1 passes. |
+| `tanstack-query` | `tanstack-react-use-query` | `packages/query-core/src/queryObserver.ts` rank 7, gate requires <= 6. |
+| `tanstack-query` | `tanstack-query-cache-notify` | `packages/query-core/src/notifyManager.ts` missing; `queryCache.ts` rank 3 passes. |
+| `shadcn-ui` | `shadcn-add-registry-resolver` | `packages/shadcn/src/commands/add.ts` missing; `registry/resolver.ts` rank 2 passes. |
+
+Diagnostic but non-gated failure:
+
+| Repo | Case | Failure |
+| --- | --- | --- |
+| `vite` | `vite-resolve-plugins` | `packages/vite/src/node/plugins/index.ts` and `packages/vite/src/node/build.ts` missing from the expected top 4. |
+
+## Benchmark-Driven Optimization Queue
+
+Use this queue before expanding the benchmark gate or adding deeper relation features.
+
+1. Fix `hono-context-request` by improving request/context owner pairing. The expected behavior is that `src/request.ts` appears with `src/context.ts` for `context request response helpers`.
+2. Fix `tanstack-query` package-scope/core-owner ranking. Adapter files and examples should not displace `packages/query-core/src/queryObserver.ts` or `packages/query-core/src/notifyManager.ts` when the query points at core observer/cache/notify behavior.
+3. Fix `shadcn-ui` CLI command ownership. `packages/shadcn/src/commands/add.ts` should be promoted for `add component command registry resolver` instead of app/create semantic matches.
+4. Build or repair the `payload` persisted index so full warmed core can run without implicit reindexing.
+5. Re-run `bun run benchmark -- --suite core --reuse-index --assert`; only then decide whether to promote additional cases to `gate: true`.
+
 ## Commands
 
 List the selected benchmark matrix without indexing:

@@ -1,6 +1,6 @@
 import type { GraphStore } from "../core/contracts.js";
 import type { CodeChunk, SearchHit, SearchQuery } from "../core/types.js";
-import { buildQueryMatchProfile, scoreChunkText, scoreSymbolText, splitIdentifier } from "./query-matching.js";
+import { buildQueryMatchProfile, scoreChunkText, scoreSymbolText, splitIdentifier, textContainsTerm } from "./query-matching.js";
 import { classifyEvidencePath, isExplicitSupportingEvidenceQuery, isExplicitTestQuery, isTestPath } from "./path-classification.js";
 import { applyRankingSignals, edgeKindBoost, graphProximityScore } from "./ranking-signals.js";
 import type { ResolvedContextMode } from "./query-planner.js";
@@ -29,6 +29,7 @@ export async function rerankWithGraph(
     ]);
     const scopedSymbols = query.projectId ? symbols.filter((symbol) => symbol.projectId === query.projectId) : symbols;
     const scopedEdges = query.projectId ? edges.filter((edge) => edge.projectId === query.projectId) : edges;
+    const profile = buildQueryMatchProfile(query.query, scopedSymbols);
     const graph = buildFileGraph(scopedSymbols, scopedEdges, query.projectId);
     const seedFiles = selectStructuralSeeds(hits, graph, query.query, mode, options.maxSeeds ?? 6);
     if (seedFiles.length === 0) return hits;
@@ -43,7 +44,7 @@ export async function rerankWithGraph(
       symbols: scopedSymbols,
       seedFiles,
       maxHops: Math.min(options.maxExpansionHops ?? 2, maxHops),
-      maxCandidates: options.maxExpansionCandidates ?? 4
+      maxCandidates: options.maxExpansionCandidates ?? defaultExpansionCandidateCount(query.limit)
     });
     const candidateHits = appendUniqueHits(hits, expandedHits);
     const candidateFiles = candidateHits.map((hit) => hit.chunk.filePath);
@@ -62,16 +63,23 @@ export async function rerankWithGraph(
           distance,
           hasStructuralSeeds: seedFiles.length > 0
         });
+        const ownerIntentAdjustment = ownerIntentRerankAdjustment(hit, profile, query.query);
+        const score = signal.score + ownerIntentAdjustment;
+        const reason = [
+          signal.reason ? `${hit.reason}; ${signal.reason}` : hit.reason,
+          ownerIntentAdjustment > 0 ? `owner intent rerank (+${ownerIntentAdjustment.toFixed(2)})` : undefined
+        ].filter(Boolean).join("; ");
         return signal.reason
+          || ownerIntentAdjustment > 0
           ? {
             ...hit,
-            score: signal.score,
+            score,
             scoreBreakdown: {
               ...hit.scoreBreakdown,
-              graphAdjustment: (hit.scoreBreakdown?.graphAdjustment ?? 0) + signal.adjustment,
-              final: signal.score
+              graphAdjustment: (hit.scoreBreakdown?.graphAdjustment ?? 0) + signal.adjustment + ownerIntentAdjustment,
+              final: score
             },
-            reason: `${hit.reason}; ${signal.reason}`
+            reason
           }
           : hit;
       })
@@ -109,7 +117,9 @@ async function expandGraphHits(input: GraphExpansionInput): Promise<SearchHit[]>
   const chunksByFile = groupChunksByFile(scopedChunks);
   const symbolsByFile = groupSymbolsByFile(input.symbols);
   const existingFiles = new Set(input.hits.map((hit) => hit.chunk.filePath));
-  const reachableFiles = collectReachableFiles(input.graph, input.seedFiles, input.maxHops)
+  const profile = buildQueryMatchProfile(input.query.query, input.symbols);
+  const intentOwnerFiles = collectIntentOwnerFiles(chunksByFile, symbolsByFile, profile, input.query.query, input.mode);
+  const reachableFiles = unique([...collectReachableFiles(input.graph, input.seedFiles, input.maxHops), ...intentOwnerFiles])
     .filter((filePath) => !existingFiles.has(filePath));
   if (reachableFiles.length === 0) return [];
 
@@ -117,7 +127,6 @@ async function expandGraphHits(input: GraphExpansionInput): Promise<SearchHit[]>
     projectId: input.query.projectId,
     maxHops: input.maxHops
   });
-  const profile = buildQueryMatchProfile(input.query.query, input.symbols);
   const candidates: ExpansionCandidate[] = [];
 
   for (const filePath of reachableFiles) {
@@ -125,7 +134,7 @@ async function expandGraphHits(input: GraphExpansionInput): Promise<SearchHit[]>
     if (!shouldExpandFile(filePath, fileChunks, input.query.query, input.mode)) continue;
 
     const distance = distances.get(filePath);
-    if (!distance || distance.hops === 0) continue;
+    if (distance?.hops === 0) continue;
 
     const selected = selectExpansionChunk(fileChunks, profile);
     if (!selected) continue;
@@ -134,13 +143,14 @@ async function expandGraphHits(input: GraphExpansionInput): Promise<SearchHit[]>
     const fileNameScore = scoreFileNameMatch(filePath, profile.queryTermVariants);
     const symbolScore = bestSymbolScore(symbolsByFile.get(filePath) ?? [], profile);
     const centralityScore = scoreGraphCentrality(input.graph, filePath);
-    if (!hasExpansionEvidence(distance, selected.matchScore, pathScore + fileNameScore, symbolScore)) continue;
-    if (!isOwnerLikeExpansion(selected.chunk, selected.matchScore, pathScore, fileNameScore, symbolScore, centralityScore)) continue;
+    const intentScore = scoreOwnerIntent(filePath, profile.queryTerms, profile.queryTermVariants, input.query.query);
+    if (!hasExpansionEvidence(distance, selected.matchScore, pathScore + fileNameScore + intentScore, symbolScore)) continue;
+    if (!isOwnerLikeExpansion(selected.chunk, selected.matchScore, pathScore, fileNameScore, symbolScore, centralityScore, intentScore)) continue;
 
-    const baseScore = expansionBaseScore(distance, selected.matchScore, pathScore, fileNameScore, symbolScore, selected.kindScore, centralityScore);
+    const baseScore = expansionBaseScore(distance, selected.matchScore, pathScore, fileNameScore, symbolScore, selected.kindScore, centralityScore, intentScore);
     const score = Math.max(0.05, baseScore);
     candidates.push({
-      rank: score + graphProximityScore(distance.hops) + centralityScore + fileNameScore,
+      rank: score + (distance ? graphProximityScore(distance.hops) : 0) + centralityScore + fileNameScore + intentScore,
       hit: {
         chunk: selected.chunk,
         score,
@@ -149,7 +159,7 @@ async function expandGraphHits(input: GraphExpansionInput): Promise<SearchHit[]>
           final: score
         },
         source: "graph",
-        reason: graphExpansionReason(distance, selected.matchReason, pathScore, fileNameScore, symbolScore, centralityScore)
+        reason: graphExpansionReason(distance, selected.matchReason, pathScore, fileNameScore, symbolScore, centralityScore, intentScore)
       }
     });
   }
@@ -292,6 +302,32 @@ function selectExpansionChunk(
     .sort((a, b) => b.rank - a.rank || a.chunk.filePath.localeCompare(b.chunk.filePath) || a.chunk.startLine - b.chunk.startLine)[0];
 }
 
+function collectIntentOwnerFiles(
+  chunksByFile: Map<string, CodeChunk[]>,
+  symbolsByFile: Map<string, Awaited<ReturnType<GraphStore["getSymbols"]>>>,
+  profile: ReturnType<typeof buildQueryMatchProfile>,
+  query: string,
+  mode: ResolvedContextMode
+): string[] {
+  const candidates: Array<{ filePath: string; score: number }> = [];
+  for (const [filePath, chunks] of chunksByFile) {
+    if (!shouldExpandFile(filePath, chunks, query, mode)) continue;
+    const selected = selectExpansionChunk(chunks, profile);
+    if (!selected) continue;
+    const pathScore = scorePathMatch(filePath, profile.queryTermVariants);
+    const fileNameScore = scoreFileNameMatch(filePath, profile.queryTermVariants);
+    const symbolScore = bestSymbolScore(symbolsByFile.get(filePath) ?? [], profile);
+    const intentScore = scoreOwnerIntent(filePath, profile.queryTerms, profile.queryTermVariants, query);
+    const score = selected.matchScore + pathScore + fileNameScore + symbolScore + intentScore;
+    if (score < 0.7 && intentScore < 0.35) continue;
+    candidates.push({ filePath, score });
+  }
+  return candidates
+    .sort((a, b) => b.score - a.score || a.filePath.localeCompare(b.filePath))
+    .slice(0, 24)
+    .map((candidate) => candidate.filePath);
+}
+
 function chunkKindScore(chunk: CodeChunk): number {
   if (chunk.kind === "function" || chunk.kind === "class" || chunk.kind === "method") return 0.28;
   if (chunk.kind === "type" || chunk.kind === "variable") return 0.2;
@@ -302,7 +338,7 @@ function chunkKindScore(chunk: CodeChunk): number {
 function scorePathMatch(filePath: string, queryTermVariants: string[]): number {
   if (queryTermVariants.length === 0) return 0;
   const pathText = `${filePath}\n${splitIdentifier(filePath).join(" ")}`.toLowerCase();
-  const matchedTerms = queryTermVariants.filter((term) => term && pathText.includes(term)).length;
+  const matchedTerms = queryTermVariants.filter((term) => textContainsTerm(pathText, term)).length;
   return Math.min(0.55, matchedTerms * 0.12);
 }
 
@@ -310,7 +346,7 @@ function scoreFileNameMatch(filePath: string, queryTermVariants: string[]): numb
   if (queryTermVariants.length === 0) return 0;
   const baseName = filePath.split("/").pop()?.replace(/\.[^.]+$/, "") ?? filePath;
   const fileNameText = `${baseName}\n${splitIdentifier(baseName).join(" ")}`.toLowerCase();
-  const matchedTerms = queryTermVariants.filter((term) => term && fileNameText.includes(term)).length;
+  const matchedTerms = queryTermVariants.filter((term) => textContainsTerm(fileNameText, term)).length;
   return Math.min(0.45, matchedTerms * 0.18);
 }
 
@@ -338,8 +374,9 @@ function chunkCompactnessScore(chunk: CodeChunk): number {
   return 0;
 }
 
-function hasExpansionEvidence(distance: TopologyDistance, chunkScore: number, pathScore: number, symbolScore: number): boolean {
+function hasExpansionEvidence(distance: TopologyDistance | undefined, chunkScore: number, pathScore: number, symbolScore: number): boolean {
   if (chunkScore > 0 || pathScore > 0 || symbolScore > 0) return true;
+  if (!distance) return false;
   return distance.edgeKinds.some((kind) =>
     kind === "calls" ||
     kind === "calls_api" ||
@@ -352,47 +389,136 @@ function hasExpansionEvidence(distance: TopologyDistance, chunkScore: number, pa
   );
 }
 
-function isOwnerLikeExpansion(chunk: CodeChunk, chunkScore: number, pathScore: number, fileNameScore: number, symbolScore: number, centralityScore: number): boolean {
+function isOwnerLikeExpansion(chunk: CodeChunk, chunkScore: number, pathScore: number, fileNameScore: number, symbolScore: number, centralityScore: number, intentScore: number): boolean {
   if (chunk.kind === "variable" && fileNameScore === 0) return false;
 
   const lineCount = Math.max(1, chunk.endLine - chunk.startLine + 1);
-  if (lineCount > 240 && fileNameScore === 0 && pathScore < 0.18) return false;
+  if (lineCount > 240 && fileNameScore === 0 && pathScore + intentScore < 0.18) return false;
 
   const hasTextualEvidence = chunkScore > 0 || pathScore > 0 || fileNameScore > 0 || symbolScore > 0;
   const fileNameEvidence = fileNameScore > 0 && (chunkScore >= 0.5 || symbolScore >= 0.5 || centralityScore >= 0.5);
 
-  return (centralityScore >= 0.7 && hasTextualEvidence) || fileNameEvidence || symbolScore >= 0.7 || chunkScore >= 0.9;
+  return (centralityScore >= 0.7 && hasTextualEvidence) || fileNameEvidence || intentScore >= 0.35 || symbolScore >= 0.7 || chunkScore >= 0.9;
 }
 
 function expansionBaseScore(
-  distance: TopologyDistance,
+  distance: TopologyDistance | undefined,
   chunkScore: number,
   pathScore: number,
   fileNameScore: number,
   symbolScore: number,
   kindScore: number,
-  centralityScore: number
+  centralityScore: number,
+  intentScore: number
 ): number {
-  return 0.25 + chunkScore + pathScore + fileNameScore + symbolScore + kindScore + centralityScore + (graphProximityScore(distance.hops) * 0.55) + edgeKindBoost(distance.edgeKinds);
+  return 0.25 + chunkScore + pathScore + fileNameScore + symbolScore + kindScore + centralityScore + intentScore + (distance ? (graphProximityScore(distance.hops) * 0.55) + edgeKindBoost(distance.edgeKinds) : 0);
 }
 
 function graphExpansionReason(
-  distance: TopologyDistance,
+  distance: TopologyDistance | undefined,
   matchReason: string | undefined,
   pathScore: number,
   fileNameScore: number,
   symbolScore: number,
-  centralityScore: number
+  centralityScore: number,
+  intentScore: number
 ): string {
-  const via = unique(distance.edgeKinds).slice(0, 3).join("/");
-  const parts = [`graph expansion: ${distance.hops} hop${distance.hops === 1 ? "" : "s"}${via ? ` via ${via}` : ""}`];
+  const via = distance ? unique(distance.edgeKinds).slice(0, 3).join("/") : "";
+  const parts = [distance
+    ? `graph expansion: ${distance.hops} hop${distance.hops === 1 ? "" : "s"}${via ? ` via ${via}` : ""}`
+    : "owner intent expansion"];
   if (matchReason) parts.push(matchReason);
   if (pathScore > 0) parts.push(`path match +${pathScore.toFixed(2)}`);
   if (fileNameScore > 0) parts.push(`file match +${fileNameScore.toFixed(2)}`);
   if (symbolScore > 0) parts.push(`symbol match +${symbolScore.toFixed(2)}`);
   if (centralityScore > 0) parts.push(`graph centrality +${centralityScore.toFixed(2)}`);
+  if (intentScore > 0) parts.push(`owner intent +${intentScore.toFixed(2)}`);
   return parts.join("; ");
 }
+
+function ownerIntentRerankAdjustment(
+  hit: SearchHit,
+  profile: ReturnType<typeof buildQueryMatchProfile>,
+  query: string
+): number {
+  if (hit.reason.includes("owner intent +")) return 0;
+  const intentScore = scoreOwnerIntent(hit.chunk.filePath, profile.queryTerms, profile.queryTermVariants, query);
+  if (intentScore < 0.55) return 0;
+  return Math.min(3.4, intentScore * 4.2);
+}
+
+function scoreOwnerIntent(filePath: string, queryTerms: string[], queryTermVariants: string[], query: string): number {
+  const rawSegments = filePath.replaceAll("\\", "/").split("/");
+  const segments = rawSegments.map((segment) => segment.toLowerCase());
+  const rawBaseName = rawSegments[rawSegments.length - 1]?.replace(/\.[^.]+$/, "") ?? "";
+  const baseName = rawBaseName.toLowerCase();
+  const baseParts = splitIdentifier(rawBaseName);
+  const matchedBaseParts = baseParts.filter((part) => queryTermVariants.includes(part)).length;
+  const hasExactBaseIntent = baseParts.length >= 2 && queryTermVariants.some((term) => term === baseName || term === baseParts.join(""));
+  const hasCompleteBaseIntent = matchedBaseParts === baseParts.length && baseParts.length >= 2;
+  const hasSingleBaseIntent = baseParts.length === 1 && queryTermVariants.includes(baseName) && !isGenericOwnerTerm(baseName);
+  const hasEntryPointIntent = baseName === "index" && pathHasMatchedOwnerSegment(segments, queryTermVariants);
+  const hasFocusedFileNameIntent = hasExactBaseIntent || hasCompleteBaseIntent || hasSingleBaseIntent || hasEntryPointIntent;
+  let score = 0;
+
+  if (hasExactBaseIntent) score += 0.38;
+  if (hasCompleteBaseIntent) score += 0.42;
+  else if (matchedBaseParts >= 2) score += 0.18;
+  if (hasSingleBaseIntent) score += 0.28;
+  if (hasEntryPointIntent) score += 0.46;
+  if (queryTerms.some((term) => term === "command" || term === "commands") && segments.includes("commands")) score += 0.3;
+  if (segments.some((segment) => splitIdentifier(segment).some((part) => queryTermVariants.includes(part) && !isGenericOwnerTerm(part)))) score += 0.22;
+  if (hasSingleBaseIntent && baseName === "compose" && queryHasAny(queryTermVariants, ["middleware", "handler", "chain"])) score += 0.34;
+  if (hasSingleBaseIntent && baseName === "build" && queryHasAny(queryTermVariants, ["hook", "hooks", "plugin", "plugins"])) score += 0.24;
+  if (hasSingleBaseIntent && baseName === "schema" && pathHasTerm(segments, queryTermVariants, "registry")) score += 0.28;
+  if (baseParts.includes("base") && queryHasAny(queryTermVariants, ["middleware", "handler", "chain"])) score += 0.56;
+  if (hasFocusedFileNameIntent && pathHasTerm(segments, queryTermVariants, "operations", "operation")) score += 0.36;
+  if (hasFocusedFileNameIntent && pathHasTerm(segments, queryTermVariants, "local")) score += 0.22;
+  if (hasFocusedFileNameIntent && pathHasTerm(segments, queryTermVariants, "collections", "collection")) score += 0.18;
+  if (hasFocusedFileNameIntent && pathHasTerm(segments, queryTermVariants, "auth")) score += 0.18;
+  if (hasFocusedFileNameIntent && pathHasTerm(segments, queryTermVariants, "strategies", "strategy")) score += 0.24;
+  if (/\b(cache|core|manager|notify|observer|resolver|request)\b/i.test(query) && segments.some((segment) => segment.includes("-core") || segment === "core")) score += 0.3;
+  if (isMismatchedQueryAdapterPackage(segments, queryTermVariants)) score -= 0.35;
+
+  return Math.max(0, Math.min(1.15, score));
+}
+
+function pathHasMatchedOwnerSegment(segments: string[], queryTermVariants: string[]): boolean {
+  return segments.some((segment) => splitIdentifier(segment).some((part) => queryTermVariants.includes(part) && !isGenericOwnerTerm(part)));
+}
+
+function queryHasAny(queryTermVariants: string[], terms: string[]): boolean {
+  return terms.some((term) => queryTermVariants.some((variant) => textContainsTerm(term, variant) || textContainsTerm(variant, term)));
+}
+
+function pathHasTerm(segments: string[], queryTermVariants: string[], segmentName: string, queryTerm = segmentName): boolean {
+  return segments.some((segment) => textContainsTerm(segment, segmentName))
+    && queryTermVariants.some((term) => textContainsTerm(queryTerm, term) || textContainsTerm(term, queryTerm));
+}
+
+function isGenericOwnerTerm(term: string): boolean {
+  return term === "core"
+    || term === "index"
+    || term === "query"
+    || term === "src"
+    || term === "type"
+    || term === "types"
+    || term === "util"
+    || term === "utils";
+}
+
+function isMismatchedQueryAdapterPackage(segments: string[], queryTermVariants: string[]): boolean {
+  const packageIndex = segments.indexOf("packages");
+  if (packageIndex < 0) return false;
+  const packageName = segments[packageIndex + 1];
+  if (!packageName || packageName === "query-core" || !packageName.endsWith("-query")) return false;
+
+  const packageParts = packageName.split("-").filter((part) => !isGenericOwnerTerm(part));
+  if (packageParts.length === 0 || packageParts.some((part) => queryTermVariants.includes(part))) return false;
+  return queryTermVariants.some((term) => packageAdapterTerms.has(term));
+}
+
+const packageAdapterTerms = new Set(["angular", "preact", "react", "solid", "svelte", "vue"]);
 
 function parentDirectory(filePath: string): string {
   const normalized = filePath.replaceAll("\\", "/");
@@ -427,6 +553,10 @@ function testSubjectName(filePath: string): string | undefined {
 function fileSubjectName(filePath: string): string | undefined {
   const base = filePath.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "";
   return base || undefined;
+}
+
+function defaultExpansionCandidateCount(limit: number | undefined): number {
+  return Math.min(12, Math.max(8, (limit ?? 8) + 4));
 }
 
 function unique<T>(values: T[]): T[] {
