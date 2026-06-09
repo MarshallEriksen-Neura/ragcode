@@ -69,10 +69,10 @@ export class HybridRetriever {
 
 export function fuseHits(keywordHits: SearchHit[], semanticHits: SearchHit[]): SearchHit[] {
   const byChunk = new Map<string, SearchHit>();
-  for (const hit of sourceNormalizedHits(keywordHits, "keyword")) {
+  for (const hit of rankFusionHits(keywordHits, "keyword")) {
     mergeHit(byChunk, hit);
   }
-  for (const hit of sourceNormalizedHits(semanticHits, "semantic")) {
+  for (const hit of rankFusionHits(semanticHits, "semantic")) {
     mergeHit(byChunk, hit);
   }
 
@@ -86,13 +86,23 @@ export function hasSemanticParticipation(hit: SearchHit): boolean {
   return hit.source === "semantic" || /\bsemantic\b|vector similarity/i.test(hit.reason);
 }
 
-function sourceNormalizedHits(hits: SearchHit[], label: "keyword" | "semantic"): SearchHit[] {
-  const maxScore = Math.max(0, ...hits.map((hit) => hit.score));
+// Reciprocal Rank Fusion (Cormack et al. 2009). Fusion depends only on each
+// hit's rank within its own source list, not on raw score magnitude — this is
+// what lets us combine keyword (bm25, ~thousands) and semantic (cosine, 0..1)
+// scores that live on incompatible scales.
+//
+// Textbook RRF is 1/(k+rank), which tops out around 1/k (~0.016 at k=60) —
+// two orders of magnitude below the downstream modeBoost (~0.2-0.65) and
+// graphAdjustment (~0.15-2.5) that get *added* to the fused score later. To
+// keep the fused score on the same ~0..1 scale those boosts were tuned
+// against, we use the order-preserving variant k/(k+rank), which tops out near
+// 1.0. Scaling by a constant is monotonic, so it does not change RRF ranking.
+const RRF_K = 60;
+
+function rankFusionHits(hits: SearchHit[], label: "keyword" | "semantic"): SearchHit[] {
   return hits.map((hit, index) => {
     const rank = index + 1;
-    const normalizedScore = maxScore > 0 ? hit.score / maxScore : 0;
-    const reciprocalRank = 1 / rank;
-    const score = (normalizedScore * 0.75) + (reciprocalRank * 0.75);
+    const score = RRF_K / (RRF_K + rank);
     return {
       ...hit,
       score,
@@ -102,7 +112,7 @@ function sourceNormalizedHits(hits: SearchHit[], label: "keyword" | "semantic"):
         sourceNormalized: score,
         final: score
       },
-      reason: `${hit.reason}; rank fusion ${label} rank ${rank} normalized=${normalizedScore.toFixed(3)}`
+      reason: `${hit.reason}; rank fusion ${label} rank ${rank} rrf=${score.toFixed(3)}`
     };
   });
 }

@@ -86,6 +86,22 @@ Run only gated cases:
 bun run benchmark -- --gate-only
 ```
 
+Reuse an existing persisted index instead of rebuilding graph/LanceDB state:
+
+```powershell
+bun run benchmark -- --repo-name hono --case hono-compose-middleware --reuse-index
+```
+
+`--skip-index` is accepted as an alias for `--reuse-index`. This mode is intended for warmed local tuning loops. It fails if the repo has not already been indexed.
+
+Run the warmed-index performance smoke gate:
+
+```powershell
+npm run benchmark:perf-smoke
+```
+
+The smoke gate currently runs the Hono middleware case with `--reuse-index`, requires the gated case and semantic diagnostics to pass, verifies the report used an existing index, and enforces a 15 second local wall-time budget. Use it for fast iteration before running broader matrix checks.
+
 Run the matrix as a gate. This exits non-zero when any selected gated case fails:
 
 ```powershell

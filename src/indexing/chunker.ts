@@ -19,6 +19,52 @@ export interface ChunkOptions {
 }
 
 export async function chunkFiles(repoRoot: string, files: CodeFile[], options: ChunkOptions = {}): Promise<ChunkingResult> {
+  const analyzed = await analyzeFiles(repoRoot, files);
+  return {
+    chunks: analyzed.chunks,
+    symbols: analyzed.symbols,
+    edges: resolveChunkEdges(repoRoot, files, analyzed.sources, analyzed.symbols, analyzed.edges)
+  };
+}
+
+export async function chunkFilesIncremental(
+  repoRoot: string,
+  files: CodeFile[],
+  filesToAnalyze: CodeFile[],
+  cached: ChunkingResult,
+  options: ChunkOptions = {}
+): Promise<ChunkingResult> {
+  const analyzedPaths = new Set(filesToAnalyze.map((file) => file.path));
+  const currentPaths = new Set(files.map((file) => file.path));
+  const currentCached = filterCachedChunking(cached, currentPaths, analyzedPaths);
+  if (analyzedPaths.size === 0) return currentCached;
+
+  const analyzed = await analyzeFiles(repoRoot, filesToAnalyze);
+  const chunks = [
+    ...currentCached.chunks,
+    ...analyzed.chunks
+  ];
+  const symbols = [
+    ...currentCached.symbols,
+    ...analyzed.symbols
+  ];
+  const refreshedEdges = resolveChunkEdges(repoRoot, files, analyzed.sources, symbols, analyzed.edges)
+    .filter((edge) => {
+      const sourceFile = edgeSourceFile(edge);
+      return sourceFile ? analyzedPaths.has(sourceFile) : false;
+    });
+
+  return { chunks, symbols, edges: dedupeEdges([...currentCached.edges, ...refreshedEdges]) };
+}
+
+interface AnalyzedFiles {
+  chunks: CodeChunk[];
+  symbols: SymbolNode[];
+  edges: GraphEdge[];
+  sources: TypeScriptSourceFile[];
+}
+
+async function analyzeFiles(repoRoot: string, files: CodeFile[]): Promise<AnalyzedFiles> {
   const chunks: CodeChunk[] = [];
   const symbols: SymbolNode[] = [];
   const edges: GraphEdge[] = [];
@@ -35,10 +81,47 @@ export async function chunkFiles(repoRoot: string, files: CodeFile[], options: C
     edges.push(...analysis.edges);
   }
 
+  return { chunks, symbols, edges, sources };
+}
+
+function resolveChunkEdges(
+  repoRoot: string,
+  files: CodeFile[],
+  sources: TypeScriptSourceFile[],
+  symbols: SymbolNode[],
+  edges: GraphEdge[]
+): GraphEdge[] {
   const importResolvedEdges = resolveGraphEdges(files, symbols, edges);
   const lspResolvedEdges = resolveCallDefinitionsWithTypeScript(repoRoot, sources, symbols, importResolvedEdges);
   const testEdges = buildTestTopologyEdges(symbols, lspResolvedEdges);
   const frameworkEdges = buildFrameworkTopologyEdges(files, sources, symbols, lspResolvedEdges);
   const runtimeEdges = buildRuntimeTopologyEdges(repoRoot, files, sources, symbols);
-  return { chunks, symbols, edges: [...lspResolvedEdges, ...testEdges, ...frameworkEdges, ...runtimeEdges] };
+  return [...lspResolvedEdges, ...testEdges, ...frameworkEdges, ...runtimeEdges];
+}
+
+function edgeSourceFile(edge: GraphEdge): string | undefined {
+  return typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : undefined;
+}
+
+function filterCachedChunking(cached: ChunkingResult, currentPaths: Set<string>, analyzedPaths: Set<string>): ChunkingResult {
+  return {
+    chunks: cached.chunks.filter((chunk) => currentPaths.has(chunk.filePath) && !analyzedPaths.has(chunk.filePath)),
+    symbols: cached.symbols.filter((symbol) => currentPaths.has(symbol.filePath) && !analyzedPaths.has(symbol.filePath)),
+    edges: cached.edges.filter((edge) => {
+      const sourceFile = edgeSourceFile(edge);
+      return Boolean(sourceFile && currentPaths.has(sourceFile) && !analyzedPaths.has(sourceFile));
+    })
+  };
+}
+
+function dedupeEdges(edges: GraphEdge[]): GraphEdge[] {
+  const seen = new Set<string>();
+  const unique: GraphEdge[] = [];
+  for (const edge of edges) {
+    const key = JSON.stringify([edge.projectId, edge.sourceId, edge.targetId, edge.kind, edge.metadata ?? {}]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(edge);
+  }
+  return unique;
 }

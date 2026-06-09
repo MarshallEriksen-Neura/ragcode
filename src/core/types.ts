@@ -83,6 +83,7 @@ export interface RepoIndex {
   indexGeneration: number;
   changedFiles: string[];
   deletedFiles: string[];
+  refreshedFiles?: string[];
   fullReindex: boolean;
   files: CodeFile[];
   chunks: CodeChunk[];

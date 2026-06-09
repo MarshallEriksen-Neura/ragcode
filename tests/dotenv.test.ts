@@ -20,7 +20,11 @@ describe("dotenv runtime config", () => {
       [
         "RAGCODE_GRAPH_STORE=sqlite",
         "RAGCODE_EMBEDDING_MODEL=qwen3-embedding:latest",
-        "QUOTED_VALUE=\"hello world\""
+        "QUOTED_VALUE=\"hello world\"",
+        "export EXPORTED_VALUE=enabled",
+        "ESCAPED_VALUE=\"first\\nsecond\"",
+        "MULTILINE_VALUE=\"line one",
+        "line two\""
       ].join("\n")
     );
 
@@ -33,6 +37,9 @@ describe("dotenv runtime config", () => {
     expect(env.RAGCODE_GRAPH_STORE).toBe("memory");
     expect(env.RAGCODE_EMBEDDING_MODEL).toBe("qwen3-embedding:latest");
     expect(env.QUOTED_VALUE).toBe("hello world");
+    expect(env.EXPORTED_VALUE).toBe("enabled");
+    expect(env.ESCAPED_VALUE).toBe("first\nsecond");
+    expect(env.MULTILINE_VALUE).toBe("line one\nline two");
   });
 });
 

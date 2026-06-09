@@ -9,7 +9,7 @@ import {
   readGraphRuntimeConfig,
   readSemanticRuntimeConfig
 } from "../src/index.js";
-import type { ContextPack, RepoIndex, SearchHit } from "../src/index.js";
+import type { ContextPack, IndexStatus, RepoIndex, SearchHit } from "../src/index.js";
 
 type BenchmarkMode = "explain" | "debug" | "feature" | "refactor" | "review";
 type BenchmarkSuite = "core" | "observation";
@@ -55,6 +55,7 @@ interface BenchmarkArgs {
   assert: boolean;
   all: boolean;
   gateOnly: boolean;
+  reuseIndex: boolean;
   list: boolean;
 }
 
@@ -83,6 +84,7 @@ interface BenchmarkReport {
     semantic: ReturnType<typeof readSemanticRuntimeConfig>;
   };
   index: {
+    reused: boolean;
     elapsedMs: number;
     projectId: string;
     files: number;
@@ -90,6 +92,9 @@ interface BenchmarkReport {
     symbols: number;
     edges: number;
     skippedFiles: number;
+    staleFiles?: number;
+    pendingFiles?: number;
+    indexingFiles?: number;
   };
   semanticProfile?: unknown;
   cases: Array<{
@@ -324,7 +329,9 @@ async function runRepoBenchmark(
     startedAtMs: number;
   }
 ): Promise<BenchmarkReport> {
-  const indexTimed = await timed(() => engine.indexRepo(options.repoRoot));
+  const indexTimed = options.args.reuseIndex
+    ? await timed(() => engine.indexStatus(options.repoRoot))
+    : await timed(() => engine.indexRepo(options.repoRoot));
   const index = indexTimed.value;
   const reportCases = [];
 
@@ -363,15 +370,31 @@ async function runRepoBenchmark(
       graph: readGraphRuntimeConfig(process.env, options.args.cwd),
       semantic: readSemanticRuntimeConfig(process.env, options.args.cwd)
     },
-    index: indexReport(indexTimed, index),
+    index: indexReport(indexTimed, index, options.args.reuseIndex),
     semanticProfile: await readSemanticProfile(options.args.cwd, process.env.RAGCODE_LANCEDB_URI, process.env.RAGCODE_LANCEDB_TABLE),
     cases: reportCases,
     summary: summaryReport(options.startedAtMs, reportCases)
   };
 }
 
-function indexReport(timedIndex: Timed<RepoIndex>, index: RepoIndex): BenchmarkReport["index"] {
+function indexReport(timedIndex: Timed<RepoIndex | IndexStatus>, index: RepoIndex | IndexStatus, reused: boolean): BenchmarkReport["index"] {
+  if (isIndexStatus(index)) {
+    return {
+      reused,
+      elapsedMs: timedIndex.elapsedMs,
+      projectId: index.projectId,
+      files: index.fileCount,
+      chunks: index.chunkCount,
+      symbols: index.symbolCount,
+      edges: index.edgeCount,
+      skippedFiles: index.skippedFileCount,
+      staleFiles: index.staleFileCount,
+      pendingFiles: index.pendingFileCount,
+      indexingFiles: index.indexingFileCount
+    };
+  }
   return {
+    reused,
     elapsedMs: timedIndex.elapsedMs,
     projectId: index.projectId,
     files: index.files.length,
@@ -380,6 +403,10 @@ function indexReport(timedIndex: Timed<RepoIndex>, index: RepoIndex): BenchmarkR
     edges: index.edges.length,
     skippedFiles: index.skippedFiles.length
   };
+}
+
+function isIndexStatus(index: RepoIndex | IndexStatus): index is IndexStatus {
+  return "fileCount" in index;
 }
 
 function caseReport(
@@ -553,9 +580,15 @@ function renderMarkdown(report: BenchmarkReport): string {
   lines.push(
     "## Index",
     "",
+    `- reused: ${report.index.reused}`,
     `- elapsedMs: ${report.index.elapsedMs}`,
     `- files/chunks/symbols/edges: ${report.index.files}/${report.index.chunks}/${report.index.symbols}/${report.index.edges}`,
     `- skippedFiles: ${report.index.skippedFiles}`,
+    ...(report.index.reused ? [
+      `- staleFiles: ${report.index.staleFiles ?? 0}`,
+      `- pendingFiles: ${report.index.pendingFiles ?? 0}`,
+      `- indexingFiles: ${report.index.indexingFiles ?? 0}`
+    ] : []),
     "",
     "## Runtime",
     "",
@@ -621,6 +654,7 @@ function renderMatrixMarkdown(report: BenchmarkMatrixReport): string {
       "",
       `- suite: ${repo.suite ?? "<none>"}`,
       `- repoRoot: ${repo.repoRoot}`,
+      `- indexReused: ${repo.index.reused}`,
       `- files/chunks/symbols/edges: ${repo.index.files}/${repo.index.chunks}/${repo.index.symbols}/${repo.index.edges}`,
       `- failedCases: ${repo.summary.failedCases}/${repo.summary.cases}`,
       `- failedGatedCases: ${repo.summary.failedGatedCases}/${repo.summary.gatedCases}`,
@@ -754,6 +788,7 @@ function parseArgs(argv: string[]): BenchmarkArgs {
     assert: false,
     all: false,
     gateOnly: false,
+    reuseIndex: false,
     list: false
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -768,6 +803,8 @@ function parseArgs(argv: string[]): BenchmarkArgs {
     else if (arg === "--assert") parsed.assert = true;
     else if (arg === "--all") parsed.all = true;
     else if (arg === "--gate-only") parsed.gateOnly = true;
+    else if (arg === "--reuse-index") parsed.reuseIndex = true;
+    else if (arg === "--skip-index") parsed.reuseIndex = true;
     else if (arg === "--list") parsed.list = true;
     else throw new Error(`Unknown benchmark argument: ${arg}`);
   }

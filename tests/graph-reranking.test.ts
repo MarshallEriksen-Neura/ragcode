@@ -78,6 +78,49 @@ describe("graph-based reranking", () => {
     expect(reranked.every((candidate) => !candidate.reason.includes("graph rerank"))).toBe(true);
   });
 
+  it("adds nearby implementation files that were missing from the original hits", async () => {
+    const projectId = "project-a";
+    const symbols = [
+      symbol(projectId, "plugin", "resolvePluginConfig", "packages/vite/src/node/plugin.ts"),
+      symbol(projectId, "build", "resolveBuildPlugins", "packages/vite/src/node/build.ts"),
+      symbol(projectId, "container", "createPluginContainer", "packages/vite/src/node/server/pluginContainer.ts"),
+      symbol(projectId, "legacy", "legacyPlugin", "packages/plugin-legacy/src/index.ts")
+    ];
+    const edges: GraphEdge[] = [
+      edge(projectId, "plugin", "build", "imports", {
+        sourceFile: "packages/vite/src/node/plugin.ts",
+        targetFile: "packages/vite/src/node/build.ts"
+      }),
+      edge(projectId, "build", "container", "imports", {
+        sourceFile: "packages/vite/src/node/build.ts",
+        targetFile: "packages/vite/src/node/server/pluginContainer.ts"
+      })
+    ];
+    const chunks = [
+      codeChunk(projectId, "packages/vite/src/node/plugin.ts", "resolvePluginConfig", "export function resolvePluginConfig() { return null; }"),
+      codeChunk(projectId, "packages/vite/src/node/build.ts", "build", "export async function build(config) { return config.plugins; }"),
+      codeChunk(projectId, "packages/vite/src/node/server/pluginContainer.ts", "createPluginContainer", "export function createPluginContainer(config) { return config.plugins; }"),
+      codeChunk(projectId, "packages/plugin-legacy/src/index.ts", "legacyPlugin", "export function legacyPlugin() { return null; }")
+    ];
+    const hits: SearchHit[] = [
+      hit("packages/vite/src/node/plugin.ts", "typescript", 1.1, "keyword", "Matched plugin config owner"),
+      hit("packages/plugin-legacy/src/index.ts", "typescript", 1.0, "semantic", "Matched legacy plugin")
+    ];
+
+    const reranked = await rerankWithGraph(hits, { repoRoot: tempRoot, projectId, query: "plugin config", mode: "feature" }, "feature", {
+      graphStore: graphStore(symbols, edges, chunks),
+      maxSeeds: 1
+    });
+
+    const buildHit = requireFileHit(reranked, "packages/vite/src/node/build.ts");
+    const containerHit = requireFileHit(reranked, "packages/vite/src/node/server/pluginContainer.ts");
+
+    expect(buildHit.source).toBe("graph");
+    expect(containerHit.source).toBe("graph");
+    expect(buildHit.reason).toContain("graph expansion");
+    expect(containerHit.reason).toContain("graph expansion");
+  });
+
   it("reranks a payment-flow fixture toward real owners instead of isolated docs and mocks", async () => {
     await writePaymentFixture(tempRoot);
     const engine = new RagCodeEngine();
@@ -185,10 +228,11 @@ async function writePaymentFixture(root: string): Promise<void> {
   );
 }
 
-function graphStore(symbols: SymbolNode[], edges: GraphEdge[]): GraphStore {
+function graphStore(symbols: SymbolNode[], edges: GraphEdge[], chunks: CodeChunk[] = []): GraphStore {
   return {
     getSymbols: async () => symbols,
-    getEdges: async () => edges
+    getEdges: async () => edges,
+    getChunks: async () => chunks
   } as unknown as GraphStore;
 }
 
@@ -207,6 +251,22 @@ function symbol(projectId: string, id: string, name: string, filePath: string): 
 
 function edge(projectId: string, sourceId: string, targetId: string, kind: EdgeKind, metadata: Record<string, unknown>): GraphEdge {
   return { projectId, sourceId, targetId, kind, metadata };
+}
+
+function codeChunk(projectId: string, filePath: string, symbolName: string, content: string): CodeChunk {
+  return {
+    id: `${filePath}::${symbolName}`,
+    projectId,
+    repoRoot: tempRoot,
+    filePath,
+    language: "typescript",
+    kind: "function",
+    symbolName,
+    startLine: 1,
+    endLine: 3,
+    content,
+    contentHash: "hash"
+  };
 }
 
 function hit(filePath: string, language: CodeChunk["language"], score: number, source: SearchHit["source"], content: string): SearchHit {

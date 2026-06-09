@@ -1,4 +1,7 @@
+import snowball from "snowball-stemmers";
 import type { CodeChunk, SymbolNode } from "../core/types.js";
+
+const englishStemmer = snowball.newStemmer("english");
 
 export interface QueryMatchProfile {
   queryTerms: string[];
@@ -146,17 +149,15 @@ function expandTermVariants(terms: string[]): string[] {
   const variants = new Set<string>();
   for (const term of terms) {
     variants.add(term);
-    for (const variant of singularPluralVariants(term)) variants.add(variant);
+    const stem = stemTerm(term);
+    if (stem && stem !== term) variants.add(stem);
   }
   return [...variants];
 }
 
-function singularPluralVariants(term: string): string[] {
-  if (term.length <= 3) return [];
-  if (term.endsWith("ies")) return [term.slice(0, -3) + "y"];
-  if (term.endsWith("es")) return [term.slice(0, -2), term.slice(0, -1)];
-  if (term.endsWith("s")) return [term.slice(0, -1)];
-  return [`${term}s`];
+function stemTerm(term: string): string | undefined {
+  if (!/^[a-z]+$/i.test(term)) return undefined;
+  return englishStemmer.stem(term.toLowerCase());
 }
 
 function countMatches(text: string, terms: string[]): number {

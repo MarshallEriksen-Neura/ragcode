@@ -26,6 +26,7 @@ import { normalizeUserPath } from "../utils/path.js";
 import { SqliteStatements } from "./sqlite-statements.js";
 import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
 import { buildQueryMatchProfile, scoreChunkText, scoreSymbolText } from "../retrieval/query-matching.js";
+import { extractChangedFiles } from "./diff-files.js";
 
 export class SQLiteGraphStore implements GraphStore {
   private readonly db: DatabaseSync;
@@ -145,7 +146,7 @@ export class SQLiteGraphStore implements GraphStore {
         index.indexGeneration
       );
 
-      const changedOrDeleted = new Set(index.fullReindex ? index.files.map((file) => file.path) : [...index.changedFiles, ...index.deletedFiles]);
+      const changedOrDeleted = refreshedOrDeletedFiles(index);
       if (index.fullReindex) {
         const nextFilePaths = new Set(index.files.map((file) => file.path));
         for (const stalePath of this.filePathsForProject(index.projectId)) {
@@ -728,6 +729,10 @@ function edgeFilePath(edge: GraphEdge): string | null {
   return typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : null;
 }
 
+function refreshedOrDeletedFiles(index: RepoIndex): Set<string> {
+  return new Set(index.fullReindex ? index.files.map((file) => file.path) : [...(index.refreshedFiles ?? index.changedFiles), ...index.deletedFiles]);
+}
+
 function isTestFile(filePath: string): boolean {
   return /(^|\/)(__tests__|tests?)(\/|$)|\.(test|spec)\.[jt]sx?$/.test(filePath);
 }
@@ -738,15 +743,6 @@ function filenameTestMatches(files: CodeFile[], basename: string): Map<string, C
     if (isTestFile(file.path) && file.path.toLowerCase().includes(basename.toLowerCase())) tests.set(file.path, file);
   }
   return tests;
-}
-
-function extractChangedFiles(diff: string): string[] {
-  const files = new Set<string>();
-  for (const line of diff.split(/\r?\n/)) {
-    const match = /^\+\+\+ b\/(.+)$/.exec(line) ?? /^diff --git a\/.+ b\/(.+)$/.exec(line);
-    if (match?.[1] && match[1] !== "/dev/null") files.add(normalizeUserPath(match[1]));
-  }
-  return [...files].sort();
 }
 
 function requireRepoRoot(repoRoot: string | undefined): string {

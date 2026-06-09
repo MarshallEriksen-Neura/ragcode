@@ -1,7 +1,8 @@
 import path from "node:path";
 import type { GraphStore, Indexer, SemanticStore, EmbeddingProvider } from "../core/contracts.js";
-import type { ProjectIdentity, RepoIndex } from "../core/types.js";
-import { chunkFiles } from "./chunker.js";
+import type { CodeFile, GraphEdge, ProjectIdentity, RepoIndex } from "../core/types.js";
+import { resolveImportPath } from "../topology/import-resolver.js";
+import { chunkFiles, chunkFilesIncremental } from "./chunker.js";
 import { scanRepo } from "./scanner.js";
 
 export interface RepoIndexerOptions {
@@ -26,7 +27,21 @@ export class RepoIndexer implements Indexer {
       ? await this.options.graphStore.getIndexGeneration(absoluteRoot).catch(() => 0)
       : 0;
     const indexGeneration = currentGeneration + 1;
-    const { chunks, symbols, edges } = await chunkFiles(absoluteRoot, files);
+    const changedFilePaths = changedFiles.map((file) => file.path);
+    const cached = fullReindex
+      ? undefined
+      : {
+        chunks: await this.options.graphStore.getChunks(absoluteRoot),
+        symbols: await this.options.graphStore.getSymbols(absoluteRoot),
+        edges: await this.options.graphStore.getEdges(absoluteRoot)
+      };
+    const refreshedFiles = cached
+      ? refreshedFilePaths(files, cached.edges, changedFilePaths, deletedFiles)
+      : changedFilePaths;
+    const filesToAnalyze = files.filter((file) => refreshedFiles.includes(file.path));
+    const { chunks, symbols, edges } = cached
+      ? await chunkFilesIncremental(absoluteRoot, files, filesToAnalyze, cached)
+      : await chunkFiles(absoluteRoot, files);
     const indexedAtMs = Date.now();
     const index: RepoIndex = {
       projectId,
@@ -34,8 +49,9 @@ export class RepoIndexer implements Indexer {
       repoRoot: absoluteRoot,
       indexedAtMs,
       indexGeneration,
-      changedFiles: changedFiles.map((file) => file.path),
+      changedFiles: changedFilePaths,
       deletedFiles,
+      refreshedFiles,
       fullReindex,
       files,
       chunks,
@@ -71,5 +87,57 @@ export class RepoIndexer implements Indexer {
       // Semantic recall is optional cache acceleration. Graph rows remain the source of truth.
     }
   }
+}
+
+function refreshedFilePaths(files: CodeFile[], previousEdges: GraphEdge[], changedFiles: string[], deletedFiles: string[]): string[] {
+  const currentPaths = new Set(files.map((file) => file.path));
+  const touchedPaths = new Set([...changedFiles, ...deletedFiles]);
+  const refreshed = new Set(changedFiles.filter((filePath) => currentPaths.has(filePath)));
+
+  for (const edge of previousEdges) {
+    const sourceFile = stringMetadata(edge, "sourceFile");
+    if (!sourceFile || !currentPaths.has(sourceFile)) continue;
+
+    const previousTargetFile = stringMetadata(edge, "targetFile");
+    if (previousTargetFile && touchedPaths.has(previousTargetFile)) {
+      refreshed.add(sourceFile);
+      continue;
+    }
+
+    const importSource = edge.kind === "imports" ? stringMetadata(edge, "source") : undefined;
+    const nextTargetFile = importSource ? resolveImportPath(sourceFile, importSource, files) : undefined;
+    if (nextTargetFile && touchedPaths.has(nextTargetFile)) refreshed.add(sourceFile);
+  }
+
+  if ([...touchedPaths].some(isMiddlewareFile)) {
+    for (const file of files) {
+      if (isRouteFile(file.path)) refreshed.add(file.path);
+    }
+  }
+
+  if ([...touchedPaths].some(isRouteFile)) {
+    for (const file of files) {
+      if (isTypeScriptLike(file)) refreshed.add(file.path);
+    }
+  }
+
+  return [...refreshed].sort();
+}
+
+function stringMetadata(edge: GraphEdge, key: string): string | undefined {
+  const value = edge.metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function isMiddlewareFile(filePath: string): boolean {
+  return /^(src\/)?middleware\.[jt]s$/.test(filePath);
+}
+
+function isRouteFile(filePath: string): boolean {
+  return /(^|\/)(app\/.+\/route|pages\/api\/.+)\.[jt]sx?$/.test(filePath);
+}
+
+function isTypeScriptLike(file: CodeFile): boolean {
+  return file.language === "typescript" || file.language === "javascript";
 }
 

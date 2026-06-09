@@ -22,6 +22,7 @@ import { isIncomingImpactEdge, isOutgoingImpactEdge, matchesImpactTarget, parseI
 import { normalizeUserPath } from "../utils/path.js";
 import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
 import { buildQueryMatchProfile, scoreChunkText, scoreSymbolText } from "../retrieval/query-matching.js";
+import { extractChangedFiles } from "./diff-files.js";
 
 interface RepoGraphState {
   projectId?: string;
@@ -74,12 +75,12 @@ export class InMemoryGraphStore implements GraphStore {
     state.projectId = index.projectId;
     state.indexGeneration = index.indexGeneration;
     state.skippedFiles = index.skippedFiles;
-    const changedOrDeleted = new Set(index.fullReindex ? index.files.map((file) => file.path) : [...index.changedFiles, ...index.deletedFiles]);
-    for (const filePath of changedOrDeleted) this.deleteFileRows(state, filePath);
-    const filesToWrite = index.fullReindex ? index.files : index.files.filter((file) => changedOrDeleted.has(file.path));
-    const chunksToWrite = index.fullReindex ? index.chunks : index.chunks.filter((chunk) => changedOrDeleted.has(chunk.filePath));
-    const symbolsToWrite = index.fullReindex ? index.symbols : index.symbols.filter((symbol) => changedOrDeleted.has(symbol.filePath));
-    const edgesToWrite = index.fullReindex ? index.edges : index.edges.filter((edge) => edgeFilePath(edge) && changedOrDeleted.has(edgeFilePath(edge)!));
+    const refreshedOrDeleted = refreshedOrDeletedFiles(index);
+    for (const filePath of refreshedOrDeleted) this.deleteFileRows(state, filePath);
+    const filesToWrite = index.fullReindex ? index.files : index.files.filter((file) => refreshedOrDeleted.has(file.path));
+    const chunksToWrite = index.fullReindex ? index.chunks : index.chunks.filter((chunk) => refreshedOrDeleted.has(chunk.filePath));
+    const symbolsToWrite = index.fullReindex ? index.symbols : index.symbols.filter((symbol) => refreshedOrDeleted.has(symbol.filePath));
+    const edgesToWrite = index.fullReindex ? index.edges : index.edges.filter((edge) => edgeFilePath(edge) && refreshedOrDeleted.has(edgeFilePath(edge)!));
 
     for (const file of filesToWrite) state.files.set(file.path, file);
     for (const chunk of chunksToWrite) state.chunks.set(chunk.id, chunk);
@@ -392,17 +393,12 @@ function filenameTestMatches(files: Map<string, CodeFile>, basename: string, nor
   return tests;
 }
 
-function extractChangedFiles(diff: string): string[] {
-  const files = new Set<string>();
-  for (const line of diff.split(/\r?\n/)) {
-    const match = /^\+\+\+ b\/(.+)$/.exec(line) ?? /^diff --git a\/.+ b\/(.+)$/.exec(line);
-    if (match?.[1] && match[1] !== "/dev/null") files.add(normalizeUserPath(match[1]));
-  }
-  return [...files].sort();
-}
-
 function edgeFilePath(edge: GraphEdge): string | undefined {
   return typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : undefined;
+}
+
+function refreshedOrDeletedFiles(index: RepoIndex): Set<string> {
+  return new Set(index.fullReindex ? index.files.map((file) => file.path) : [...(index.refreshedFiles ?? index.changedFiles), ...index.deletedFiles]);
 }
 
 function isTraceEdge(kind: EdgeKind): boolean {
