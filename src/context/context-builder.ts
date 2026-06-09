@@ -104,26 +104,65 @@ function ownerNodes(snippets: ContextSnippet[]): OwnerNode[] {
     };
     current.score += snippet.score;
     current.reason = current.reason.length <= snippet.reason.length ? current.reason : snippet.reason;
+    addOwnerSymbol(current, snippet);
     byFile.set(snippet.filePath, current);
   }
   return [...byFile.values()].sort((a, b) => b.score - a.score);
 }
 
+function addOwnerSymbol(owner: OwnerNode, snippet: ContextSnippet): void {
+  const symbol = symbolFromSnippet(snippet);
+  if (!symbol) return;
+  const key = `${symbol.kind}\0${symbol.name}\0${symbol.startLine}\0${symbol.endLine}`;
+  const exists = owner.symbols.some((existing) => `${existing.kind}\0${existing.name}\0${existing.startLine}\0${existing.endLine}` === key);
+  if (!exists) owner.symbols.push(symbol);
+}
+
+function symbolFromSnippet(snippet: ContextSnippet): OwnerNode["symbols"][number] | undefined {
+  const match = /^(function|class|method|type|variable|file):\s+(.+)$/.exec(snippet.role);
+  if (!match) return undefined;
+  const [, kind, name] = match;
+  return {
+    name,
+    kind,
+    startLine: snippet.startLine,
+    endLine: snippet.endLine
+  };
+}
+
 function topologyEdges(edges: GraphEdge[], ownerPaths: string[]): TopologyEdge[] {
   const ownerSet = new Set(ownerPaths);
-  return edges
+  const seen = new Set<string>();
+  const output: TopologyEdge[] = [];
+  const candidates = edges
     .filter((edge) => isTopologyEdge(edge.kind) && typeof edge.metadata?.sourceFile === "string" && ownerSet.has(edge.metadata.sourceFile))
-    .sort((a, b) => topologyEdgePriority(b) - topologyEdgePriority(a))
-    .slice(0, 12)
-    .map((edge) => ({
-      from: String(edge.metadata?.sourceFile ?? edge.sourceId),
-      to: String(edge.metadata?.route ?? edge.metadata?.targetName ?? edge.targetId),
-      edge: edge.kind,
-      confidence: confidenceForEdge(edge),
-      reason: reasonForEdge(edge),
-      sourceFile: typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : undefined,
-      targetFile: typeof edge.metadata?.targetFile === "string" ? edge.metadata.targetFile : undefined
-    }));
+    .sort((a, b) => topologyEdgePriority(b) - topologyEdgePriority(a));
+
+  for (const edge of candidates) {
+    const topologyEdge = toTopologyEdge(edge);
+    const key = topologyEdgeKey(topologyEdge);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(topologyEdge);
+    if (output.length >= 12) break;
+  }
+  return output;
+}
+
+function toTopologyEdge(edge: GraphEdge): TopologyEdge {
+  return {
+    from: String(edge.metadata?.sourceFile ?? edge.sourceId),
+    to: String(edge.metadata?.route ?? edge.metadata?.targetName ?? edge.targetId),
+    edge: edge.kind,
+    confidence: confidenceForEdge(edge),
+    reason: reasonForEdge(edge),
+    sourceFile: typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : undefined,
+    targetFile: typeof edge.metadata?.targetFile === "string" ? edge.metadata.targetFile : undefined
+  };
+}
+
+function topologyEdgeKey(edge: TopologyEdge): string {
+  return [edge.from, edge.to, edge.edge, edge.sourceFile ?? "", edge.targetFile ?? ""].join("\0");
 }
 
 function isTopologyEdge(kind: GraphEdge["kind"]): boolean {
@@ -195,3 +234,4 @@ function briefFor(query: string, mode: ContextPack["mode"], confidence: ContextP
   const ownerText = owners.length > 0 ? owners.slice(0, 3).map((owner) => owner.filePath).join(", ") : "no indexed owner";
   return `${mode} context for "${query}" (${confidence} confidence). Primary owner evidence: ${ownerText}.`;
 }
+

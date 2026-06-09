@@ -81,9 +81,12 @@ describe("RagCode foundation", () => {
     expect(pack.freshness.projectId).toBe(pack.projectId);
     expect(pack.freshness.skippedFiles).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: ".env" })]));
     expect(pack.ownerChain.map((owner) => owner.filePath)).toContain("src/profile.ts");
+    expect(pack.ownerChain.flatMap((owner) => owner.symbols.map((symbol) => symbol.name))).toContain("refreshProfile");
     expect(pack.snippets[0]?.filePath).toBe("src/profile.ts");
     expect(pack.snippets[0]?.expansionLevel).toBe("focused_body");
     expect(pack.topology.some((edge) => edge.to === "refreshProfile")).toBe(true);
+    const topologyKeys = pack.topology.map((edge) => [edge.from, edge.to, edge.edge, edge.sourceFile ?? "", edge.targetFile ?? ""].join("\0"));
+    expect(new Set(topologyKeys).size).toBe(topologyKeys.length);
     expect(pack.usedChars).toBeLessThanOrEqual(pack.budgetChars);
   });
 
@@ -176,3 +179,4 @@ describe("RagCode foundation", () => {
     expect(ownerResult).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: "src/auth.ts" })]));
   });
 });
+

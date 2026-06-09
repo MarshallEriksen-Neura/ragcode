@@ -213,6 +213,15 @@ export class RagCodeEngine implements ContextEngine {
     return this.graphStore.findSymbol(scope.activeRepoRoot, name);
   }
 
+  async graphSnapshot(repoRoot: string | undefined): Promise<{ symbols: SymbolNode[]; edges: GraphEdge[] }> {
+    const scope = await this.resolveWorkspace({ repoRoot });
+    const [symbols, edges] = await Promise.all([
+      this.graphStore.getSymbols(scope.activeRepoRoot),
+      this.graphStore.getEdges(scope.activeRepoRoot)
+    ]);
+    return { symbols, edges };
+  }
+
   async explainFile(repoRoot: string | undefined, filePath: string): Promise<{ file?: CodeFile; chunks: CodeChunk[]; symbols: SymbolNode[] }> {
     const scope = await this.resolveWorkspace({ repoRoot, workspace: path.isAbsolute(filePath) ? { filePath } : undefined });
     return this.graphStore.explainFile(scope.activeRepoRoot, filePath);

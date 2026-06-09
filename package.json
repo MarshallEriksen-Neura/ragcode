@@ -16,7 +16,9 @@
     "eval:context": "tsx scripts/eval-context.ts",
     "dev": "tsx src/cli/index.ts",
     "web:server": "tsx src/web/server.ts",
-    "web:client": "cd web && npm run dev"
+    "web:client": "cd web && npm run dev",
+    "benchmark": "tsx scripts/benchmark.ts",
+    "benchmark:assert": "tsx scripts/benchmark.ts --assert"
   },
   "dependencies": {
     "@lancedb/lancedb": "^0.30.0",
