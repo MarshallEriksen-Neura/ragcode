@@ -51,7 +51,8 @@ export class RepoIndexer implements Indexer {
 
   private async updateSemanticIndex(repoRoot: string, projectId: string, index: RepoIndex): Promise<void> {
     try {
-      if (index.fullReindex || !this.options.semanticStore.deleteFile) {
+      const semanticNeedsRebuild = await this.options.semanticStore.needsRebuild?.(repoRoot, projectId) ?? false;
+      if (index.fullReindex || semanticNeedsRebuild || !this.options.semanticStore.deleteFile) {
         await this.options.semanticStore.resetRepo(repoRoot);
         await this.options.semanticStore.upsertChunks(index.chunks, this.options.embeddingProvider, index.indexGeneration);
         return;
@@ -64,8 +65,11 @@ export class RepoIndexer implements Indexer {
 
       const changedChunks = index.chunks.filter((chunk) => changedOrDeleted.has(chunk.filePath) && !index.deletedFiles.includes(chunk.filePath));
       await this.options.semanticStore.upsertChunks(changedChunks, this.options.embeddingProvider, index.indexGeneration);
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[ragcode] semantic index skipped: ${message}`);
       // Semantic recall is optional cache acceleration. Graph rows remain the source of truth.
     }
   }
 }
+

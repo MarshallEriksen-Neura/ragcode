@@ -21,6 +21,7 @@ import type {
   WatcherState
 } from "../core/types.js";
 import { buildImpactAnalysis, impactReference } from "./impact-report.js";
+import { isIncomingImpactEdge, isOutgoingImpactEdge, matchesImpactTarget, parseImpactTarget } from "./target-matcher.js";
 import { normalizeUserPath } from "../utils/path.js";
 import { SqliteStatements } from "./sqlite-statements.js";
 import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
@@ -284,15 +285,15 @@ export class SQLiteGraphStore implements GraphStore {
 
   async impactAnalysis(repoRoot: string, target: string): Promise<ImpactAnalysis> {
     const projectId = this.requireProjectId(repoRoot);
-    const normalized = normalizeUserPath(target);
+    const parsedTarget = parseImpactTarget(target);
     const symbols = this.symbolsForProject(projectId);
     const edges = await this.getEdges(repoRoot);
     const matchedSymbols = symbols.filter(
-      (symbol) => symbol.name.toLowerCase().includes(target.toLowerCase()) || symbol.filePath === normalized || symbol.filePath.includes(normalized)
+      (symbol) => matchesImpactTarget(symbol, parsedTarget)
     );
     const matchedIds = new Set(matchedSymbols.map((symbol) => symbol.id));
-    const incomingEdges = edges.filter((edge) => matchedIds.has(edge.targetId) || String(edge.metadata?.targetName ?? "").toLowerCase().includes(target.toLowerCase()));
-    const outgoingEdges = edges.filter((edge) => matchedIds.has(edge.sourceId) || String(edge.metadata?.sourceFile ?? "") === normalized);
+    const incomingEdges = edges.filter((edge) => isIncomingImpactEdge(edge, matchedIds, parsedTarget));
+    const outgoingEdges = edges.filter((edge) => isOutgoingImpactEdge(edge, matchedIds, parsedTarget));
     return buildImpactAnalysis({
       target,
       matchedSymbols,
@@ -780,6 +781,5 @@ function isTraceEdge(kind: EdgeKind): boolean {
 }
 
 function matchesTarget(symbol: SymbolNode, normalized: string, target: string): boolean {
-  const lowered = target.toLowerCase();
-  return symbol.name.toLowerCase().includes(lowered) || symbol.filePath === normalized || symbol.filePath.includes(normalized);
+  return matchesImpactTarget(symbol, parseImpactTarget(target || normalized));
 }

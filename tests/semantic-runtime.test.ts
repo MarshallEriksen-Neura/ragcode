@@ -13,7 +13,9 @@ describe("semantic runtime configuration", () => {
       semanticStore: "memory",
       embeddingProvider: "deterministic",
       lanceDbUri: "D:\\repo\\.ragcode\\lancedb",
-      lanceDbTableName: "code_chunks"
+      lanceDbTableName: "code_chunks",
+      embeddingBatchSize: 64,
+      embeddingConcurrency: 1
     });
   });
 
@@ -26,7 +28,9 @@ describe("semantic runtime configuration", () => {
       RAGCODE_EMBEDDING_BASE_URL: "https://example.com/v1",
       RAGCODE_EMBEDDING_MODEL: "custom-embed",
       RAGCODE_EMBEDDING_DIMENSIONS: "1024",
-      RAGCODE_EMBEDDING_REQUEST_DIMENSIONS: "true"
+      RAGCODE_EMBEDDING_REQUEST_DIMENSIONS: "true",
+      RAGCODE_EMBEDDING_BATCH_SIZE: "32",
+      RAGCODE_EMBEDDING_CONCURRENCY: "2"
     });
 
     expect(config).toEqual({
@@ -37,7 +41,10 @@ describe("semantic runtime configuration", () => {
       embeddingBaseUrl: "https://example.com/v1",
       embeddingModel: "custom-embed",
       embeddingDimensions: 1024,
-      embeddingRequestDimensions: true
+      embeddingRequestDimensions: true,
+      embeddingBatchSize: 32,
+      embeddingConcurrency: 2,
+      semanticMaxChunks: 512
     });
   });
 
@@ -54,7 +61,7 @@ describe("semantic runtime configuration", () => {
         return {
           ok: true,
           status: 200,
-          json: async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
+          json: async () => ({ data: [{ index: 0, embedding: [0.1, 0.2, 0.3] }] })
         } as Response;
       }
     });
@@ -69,6 +76,31 @@ describe("semantic runtime configuration", () => {
         dimensions: 3
       }
     }]);
+  });
+
+  it("batches OpenAI-compatible embedding requests", async () => {
+    const calls: Array<{ body: unknown }> = [];
+    const provider = new OpenAICompatibleEmbeddingProvider({
+      apiKey: "test-key",
+      model: "custom-embed",
+      baseUrl: "https://embed.example/v1",
+      fetch: async (_url, init) => {
+        calls.push({ body: JSON.parse(String(init?.body)) });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [
+              { index: 0, embedding: [1, 0] },
+              { index: 1, embedding: [0, 1] }
+            ]
+          })
+        } as Response;
+      }
+    });
+
+    await expect(provider.embedBatch(["first", "second"])).resolves.toEqual([[1, 0], [0, 1]]);
+    expect(calls).toEqual([{ body: { model: "custom-embed", input: ["first", "second"] } }]);
   });
 
   it("passes configured vector dimensions to a new LanceDB table seed", async () => {
@@ -94,14 +126,7 @@ describe("semantic runtime configuration", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "ragcode-lancedb-profile-"));
     try {
       const table = new SeedCaptureTable();
-      const connection = {
-        tableNames: async () => ["code_chunks"],
-        openTable: async () => table,
-        createTable: async (_name: string, rows: LanceChunkRecord[]) => {
-          table.seed = rows[0];
-          return table;
-        }
-      } satisfies LanceConnection;
+      const connection = fakeConnection(table);
       const provider = createSemanticRuntimeFromEnv({
         RAGCODE_SEMANTIC_STORE: "memory",
         RAGCODE_EMBEDDING_PROVIDER: "deterministic",
@@ -139,14 +164,7 @@ describe("semantic runtime configuration", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "ragcode-lancedb-profile-mismatch-"));
     try {
       const table = new SeedCaptureTable();
-      const connection = {
-        tableNames: async () => ["code_chunks"],
-        openTable: async () => table,
-        createTable: async (_name: string, rows: LanceChunkRecord[]) => {
-          table.seed = rows[0];
-          return table;
-        }
-      } satisfies LanceConnection;
+      const connection = fakeConnection(table);
       const firstProvider = createSemanticRuntimeFromEnv({
         RAGCODE_SEMANTIC_STORE: "memory",
         RAGCODE_EMBEDDING_PROVIDER: "deterministic",
@@ -182,14 +200,7 @@ describe("semantic runtime configuration", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "ragcode-lancedb-model-mismatch-"));
     try {
       const table = new SeedCaptureTable();
-      const connection = {
-        tableNames: async () => ["code_chunks"],
-        openTable: async () => table,
-        createTable: async (_name: string, rows: LanceChunkRecord[]) => {
-          table.seed = rows[0];
-          return table;
-        }
-      } satisfies LanceConnection;
+      const connection = fakeConnection(table);
       const provider = createSemanticRuntimeFromEnv({
         RAGCODE_SEMANTIC_STORE: "memory",
         RAGCODE_EMBEDDING_PROVIDER: "deterministic",
@@ -213,6 +224,30 @@ describe("semantic runtime configuration", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("writes LanceDB rows in embedding batches", async () => {
+    const table = new SeedCaptureTable();
+    const progress: number[] = [];
+    const store = new LanceSemanticStore("memory://batched", {
+      connection: fakeConnection(table),
+      embeddingBatchSize: 2,
+      embeddingConcurrency: 1,
+      onProgress: (event) => progress.push(event.completedChunks)
+    });
+
+    await store.upsertChunks([
+      chunk({ id: "chunk-a", filePath: "src/a.ts" }),
+      chunk({ id: "chunk-b", filePath: "src/a.ts" }),
+      chunk({ id: "chunk-c", filePath: "src/b.ts" })
+    ], createSemanticRuntimeFromEnv({
+      RAGCODE_SEMANTIC_STORE: "memory",
+      RAGCODE_EMBEDDING_PROVIDER: "deterministic"
+    }).embeddingProvider);
+
+    expect(table.deletes).toHaveLength(2);
+    expect(table.adds.map((rows) => rows.length)).toEqual([2, 1]);
+    expect(progress).toEqual([2, 3]);
   });
 
   it("round-trips chunks through the installed LanceDB package", async () => {
@@ -268,10 +303,16 @@ describe("semantic runtime configuration", () => {
 
 class SeedCaptureTable implements LanceTable {
   seed?: LanceChunkRecord;
+  adds: LanceChunkRecord[][] = [];
+  deletes: string[] = [];
 
-  async add(_rows: LanceChunkRecord[]): Promise<void> {}
+  async add(rows: LanceChunkRecord[]): Promise<void> {
+    this.adds.push(rows);
+  }
 
-  async delete(_predicate: string): Promise<void> {}
+  async delete(predicate: string): Promise<void> {
+    this.deletes.push(predicate);
+  }
 
   search(_vector: number[]) {
     return {
@@ -282,6 +323,17 @@ class SeedCaptureTable implements LanceTable {
       })
     };
   }
+}
+
+function fakeConnection(table: SeedCaptureTable): LanceConnection {
+  return {
+    tableNames: async () => ["code_chunks"],
+    openTable: async () => table,
+    createTable: async (_name, rows) => {
+      table.seed = rows[0];
+      return table;
+    }
+  } satisfies LanceConnection;
 }
 
 function chunk(overrides: Partial<Parameters<LanceSemanticStore["upsertChunks"]>[0][number]> = {}): Parameters<LanceSemanticStore["upsertChunks"]>[0][number] {
@@ -300,3 +352,4 @@ function chunk(overrides: Partial<Parameters<LanceSemanticStore["upsertChunks"]>
     ...overrides
   };
 }
+

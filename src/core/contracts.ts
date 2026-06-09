@@ -29,6 +29,7 @@ import type {
 export interface EmbeddingProvider {
   readonly dimensions?: number;
   embed(text: string): Promise<number[]>;
+  embedBatch?(texts: string[]): Promise<number[][]>;
 }
 
 export interface GraphStore {
@@ -40,6 +41,7 @@ export interface GraphStore {
   getWatcherState?(repoRoot: string): Promise<WatcherState>;
   markDirtyFilesIndexing?(repoRoot: string, filePaths: string[]): Promise<WatcherState>;
   clearDirtyFiles?(repoRoot: string, filePaths?: string[]): Promise<void>;
+  needsRebuild?(repoRoot: string, projectId: string): Promise<boolean>;
   resetRepo(repoRoot: string): Promise<void>;
   upsertIndex(index: RepoIndex): Promise<void>;
   getFiles(repoRoot: string): Promise<CodeFile[]>;
@@ -58,6 +60,7 @@ export interface GraphStore {
 }
 
 export interface SemanticStore {
+  needsRebuild?(repoRoot: string, projectId: string): Promise<boolean>;
   resetRepo(repoRoot: string): Promise<void>;
   deleteFile?(repoRoot: string, projectId: string, filePath: string): Promise<void>;
   upsertChunks(chunks: CodeChunk[], provider: EmbeddingProvider, generation?: number): Promise<void>;
@@ -87,3 +90,5 @@ export interface ContextEngine {
   traceFlow(repoRoot: string | undefined, entry: string, maxSteps?: number): Promise<TraceFlow>;
   reviewDiff(repoRoot: string | undefined, diff?: string, changedFiles?: string[]): Promise<DiffReview>;
 }
+
+

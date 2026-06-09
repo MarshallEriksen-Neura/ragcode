@@ -1,4 +1,5 @@
 import path from "node:path";
+import ts from "typescript";
 import type { CodeFile, GraphEdge, SymbolNode } from "../core/types.js";
 import type { TypeScriptSourceFile } from "../lsp/typescript-language-service.js";
 
@@ -7,6 +8,12 @@ interface RouteInfo {
   filePath: string;
   symbol: SymbolNode;
   isWebhook: boolean;
+}
+
+interface ApiCall {
+  url: string;
+  line: number;
+  resolution: "framework_static" | "framework_wrapper" | "framework_template";
 }
 
 export function buildFrameworkTopologyEdges(files: CodeFile[], sources: TypeScriptSourceFile[], symbols: SymbolNode[], edges: GraphEdge[]): GraphEdge[] {
@@ -35,8 +42,8 @@ function clientApiEdges(sources: TypeScriptSourceFile[], symbols: SymbolNode[], 
   const edges: GraphEdge[] = [];
   for (const source of sources) {
     if (!isClientSource(source)) continue;
-    for (const call of staticFetchCalls(source.content)) {
-      const route = routes.get(call.url);
+    for (const call of apiCalls(source)) {
+      const route = findRoute(routes, call.url);
       if (!route) continue;
       const sourceSymbol = containingSymbol(symbols, source.filePath, call.line) ?? fileSymbol(symbols, source.filePath);
       if (!sourceSymbol) continue;
@@ -49,10 +56,11 @@ function clientApiEdges(sources: TypeScriptSourceFile[], symbols: SymbolNode[], 
           framework: "nextjs",
           sourceFile: source.filePath,
           targetFile: route.filePath,
-          route: call.url,
+          route: route.routePath,
+          requestPath: call.url,
           targetName: route.symbol.name,
           line: call.line,
-          resolution: "framework_static"
+          resolution: call.resolution
         }
       });
     }
@@ -145,35 +153,114 @@ function isClientSource(source: TypeScriptSourceFile): boolean {
   return /\.(tsx|jsx)$/.test(source.filePath) || /^["']use client["'];?/.test(source.content.trimStart()) || /from ['"]react['"]/.test(source.content);
 }
 
-function staticFetchCalls(content: string): Array<{ url: string; line: number }> {
-  const calls: Array<{ url: string; line: number }> = [];
-  const pattern = /\bfetch\s*\(\s*(['"`])([^'"`]+)\1/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(content))) {
-    const url = match[2];
-    if (url?.startsWith("/api/")) calls.push({ url, line: lineAt(content, match.index) });
+function apiCalls(source: TypeScriptSourceFile): ApiCall[] {
+  const sourceFile = ts.createSourceFile(source.filePath, source.content, ts.ScriptTarget.Latest, true, scriptKindForPath(source.filePath));
+  const calls: ApiCall[] = [];
+
+  function visit(node: ts.Node): void {
+    if (ts.isCallExpression(node)) {
+      const url = apiUrlForCall(node);
+      if (url?.url.startsWith("/api/")) {
+        calls.push({
+          ...url,
+          line: lineRange(sourceFile, node).startLine
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
   }
+
+  ts.forEachChild(sourceFile, visit);
   return calls;
+}
+
+function apiUrlForCall(node: ts.CallExpression): Omit<ApiCall, "line"> | undefined {
+  const directUrl = node.arguments[0] ? urlFromExpression(node.arguments[0]) : undefined;
+  const expression = node.expression;
+
+  if (ts.isIdentifier(expression) && expression.text === "fetch" && directUrl) return directUrl;
+
+  const chain = propertyChain(expression);
+  if (chain.length >= 2 && chain[0] === "axios" && httpMethodNames.has(chain[chain.length - 1] ?? "") && directUrl) {
+    return { ...directUrl, resolution: directUrl.resolution === "framework_template" ? "framework_template" : "framework_wrapper" };
+  }
+
+  const clientUrl = urlFromClientCall(chain);
+  if (clientUrl) return clientUrl;
+
+  return undefined;
+}
+
+function urlFromExpression(expression: ts.Expression): Omit<ApiCall, "line"> | undefined {
+  if (ts.isStringLiteralLike(expression)) return { url: expression.text, resolution: "framework_static" };
+  if (ts.isTemplateExpression(expression)) {
+    const url = [
+      expression.head.text,
+      ...expression.templateSpans.flatMap((span) => ["*", span.literal.text])
+    ].join("");
+    return { url, resolution: "framework_template" };
+  }
+  return undefined;
+}
+
+function urlFromClientCall(chain: string[]): Omit<ApiCall, "line"> | undefined {
+  if (chain.length >= 3 && ["api", "apiClient"].includes(chain[0] ?? "")) {
+    const resource = chain[1];
+    if (resource) return { url: `/api/${resource}`, resolution: "framework_wrapper" };
+  }
+
+  const root = chain[0];
+  if (chain.length >= 2 && root?.endsWith("Api")) {
+    const resource = root.slice(0, -"Api".length);
+    if (resource) return { url: `/api/${resource}`, resolution: "framework_wrapper" };
+  }
+
+  return undefined;
+}
+
+function propertyChain(expression: ts.Expression): string[] {
+  if (ts.isIdentifier(expression)) return [expression.text];
+  if (ts.isPropertyAccessExpression(expression)) return [...propertyChain(expression.expression), expression.name.text];
+  return [];
+}
+
+function findRoute(routes: Map<string, RouteInfo>, requestPath: string): RouteInfo | undefined {
+  const exact = routes.get(requestPath);
+  if (exact) return exact;
+  return [...routes.values()].find((route) => routePathMatches(route.routePath, requestPath));
+}
+
+function routePathMatches(routePath: string, requestPath: string): boolean {
+  const routeSegments = routePath.split("/");
+  const requestSegments = requestPath.split("/");
+  if (routeSegments.length !== requestSegments.length) return false;
+  return routeSegments.every((segment, index) => segment === requestSegments[index] || segment.startsWith(":") || requestSegments[index] === "*");
 }
 
 function isWebhookRoute(routePath: string, filePath: string): boolean {
   return /webhook/i.test(routePath) || /webhook/i.test(path.posix.basename(filePath));
 }
 
-function lineAt(content: string, position: number): number {
-  const safePosition = Math.max(0, Math.min(position, content.length));
-  let line = 1;
-  for (let index = 0; index < safePosition; index += 1) {
-    if (content.charCodeAt(index) === 10) line += 1;
-  }
-  return line;
+function lineRange(sourceFile: ts.SourceFile, node: ts.Node): { startLine: number; endLine: number } {
+  const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+  const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd());
+  return { startLine: start.line + 1, endLine: end.line + 1 };
 }
+
+function scriptKindForPath(filePath: string): ts.ScriptKind {
+  if (filePath.endsWith(".tsx")) return ts.ScriptKind.TSX;
+  if (filePath.endsWith(".jsx")) return ts.ScriptKind.JSX;
+  if (filePath.endsWith(".js") || filePath.endsWith(".mjs") || filePath.endsWith(".cjs")) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+const httpMethodNames = new Set(["get", "post", "put", "patch", "delete"]);
 
 function dedupeEdges(edges: GraphEdge[]): GraphEdge[] {
   const seen = new Set<string>();
   const deduped: GraphEdge[] = [];
   for (const edge of edges) {
-    const key = [edge.kind, edge.sourceId, edge.targetId, edge.metadata?.route, edge.metadata?.sourceFile].join("::");
+    const key = [edge.kind, edge.sourceId, edge.targetId, edge.metadata?.route, edge.metadata?.requestPath, edge.metadata?.sourceFile, edge.metadata?.line].join("::");
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(edge);

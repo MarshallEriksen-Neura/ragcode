@@ -17,6 +17,9 @@ export interface SemanticRuntimeConfig {
   embeddingModel?: string;
   embeddingDimensions?: number;
   embeddingRequestDimensions: boolean;
+  embeddingBatchSize: number;
+  embeddingConcurrency: number;
+  semanticMaxChunks?: number;
 }
 
 export interface SemanticRuntimeComponents {
@@ -44,7 +47,10 @@ export function readSemanticRuntimeConfig(env: NodeJS.ProcessEnv = process.env, 
     embeddingBaseUrl: env.RAGCODE_EMBEDDING_BASE_URL ?? "https://api.openai.com/v1",
     embeddingModel: env.RAGCODE_EMBEDDING_MODEL ?? (embeddingProvider === "openai-compatible" ? "text-embedding-3-small" : undefined),
     embeddingDimensions,
-    embeddingRequestDimensions: env.RAGCODE_EMBEDDING_REQUEST_DIMENSIONS === "true"
+    embeddingRequestDimensions: env.RAGCODE_EMBEDDING_REQUEST_DIMENSIONS === "true",
+    embeddingBatchSize: optionalPositiveInteger(env.RAGCODE_EMBEDDING_BATCH_SIZE) ?? 64,
+    embeddingConcurrency: optionalPositiveInteger(env.RAGCODE_EMBEDDING_CONCURRENCY) ?? 1,
+    semanticMaxChunks: semanticMaxChunks(env.RAGCODE_SEMANTIC_MAX_CHUNKS, embeddingProvider)
   };
 }
 
@@ -71,8 +77,22 @@ function createSemanticStore(config: SemanticRuntimeConfig, provider: EmbeddingP
       model: config.embeddingModel,
       baseUrl: config.embeddingBaseUrl,
       requestDimensions: config.embeddingRequestDimensions
+    },
+    embeddingBatchSize: config.embeddingBatchSize,
+    embeddingConcurrency: config.embeddingConcurrency,
+    maxChunks: config.semanticMaxChunks,
+    onProgress: (progress) => {
+      if (process.env.RAGCODE_EMBEDDING_PROGRESS === "false") return;
+      const percent = Math.round((progress.completedChunks / progress.totalChunks) * 100);
+      const elapsedSeconds = Math.max(1, Math.round(progress.elapsedMs / 1000));
+      console.error(`[ragcode] embedded ${progress.completedChunks}/${progress.totalChunks} chunks (${percent}%) batch ${progress.batchIndex}/${progress.batchCount} elapsed ${elapsedSeconds}s`);
     }
   });
+}
+
+function semanticMaxChunks(value: string | undefined, provider: EmbeddingProviderKind): number | undefined {
+  if (value === "0" || value?.toLowerCase() === "all") return undefined;
+  return optionalPositiveInteger(value) ?? (provider === "openai-compatible" ? 512 : undefined);
 }
 
 function enumValue<T extends string>(value: string | undefined, allowed: readonly T[], fallback: T): T {

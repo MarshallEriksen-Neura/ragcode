@@ -49,6 +49,19 @@ export interface LanceSemanticStoreOptions {
   vectorDimensions?: number;
   embeddingProfile?: LanceEmbeddingProfileIdentity;
   profileStore?: LanceProfileStore;
+  embeddingBatchSize?: number;
+  embeddingConcurrency?: number;
+  maxChunks?: number;
+  onProgress?: (progress: LanceEmbeddingProgress) => void;
+}
+
+export interface LanceEmbeddingProgress {
+  totalChunks: number;
+  completedChunks: number;
+  batchChunks: number;
+  batchIndex: number;
+  batchCount: number;
+  elapsedMs: number;
 }
 
 export interface LanceEmbeddingProfileIdentity {
@@ -79,12 +92,18 @@ export class LanceSemanticStore implements SemanticStore {
   private readonly vectorDimensions?: number;
   private readonly embeddingProfile: LanceEmbeddingProfileIdentity;
   private readonly profileStore: LanceProfileStore;
+  private readonly embeddingBatchSize: number;
+  private readonly embeddingConcurrency: number;
+  private readonly maxChunks?: number;
+  private readonly onProgress?: (progress: LanceEmbeddingProgress) => void;
 
   constructor(private readonly uri: string, tableNameOrOptions: string | LanceSemanticStoreOptions = "code_chunks") {
     if (typeof tableNameOrOptions === "string") {
       this.tableName = tableNameOrOptions;
       this.embeddingProfile = { provider: "unknown" };
       this.profileStore = defaultProfileStore(uri, this.tableName);
+      this.embeddingBatchSize = 64;
+      this.embeddingConcurrency = 1;
       return;
     }
     this.tableName = tableNameOrOptions.tableName ?? "code_chunks";
@@ -93,7 +112,16 @@ export class LanceSemanticStore implements SemanticStore {
     this.vectorDimensions = tableNameOrOptions.vectorDimensions;
     this.embeddingProfile = tableNameOrOptions.embeddingProfile ?? { provider: "unknown" };
     this.profileStore = tableNameOrOptions.profileStore ?? defaultProfileStore(uri, this.tableName);
+    this.embeddingBatchSize = positiveInteger(tableNameOrOptions.embeddingBatchSize, 64);
+    this.embeddingConcurrency = positiveInteger(tableNameOrOptions.embeddingConcurrency, 1);
+    this.maxChunks = tableNameOrOptions.maxChunks;
+    this.onProgress = tableNameOrOptions.onProgress;
   }
+
+  async needsRebuild(_repoRoot: string, _projectId: string): Promise<boolean> {
+    return !(await this.profileStore.read());
+  }
+
 
   async resetRepo(repoRoot: string): Promise<void> {
     const table = await this.getTable();
@@ -107,36 +135,72 @@ export class LanceSemanticStore implements SemanticStore {
 
   async upsertChunks(chunks: CodeChunk[], provider: EmbeddingProvider, generation = 1): Promise<void> {
     if (chunks.length === 0) return;
-    const rows: LanceChunkRecord[] = [];
-    const fileScopes = new Set<string>();
-    for (const chunk of chunks) {
-      fileScopes.add(JSON.stringify([chunk.projectId, chunk.filePath]));
-      rows.push({
-        id: chunk.id,
-        projectId: chunk.projectId,
-        repoRoot: chunk.repoRoot,
-        filePath: chunk.filePath,
-        language: chunk.language,
-        kind: chunk.kind,
-        symbolName: chunk.symbolName ?? "",
-        startLine: chunk.startLine,
-        endLine: chunk.endLine,
-        content: chunk.content,
-        contentHash: chunk.contentHash,
-        generation,
-        vector: await provider.embed(renderChunkForEmbedding(chunk))
-      });
+
+    const embeddingChunks = selectChunksForEmbedding(chunks, this.maxChunks);
+    const batches = chunkArray(embeddingChunks, this.embeddingBatchSize);
+    let completedChunks = 0;
+    let tablePromise: Promise<LanceTable> | undefined;
+    const startedAt = Date.now();
+
+    for (let start = 0; start < batches.length; start += this.embeddingConcurrency) {
+      const window = batches.slice(start, start + this.embeddingConcurrency);
+      const embeddedBatches = await Promise.all(window.map((batch) => this.embedChunkBatch(batch, provider, generation)));
+
+      for (let offset = 0; offset < embeddedBatches.length; offset += 1) {
+        const rows = embeddedBatches[offset];
+        const vectorDimensions = rows[0]?.vector.length;
+        if (!vectorDimensions) continue;
+
+        await this.ensureCompatibleProfile(vectorDimensions);
+        tablePromise ??= this.prepareTableForUpsert(chunks, vectorDimensions);
+        const table = await tablePromise;
+        await table.add(rows);
+
+        completedChunks += rows.length;
+        this.onProgress?.({
+          totalChunks: embeddingChunks.length,
+          completedChunks,
+          batchChunks: rows.length,
+          batchIndex: start + offset + 1,
+          batchCount: batches.length,
+          elapsedMs: Date.now() - startedAt
+        });
+      }
     }
-    const vectorDimensions = rows[0]?.vector.length;
-    if (vectorDimensions) await this.ensureCompatibleProfile(vectorDimensions);
+  }
+
+  private async embedChunkBatch(chunks: CodeChunk[], provider: EmbeddingProvider, generation: number): Promise<LanceChunkRecord[]> {
+    const texts = chunks.map((chunk) => renderChunkForEmbedding(chunk));
+    const vectors = provider.embedBatch ? await provider.embedBatch(texts) : await Promise.all(texts.map((text) => provider.embed(text)));
+    if (vectors.length !== chunks.length) {
+      throw new Error(`Embedding provider returned ${vectors.length} vector(s), expected ${chunks.length}.`);
+    }
+    return chunks.map((chunk, index) => ({
+      id: chunk.id,
+      projectId: chunk.projectId,
+      repoRoot: chunk.repoRoot,
+      filePath: chunk.filePath,
+      language: chunk.language,
+      kind: chunk.kind,
+      symbolName: chunk.symbolName ?? "",
+      startLine: chunk.startLine,
+      endLine: chunk.endLine,
+      content: chunk.content,
+      contentHash: chunk.contentHash,
+      generation,
+      vector: vectors[index]
+    }));
+  }
+
+  private async prepareTableForUpsert(chunks: CodeChunk[], vectorDimensions: number): Promise<LanceTable> {
     const table = await this.getTable(vectorDimensions);
+    const fileScopes = new Set(chunks.map((chunk) => JSON.stringify([chunk.projectId, chunk.filePath])));
     for (const fileScope of fileScopes) {
       const [projectId, filePath] = JSON.parse(fileScope) as [string, string];
       await table.delete(`projectId = '${escapeSqlLiteral(projectId)}' AND filePath = '${escapeSqlLiteral(filePath)}'`);
     }
-    await table.add(rows);
+    return table;
   }
-
   async search(query: SearchQuery, provider: EmbeddingProvider): Promise<SearchHit[]> {
     const vector = await provider.embed(query.query);
     await this.ensureCompatibleProfile(vector.length);
@@ -213,6 +277,48 @@ export class LanceSemanticStore implements SemanticStore {
   }
 }
 
+function selectChunksForEmbedding(chunks: CodeChunk[], maxChunks: number | undefined): CodeChunk[] {
+  if (maxChunks === undefined || chunks.length <= maxChunks) return chunks;
+  return chunks
+    .map((chunk, index) => ({ chunk, index, priority: semanticChunkPriority(chunk) }))
+    .sort((a, b) => a.priority - b.priority || a.index - b.index)
+    .slice(0, maxChunks)
+    .sort((a, b) => a.index - b.index)
+    .map((entry) => entry.chunk);
+}
+
+function semanticChunkPriority(chunk: CodeChunk): number {
+  switch (chunk.kind) {
+    case "function":
+    case "method":
+      return 0;
+    case "class":
+    case "type":
+      return 1;
+    case "file":
+      return 2;
+    case "block":
+      return 3;
+    case "variable":
+      return 4;
+    default:
+      return 5;
+  }
+}
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    batches.push(items.slice(index, index + size));
+  }
+  return batches;
+}
+
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value) || value <= 0) throw new Error(`Invalid positive integer: ${value}`);
+  return value;
+}
 function profileMismatches(existing: LanceEmbeddingProfile, expected: LanceEmbeddingProfile): string[] {
   const mismatches: string[] = [];
   if (existing.schemaVersion !== expected.schemaVersion) mismatches.push(`schemaVersion ${existing.schemaVersion} != ${expected.schemaVersion}`);
@@ -307,3 +413,9 @@ function searchPredicate(query: SearchQuery): string {
   if (query.repoRoot) return `repoRoot = '${escapeSqlLiteral(query.repoRoot)}'`;
   throw new Error("Internal error: LanceDB semantic search requires a resolved projectId or repoRoot.");
 }
+
+
+
+
+
+

@@ -11,6 +11,10 @@ export class DeterministicEmbeddingProvider implements EmbeddingProvider {
     }
     return normalize(vector);
   }
+
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    return Promise.all(texts.map((text) => this.embed(text)));
+  }
 }
 
 function hashToken(token: string): number {
@@ -27,3 +31,4 @@ function normalize(vector: number[]): number[] {
   if (magnitude === 0) return vector;
   return vector.map((value) => value / magnitude);
 }
+

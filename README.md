@@ -4,6 +4,28 @@ RagCode is a local code intelligence foundation for agent-facing context retriev
 
 The intended direction is to stand on the shoulders of projects such as CodeGraph and Understand-Anything while adding a LanceDB semantic layer and a stronger context-engine contract.
 
+## Web Dashboard (New!)
+
+A web-based management interface is now available for easier configuration and monitoring:
+
+```bash
+# Quick start - launches both backend and frontend
+./start-dashboard.sh
+
+# Or manually:
+npm run web:server  # Backend API (port 3000)
+cd web && npm run dev  # Frontend (port 5173)
+```
+
+Features:
+- **Configuration Management**: Graphical setup for storage engines and embedding providers
+- **Index Dashboard**: Real-time statistics (files, symbols, chunks, edges)
+- **Code Graph Visualization**: Interactive dependency graph with ECharts
+- **Search Debugger**: Test retrieval modes and view ranked results
+- **Live Monitoring**: WebSocket-based file change event stream
+
+See [web/README.md](web/README.md) for details.
+
 ## Core Folders
 
 - `src/core`: shared domain types, service contracts, orchestration, and errors. This is the stable boundary other layers depend on.

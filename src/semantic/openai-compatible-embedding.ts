@@ -11,6 +11,7 @@ export interface OpenAICompatibleEmbeddingProviderOptions {
 
 interface EmbeddingResponse {
   data?: Array<{
+    index?: number;
     embedding?: number[];
   }>;
   error?: {
@@ -32,9 +33,40 @@ export class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embed(text: string): Promise<number[]> {
+    const [embedding] = await this.embedBatch([text]);
+    return embedding;
+  }
+
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    if (texts.length === 0) return [];
+    const payload = await this.requestEmbeddings(texts.length === 1 ? texts[0] : texts);
+    const rows = payload.data;
+    if (!rows || rows.length !== texts.length) {
+      throw new Error(`Embedding response returned ${rows?.length ?? 0} vector(s), expected ${texts.length}.`);
+    }
+
+    const embeddings = new Array<number[]>(texts.length);
+    rows.forEach((row, position) => {
+      const index = row.index ?? position;
+      if (!Number.isInteger(index) || index < 0 || index >= texts.length) {
+        throw new Error(`Embedding response included invalid index: ${String(row.index)}.`);
+      }
+      if (!row.embedding || !row.embedding.every((value) => Number.isFinite(value))) {
+        throw new Error("Embedding response did not include a numeric embedding vector.");
+      }
+      embeddings[index] = row.embedding;
+    });
+
+    if (embeddings.some((embedding) => !embedding)) {
+      throw new Error("Embedding response did not include all requested vectors.");
+    }
+    return embeddings;
+  }
+
+  private async requestEmbeddings(input: string | string[]): Promise<EmbeddingResponse> {
     const body: Record<string, unknown> = {
       model: this.options.model,
-      input: text
+      input
     };
     if (this.options.requestDimensions && this.options.dimensions) {
       body.dimensions = this.options.dimensions;
@@ -52,11 +84,6 @@ export class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
     if (!response.ok) {
       throw new Error(payload.error?.message ?? `Embedding request failed with HTTP ${response.status}.`);
     }
-
-    const embedding = payload.data?.[0]?.embedding;
-    if (!embedding || !embedding.every((value) => Number.isFinite(value))) {
-      throw new Error("Embedding response did not include a numeric embedding vector.");
-    }
-    return embedding;
+    return payload;
   }
 }
