@@ -4,21 +4,26 @@ import type { GraphStore } from "../core/contracts.js";
 import type {
   CodeChunk,
   CodeFile,
+  DirtyFile,
   DiffReview,
   EdgeKind,
   GraphEdge,
   ImpactAnalysis,
   OwnerCandidate,
+  ProjectIdentity,
   RelatedTests,
   RepoIndex,
   SearchHit,
   SearchQuery,
   SymbolNode,
-  TraceFlow
+  TraceFlow,
+  WatcherEventOptions,
+  WatcherState
 } from "../core/types.js";
 import { buildImpactAnalysis, impactReference } from "./impact-report.js";
 import { normalizeUserPath } from "../utils/path.js";
 import { SqliteStatements } from "./sqlite-statements.js";
+import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
 
 export class SQLiteGraphStore implements GraphStore {
   private readonly db: DatabaseSync;
@@ -37,6 +42,60 @@ export class SQLiteGraphStore implements GraphStore {
     this.db.close();
   }
 
+  async getProjectByRoot(repoRoot: string): Promise<ProjectIdentity | undefined> {
+    const root = normalizeRepoRoot(repoRoot);
+    const row = this.sql.selectProjectByRoot.get(root, root);
+    return row ? projectFromRow(row) : undefined;
+  }
+
+  async listProjects(): Promise<ProjectIdentity[]> {
+    return this.sql.listProjects.all().map(projectFromRow);
+  }
+
+  async getIndexGeneration(repoRoot: string): Promise<number> {
+    const root = normalizeRepoRoot(repoRoot);
+    const row = this.sql.selectProjectByRoot.get(root, root);
+    return row ? Number((row as Record<string, unknown>).index_generation ?? 0) : 0;
+  }
+
+  async recordFileEvents(repoRoot: string, filePaths: string[], options?: WatcherEventOptions): Promise<WatcherState> {
+    const projectId = this.requireProjectId(repoRoot);
+    const coalesced = coalesceFileEvents(repoRoot, filePaths, options);
+    this.transaction(() => {
+      for (const filePath of coalesced.dirtyFiles) {
+        const eventCount = coalesced.eventCountByFile.get(filePath) ?? 1;
+        this.db.prepare(`
+          INSERT INTO dirty_files(project_id, file_path, status, reason, first_seen_at_ms, last_seen_at_ms, event_count)
+          VALUES (?, ?, 'pending', ?, ?, ?, ?)
+          ON CONFLICT(project_id, file_path) DO UPDATE SET
+            status = 'pending',
+            reason = excluded.reason,
+            last_seen_at_ms = excluded.last_seen_at_ms,
+            event_count = dirty_files.event_count + excluded.event_count
+        `).run(projectId, filePath, coalesced.burstMode ? "watcher burst event" : "watcher file event", coalesced.lastEventAtMs, coalesced.lastEventAtMs, eventCount);
+      }
+      this.db.prepare(`
+        INSERT INTO watcher_state(project_id, burst_mode, dropped_events, last_event_at_ms, updated_at_ms)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(project_id) DO UPDATE SET
+          burst_mode = CASE WHEN watcher_state.burst_mode = 1 OR excluded.burst_mode = 1 THEN 1 ELSE 0 END,
+          dropped_events = watcher_state.dropped_events + excluded.dropped_events,
+          last_event_at_ms = excluded.last_event_at_ms,
+          updated_at_ms = excluded.updated_at_ms
+      `).run(projectId, coalesced.burstMode ? 1 : 0, coalesced.droppedEvents, coalesced.lastEventAtMs, coalesced.lastEventAtMs);
+    });
+    return this.watcherStateForProject(projectId);
+  }
+
+  async getWatcherState(repoRoot: string): Promise<WatcherState> {
+    return this.watcherStateForProject(this.requireProjectId(repoRoot));
+  }
+
+  async clearDirtyFiles(repoRoot: string, filePaths?: string[]): Promise<void> {
+    const projectId = this.requireProjectId(repoRoot);
+    this.transaction(() => this.clearDirtyRows(projectId, filePaths));
+  }
+
   async resetRepo(repoRoot: string): Promise<void> {
     const projectId = this.projectIdForRoot(repoRoot);
     if (!projectId) return;
@@ -45,33 +104,49 @@ export class SQLiteGraphStore implements GraphStore {
 
   async upsertIndex(index: RepoIndex): Promise<void> {
     const repoRoot = normalizeRepoRoot(index.repoRoot);
+    const project = index.project ?? fallbackProjectIdentity(index.projectId, repoRoot, index.indexedAtMs);
     const symbolsByFile = groupByPath(index.symbols);
     const edgesByFile = groupEdgesByPath(index.edges);
     const chunksByFile = groupByPath(index.chunks);
 
     this.transaction(() => {
-      this.sql.upsertProject.run(index.projectId, repoRoot, index.indexedAtMs);
+      this.sql.upsertProject.run(
+        project.projectId,
+        normalizeRepoRoot(project.repoRoot),
+        normalizeRepoRoot(project.canonicalRoot),
+        project.displayName,
+        project.gitRemote ?? null,
+        project.gitHead ?? null,
+        project.createdAtMs,
+        project.lastIndexedAtMs ?? index.indexedAtMs,
+        index.indexedAtMs,
+        index.indexGeneration
+      );
 
-      const nextFilePaths = new Set(index.files.map((file) => file.path));
-      for (const stalePath of this.filePathsForProject(index.projectId)) {
-        if (!nextFilePaths.has(stalePath)) this.deleteFileRows(index.projectId, stalePath);
+      const changedOrDeleted = new Set(index.fullReindex ? index.files.map((file) => file.path) : [...index.changedFiles, ...index.deletedFiles]);
+      if (index.fullReindex) {
+        const nextFilePaths = new Set(index.files.map((file) => file.path));
+        for (const stalePath of this.filePathsForProject(index.projectId)) {
+          if (!nextFilePaths.has(stalePath)) this.deleteFileRows(index.projectId, stalePath);
+        }
       }
-      for (const file of index.files) this.deleteFileRows(index.projectId, file.path);
+      for (const filePath of changedOrDeleted) this.deleteFileRows(index.projectId, filePath);
       this.sql.deleteSkippedFiles.run(index.projectId);
 
-      for (const file of index.files) {
-        this.sql.insertFile.run(file.projectId, file.path, file.absolutePath, file.language, file.sizeBytes, file.contentHash, file.modifiedAtMs, index.indexedAtMs, "fresh", 1);
+      const filesToWrite = index.fullReindex ? index.files : index.files.filter((file) => changedOrDeleted.has(file.path));
+      for (const file of filesToWrite) {
+        this.sql.insertFile.run(file.projectId, file.path, file.absolutePath, file.language, file.sizeBytes, file.contentHash, file.modifiedAtMs, index.indexedAtMs, "fresh", index.indexGeneration);
 
         for (const symbol of symbolsByFile.get(file.path) ?? []) {
-          this.sql.insertSymbol.run(symbol.projectId, symbol.id, symbol.filePath, symbol.name, symbol.kind, symbol.language, symbol.startLine, symbol.endLine, symbol.signature ?? null, symbol.exported ? 1 : 0, 1);
+          this.sql.insertSymbol.run(symbol.projectId, symbol.id, symbol.filePath, symbol.name, symbol.kind, symbol.language, symbol.startLine, symbol.endLine, symbol.signature ?? null, symbol.exported ? 1 : 0, index.indexGeneration);
         }
 
         for (const edge of edgesByFile.get(file.path) ?? []) {
-          this.sql.insertEdge.run(edge.projectId, edge.sourceId, edge.targetId, edge.kind, JSON.stringify(edge.metadata ?? {}), edgeFilePath(edge), 1);
+          this.sql.insertEdge.run(edge.projectId, edge.sourceId, edge.targetId, edge.kind, JSON.stringify(edge.metadata ?? {}), edgeFilePath(edge), index.indexGeneration);
         }
 
         for (const chunk of chunksByFile.get(file.path) ?? []) {
-          this.sql.insertChunk.run(chunk.projectId, chunk.id, repoRoot, chunk.filePath, chunk.language, chunk.kind, chunk.symbolName ?? null, chunk.startLine, chunk.endLine, chunk.content, chunk.contentHash, 1);
+          this.sql.insertChunk.run(chunk.projectId, chunk.id, repoRoot, chunk.filePath, chunk.language, chunk.kind, chunk.symbolName ?? null, chunk.startLine, chunk.endLine, chunk.content, chunk.contentHash, index.indexGeneration);
           this.sql.insertFts.run(chunk.projectId, chunk.id, chunk.filePath, chunk.symbolName ?? null, chunk.content);
         }
       }
@@ -79,6 +154,7 @@ export class SQLiteGraphStore implements GraphStore {
       for (const skipped of index.skippedFiles) {
         this.sql.insertSkippedFile.run(index.projectId, skipped.filePath, skipped.reason);
       }
+      this.clearDirtyRows(index.projectId);
     });
   }
 
@@ -280,6 +356,13 @@ export class SQLiteGraphStore implements GraphStore {
       CREATE TABLE IF NOT EXISTS projects (
         project_id TEXT PRIMARY KEY,
         repo_root TEXT NOT NULL,
+        canonical_root TEXT,
+        display_name TEXT,
+        git_remote TEXT,
+        git_head TEXT,
+        created_at_ms INTEGER,
+        last_indexed_at_ms INTEGER,
+        index_generation INTEGER,
         indexed_at_ms INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS files (
@@ -341,16 +424,90 @@ export class SQLiteGraphStore implements GraphStore {
         reason TEXT NOT NULL,
         PRIMARY KEY(project_id, file_path)
       );
+      CREATE TABLE IF NOT EXISTS dirty_files (
+        project_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        first_seen_at_ms INTEGER NOT NULL,
+        last_seen_at_ms INTEGER NOT NULL,
+        event_count INTEGER NOT NULL,
+        PRIMARY KEY(project_id, file_path)
+      );
+      CREATE TABLE IF NOT EXISTS watcher_state (
+        project_id TEXT PRIMARY KEY,
+        burst_mode INTEGER NOT NULL,
+        dropped_events INTEGER NOT NULL,
+        last_event_at_ms INTEGER,
+        updated_at_ms INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_symbols_project_name ON symbols(project_id, name);
       CREATE INDEX IF NOT EXISTS idx_edges_project_kind ON edges(project_id, kind);
       CREATE INDEX IF NOT EXISTS idx_chunks_project_file ON chunks(project_id, file_path);
+      CREATE INDEX IF NOT EXISTS idx_dirty_files_project_status ON dirty_files(project_id, status);
+    `);
+    this.ensureProjectColumns();
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_projects_repo_root ON projects(repo_root);
+      CREATE INDEX IF NOT EXISTS idx_projects_canonical_root ON projects(canonical_root);
     `);
   }
 
+  private ensureProjectColumns(): void {
+    const columns = new Set(this.db.prepare("PRAGMA table_info(projects)").all().map((row: any) => String(row.name)));
+    const additions: Record<string, string> = {
+      canonical_root: "ALTER TABLE projects ADD COLUMN canonical_root TEXT",
+      display_name: "ALTER TABLE projects ADD COLUMN display_name TEXT",
+      git_remote: "ALTER TABLE projects ADD COLUMN git_remote TEXT",
+      git_head: "ALTER TABLE projects ADD COLUMN git_head TEXT",
+      created_at_ms: "ALTER TABLE projects ADD COLUMN created_at_ms INTEGER",
+      last_indexed_at_ms: "ALTER TABLE projects ADD COLUMN last_indexed_at_ms INTEGER",
+      index_generation: "ALTER TABLE projects ADD COLUMN index_generation INTEGER"
+    };
+    for (const [column, sql] of Object.entries(additions)) {
+      if (!columns.has(column)) this.db.exec(sql);
+    }
+    this.db.exec("UPDATE projects SET canonical_root = repo_root WHERE canonical_root IS NULL");
+    this.db.exec("UPDATE projects SET display_name = project_id WHERE display_name IS NULL");
+    this.db.exec("UPDATE projects SET created_at_ms = indexed_at_ms WHERE created_at_ms IS NULL");
+    this.db.exec("UPDATE projects SET last_indexed_at_ms = indexed_at_ms WHERE last_indexed_at_ms IS NULL");
+    this.db.exec("UPDATE projects SET index_generation = 1 WHERE index_generation IS NULL");
+  }
+
   private deleteProjectRows(projectId: string): void {
-    for (const table of ["files", "symbols", "edges", "chunks", "chunks_fts", "skipped_files"]) {
+    for (const table of ["files", "symbols", "edges", "chunks", "chunks_fts", "skipped_files", "dirty_files", "watcher_state"]) {
       this.db.prepare(`DELETE FROM ${table} WHERE project_id = ?`).run(projectId);
     }
+  }
+
+  private clearDirtyRows(projectId: string, filePaths?: string[]): void {
+    if (!filePaths) {
+      this.db.prepare("DELETE FROM dirty_files WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM watcher_state WHERE project_id = ?").run(projectId);
+      return;
+    }
+    for (const filePath of filePaths) {
+      this.db.prepare("DELETE FROM dirty_files WHERE project_id = ? AND file_path = ?").run(projectId, filePath);
+    }
+    const remaining = Number((this.db.prepare("SELECT COUNT(*) AS count FROM dirty_files WHERE project_id = ?").get(projectId) as any)?.count ?? 0);
+    if (remaining === 0) this.db.prepare("DELETE FROM watcher_state WHERE project_id = ?").run(projectId);
+  }
+
+  private watcherStateForProject(projectId: string): WatcherState {
+    const dirtyFiles = this.db.prepare("SELECT * FROM dirty_files WHERE project_id = ? ORDER BY file_path")
+      .all(projectId)
+      .map(dirtyFileFromRow);
+    const state = this.db.prepare("SELECT * FROM watcher_state WHERE project_id = ?").get(projectId) as Record<string, unknown> | undefined;
+    return {
+      projectId,
+      dirtyFiles,
+      pendingFiles: dirtyFiles.filter((file) => file.status === "pending").map((file) => file.filePath),
+      indexingFiles: dirtyFiles.filter((file) => file.status === "indexing").map((file) => file.filePath),
+      burstMode: Boolean(Number(state?.burst_mode ?? 0)),
+      droppedEvents: Number(state?.dropped_events ?? 0),
+      lastEventAtMs: state?.last_event_at_ms === null || state?.last_event_at_ms === undefined ? undefined : Number(state.last_event_at_ms),
+      updatedAtMs: state?.updated_at_ms === null || state?.updated_at_ms === undefined ? undefined : Number(state.updated_at_ms)
+    };
   }
 
   private deleteFileRows(projectId: string, filePath: string): void {
@@ -377,7 +534,8 @@ export class SQLiteGraphStore implements GraphStore {
   }
 
   private projectIdForRoot(repoRoot: string): string | undefined {
-    const row = this.db.prepare("SELECT project_id FROM projects WHERE repo_root = ?").get(normalizeRepoRoot(repoRoot));
+    const root = normalizeRepoRoot(repoRoot);
+    const row = this.sql.selectProjectByRoot.get(root, root);
     return row ? String(row.project_id) : undefined;
   }
 
@@ -413,6 +571,47 @@ function fileFromRow(row: Record<string, unknown>): CodeFile {
     sizeBytes: Number(row.size_bytes),
     contentHash: String(row.content_hash),
     modifiedAtMs: Number(row.modified_at_ms)
+  };
+}
+
+function projectFromRow(row: Record<string, unknown>): ProjectIdentity {
+  const repoRoot = String(row.repo_root);
+  const canonicalRoot = row.canonical_root === null || row.canonical_root === undefined
+    ? repoRoot
+    : String(row.canonical_root);
+  const indexedAtMs = Number(row.indexed_at_ms);
+  return {
+    projectId: String(row.project_id),
+    repoRoot,
+    canonicalRoot,
+    displayName: row.display_name === null || row.display_name === undefined ? path.basename(canonicalRoot) : String(row.display_name),
+    gitRemote: row.git_remote === null || row.git_remote === undefined ? undefined : String(row.git_remote),
+    gitHead: row.git_head === null || row.git_head === undefined ? undefined : String(row.git_head),
+    createdAtMs: row.created_at_ms === null || row.created_at_ms === undefined ? indexedAtMs : Number(row.created_at_ms),
+    lastIndexedAtMs: row.last_indexed_at_ms === null || row.last_indexed_at_ms === undefined ? indexedAtMs : Number(row.last_indexed_at_ms)
+  };
+}
+
+function dirtyFileFromRow(row: Record<string, unknown>): DirtyFile {
+  return {
+    projectId: String(row.project_id),
+    filePath: String(row.file_path),
+    status: String(row.status) as DirtyFile["status"],
+    reason: String(row.reason),
+    firstSeenAtMs: Number(row.first_seen_at_ms),
+    lastSeenAtMs: Number(row.last_seen_at_ms),
+    eventCount: Number(row.event_count)
+  };
+}
+
+function fallbackProjectIdentity(projectId: string, repoRoot: string, indexedAtMs: number): ProjectIdentity {
+  return {
+    projectId,
+    repoRoot,
+    canonicalRoot: repoRoot,
+    displayName: path.basename(repoRoot),
+    createdAtMs: indexedAtMs,
+    lastIndexedAtMs: indexedAtMs
   };
 }
 

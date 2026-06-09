@@ -2,6 +2,7 @@ import type { GraphStore } from "../core/contracts.js";
 import type {
   CodeChunk,
   CodeFile,
+  DirtyFile,
   DiffReview,
   EdgeKind,
   GraphEdge,
@@ -12,18 +13,27 @@ import type {
   SearchHit,
   SearchQuery,
   SymbolNode,
-  TraceFlow
+  TraceFlow,
+  WatcherEventOptions,
+  WatcherState
 } from "../core/types.js";
 import { buildImpactAnalysis, impactReference } from "./impact-report.js";
 import { normalizeUserPath } from "../utils/path.js";
+import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
 
 interface RepoGraphState {
   projectId?: string;
+  indexGeneration: number;
   files: Map<string, CodeFile>;
   chunks: Map<string, CodeChunk>;
   symbols: Map<string, SymbolNode>;
   edges: GraphEdge[];
   skippedFiles: Array<{ filePath: string; reason: string }>;
+  dirtyFiles: Map<string, DirtyFile>;
+  burstMode: boolean;
+  droppedEvents: number;
+  lastEventAtMs?: number;
+  watcherUpdatedAtMs?: number;
 }
 
 export class InMemoryGraphStore implements GraphStore {
@@ -31,28 +41,87 @@ export class InMemoryGraphStore implements GraphStore {
 
   async resetRepo(repoRoot: string): Promise<void> {
     this.repos.set(repoRoot, {
+      indexGeneration: 0,
       files: new Map(),
       chunks: new Map(),
       symbols: new Map(),
       edges: [],
-      skippedFiles: []
+      skippedFiles: [],
+      dirtyFiles: new Map(),
+      burstMode: false,
+      droppedEvents: 0
     });
   }
 
   async upsertIndex(index: RepoIndex): Promise<void> {
-    const state = {
-      projectId: index.projectId,
-      files: new Map<string, CodeFile>(),
-      chunks: new Map<string, CodeChunk>(),
-      symbols: new Map<string, SymbolNode>(),
-      edges: [] as GraphEdge[],
-      skippedFiles: index.skippedFiles
-    };
-    for (const file of index.files) state.files.set(file.path, file);
-    for (const chunk of index.chunks) state.chunks.set(chunk.id, chunk);
-    for (const symbol of index.symbols) state.symbols.set(symbol.id, symbol);
-    state.edges.push(...index.edges);
+    const state = index.fullReindex
+      ? {
+        projectId: index.projectId,
+        indexGeneration: index.indexGeneration,
+        files: new Map<string, CodeFile>(),
+        chunks: new Map<string, CodeChunk>(),
+        symbols: new Map<string, SymbolNode>(),
+        edges: [] as GraphEdge[],
+        skippedFiles: index.skippedFiles,
+        dirtyFiles: new Map(),
+        burstMode: false,
+        droppedEvents: 0
+      }
+      : this.ensureRepo(index.repoRoot);
+
+    state.projectId = index.projectId;
+    state.indexGeneration = index.indexGeneration;
+    state.skippedFiles = index.skippedFiles;
+    const changedOrDeleted = new Set(index.fullReindex ? index.files.map((file) => file.path) : [...index.changedFiles, ...index.deletedFiles]);
+    for (const filePath of changedOrDeleted) this.deleteFileRows(state, filePath);
+    const filesToWrite = index.fullReindex ? index.files : index.files.filter((file) => changedOrDeleted.has(file.path));
+    const chunksToWrite = index.fullReindex ? index.chunks : index.chunks.filter((chunk) => changedOrDeleted.has(chunk.filePath));
+    const symbolsToWrite = index.fullReindex ? index.symbols : index.symbols.filter((symbol) => changedOrDeleted.has(symbol.filePath));
+    const edgesToWrite = index.fullReindex ? index.edges : index.edges.filter((edge) => edgeFilePath(edge) && changedOrDeleted.has(edgeFilePath(edge)!));
+
+    for (const file of filesToWrite) state.files.set(file.path, file);
+    for (const chunk of chunksToWrite) state.chunks.set(chunk.id, chunk);
+    for (const symbol of symbolsToWrite) state.symbols.set(symbol.id, symbol);
+    state.edges.push(...edgesToWrite);
+    this.clearDirtyRows(state);
     this.repos.set(index.repoRoot, state);
+  }
+
+  async getIndexGeneration(repoRoot: string): Promise<number> {
+    return this.ensureRepo(repoRoot).indexGeneration;
+  }
+
+  async recordFileEvents(repoRoot: string, filePaths: string[], options?: WatcherEventOptions): Promise<WatcherState> {
+    const state = this.ensureRepo(repoRoot);
+    const projectId = state.projectId ?? "__unindexed__";
+    const coalesced = coalesceFileEvents(repoRoot, filePaths, options);
+    for (const filePath of coalesced.dirtyFiles) {
+      const existing = state.dirtyFiles.get(filePath);
+      const now = coalesced.lastEventAtMs;
+      state.dirtyFiles.set(filePath, {
+        projectId,
+        filePath,
+        status: "pending",
+        reason: coalesced.burstMode ? "watcher burst event" : "watcher file event",
+        firstSeenAtMs: existing?.firstSeenAtMs ?? now,
+        lastSeenAtMs: now,
+        eventCount: (existing?.eventCount ?? 0) + (coalesced.eventCountByFile.get(filePath) ?? 1)
+      });
+    }
+    state.burstMode = state.burstMode || coalesced.burstMode;
+    state.droppedEvents += coalesced.droppedEvents;
+    state.lastEventAtMs = coalesced.lastEventAtMs;
+    state.watcherUpdatedAtMs = coalesced.lastEventAtMs;
+    return watcherStateFromMemory(projectId, state);
+  }
+
+  async getWatcherState(repoRoot: string): Promise<WatcherState> {
+    const state = this.ensureRepo(repoRoot);
+    return watcherStateFromMemory(state.projectId ?? "__unindexed__", state);
+  }
+
+  async clearDirtyFiles(repoRoot: string, filePaths?: string[]): Promise<void> {
+    this.clearDirtyRows(this.ensureRepo(repoRoot), filePaths);
   }
 
   async getFiles(repoRoot: string): Promise<CodeFile[]> {
@@ -253,10 +322,34 @@ export class InMemoryGraphStore implements GraphStore {
   private ensureRepo(repoRoot: string): RepoGraphState {
     let state = this.repos.get(repoRoot);
     if (!state) {
-      state = { files: new Map(), chunks: new Map(), symbols: new Map(), edges: [], skippedFiles: [] };
+      state = { indexGeneration: 0, files: new Map(), chunks: new Map(), symbols: new Map(), edges: [], skippedFiles: [], dirtyFiles: new Map(), burstMode: false, droppedEvents: 0 };
       this.repos.set(repoRoot, state);
     }
     return state;
+  }
+
+  private clearDirtyRows(state: RepoGraphState, filePaths?: string[]): void {
+    if (!filePaths) {
+      state.dirtyFiles.clear();
+      state.burstMode = false;
+      state.droppedEvents = 0;
+      state.watcherUpdatedAtMs = Date.now();
+      return;
+    }
+    for (const filePath of filePaths) state.dirtyFiles.delete(filePath);
+    if (state.dirtyFiles.size === 0) state.burstMode = false;
+    state.watcherUpdatedAtMs = Date.now();
+  }
+
+  private deleteFileRows(state: RepoGraphState, filePath: string): void {
+    state.files.delete(filePath);
+    for (const [chunkId, chunk] of state.chunks.entries()) {
+      if (chunk.filePath === filePath) state.chunks.delete(chunkId);
+    }
+    for (const [symbolId, symbol] of state.symbols.entries()) {
+      if (symbol.filePath === filePath) state.symbols.delete(symbolId);
+    }
+    state.edges = state.edges.filter((edge) => edgeFilePath(edge) !== filePath);
   }
 }
 
@@ -300,6 +393,10 @@ function extractChangedFiles(diff: string): string[] {
   return [...files].sort();
 }
 
+function edgeFilePath(edge: GraphEdge): string | undefined {
+  return typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : undefined;
+}
+
 function isTraceEdge(kind: EdgeKind): boolean {
   return kind === "calls"
     || kind === "calls_api"
@@ -315,4 +412,18 @@ function isTraceEdge(kind: EdgeKind): boolean {
 function matchesTarget(symbol: SymbolNode, normalized: string, target: string): boolean {
   const lowered = target.toLowerCase();
   return symbol.name.toLowerCase().includes(lowered) || symbol.filePath === normalized || symbol.filePath.includes(normalized);
+}
+
+function watcherStateFromMemory(projectId: string, state: RepoGraphState): WatcherState {
+  const dirtyFiles = [...state.dirtyFiles.values()].sort((a, b) => a.filePath.localeCompare(b.filePath));
+  return {
+    projectId,
+    dirtyFiles,
+    pendingFiles: dirtyFiles.filter((file) => file.status === "pending").map((file) => file.filePath),
+    indexingFiles: dirtyFiles.filter((file) => file.status === "indexing").map((file) => file.filePath),
+    burstMode: state.burstMode,
+    droppedEvents: state.droppedEvents,
+    lastEventAtMs: state.lastEventAtMs,
+    updatedAtMs: state.watcherUpdatedAtMs
+  };
 }

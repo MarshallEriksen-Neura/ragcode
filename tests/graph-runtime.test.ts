@@ -93,6 +93,64 @@ describe("graph runtime configuration", () => {
       restoreEnv("RAGCODE_SQLITE_PATH", previousSqlitePath);
     }
   });
+
+  it("hydrates persisted SQLite project state for no-reindex engine reads", async () => {
+    const root = await tempDir("ragcode-engine-hydrate-");
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, "src", "auth.ts"),
+      [
+        "export function persistentLogin() {",
+        "  return 'persisted-runtime-marker';",
+        "}"
+      ].join("\n")
+    );
+    await fs.writeFile(
+      path.join(root, "src", "auth.test.ts"),
+      [
+        "import { persistentLogin } from './auth';",
+        "",
+        "test('persistentLogin', () => {",
+        "  expect(persistentLogin()).toContain('persisted-runtime-marker');",
+        "});"
+      ].join("\n")
+    );
+    const sqlitePath = path.join(root, ".ragcode", "graph.sqlite");
+    const env = {
+      ...process.env,
+      RAGCODE_GRAPH_STORE: "sqlite",
+      RAGCODE_SQLITE_PATH: sqlitePath
+    };
+
+    const firstEngine = new RagCodeEngine({ cwd: root, env });
+    const index = await firstEngine.indexRepo(root);
+    firstEngine.close();
+
+    const secondEngine = new RagCodeEngine({ cwd: root, env });
+    try {
+      const status = await secondEngine.indexStatus(root);
+      expect(status.projectId).toBe(index.projectId);
+      expect(status.fileCount).toBe(2);
+
+      const hits = await secondEngine.searchCode({ repoRoot: root, query: "persisted-runtime-marker", limit: 5 });
+      expect(hits[0]).toMatchObject({
+        chunk: {
+          projectId: index.projectId,
+          filePath: "src/auth.ts"
+        },
+        source: "keyword"
+      });
+
+      const pack = await secondEngine.getContext({ repoRoot: root, query: "persisted-runtime-marker", budgetChars: 2000 });
+      expect(pack.projectId).toBe(index.projectId);
+      expect(pack.snippets.map((snippet) => snippet.filePath)).toContain("src/auth.ts");
+
+      const related = await secondEngine.relatedTests(root, "src/auth.ts");
+      expect(related.tests.map((file) => file.path)).toContain("src/auth.test.ts");
+    } finally {
+      secondEngine.close();
+    }
+  });
 });
 
 async function tempDir(prefix: string): Promise<string> {

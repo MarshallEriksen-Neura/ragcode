@@ -1,4 +1,4 @@
-import type { ContextPack, ContextRequest, ContextSnippet, FreshnessReport, GraphEdge, OwnerNode, RelationshipEvidence, SearchHit, TopologyEdge } from "../core/types.js";
+import type { ContextPack, ContextRequest, ContextSnippet, DirtyFile, FreshnessReport, GraphEdge, OwnerNode, RelationshipEvidence, SearchHit, TopologyEdge } from "../core/types.js";
 import { nextQueriesForMode, resolveContextMode } from "../retrieval/query-planner.js";
 import { renderSnippet } from "./snippet-renderer.js";
 
@@ -13,6 +13,9 @@ export interface ContextBuildMetadata {
   staleFiles?: string[];
   pendingFiles?: string[];
   indexingFiles?: string[];
+  dirtyFiles?: DirtyFile[];
+  burstMode?: boolean;
+  droppedEvents?: number;
 }
 
 export class ContextBuilder {
@@ -61,6 +64,7 @@ function missingEvidenceFor(snippets: ContextSnippet[], metadata: ContextBuildMe
   if (snippets.length === 0) missing.push("No indexed context matched the query.");
   if (metadata.staleFiles?.length) missing.push(`Stale indexed files excluded: ${metadata.staleFiles.slice(0, 8).join(", ")}.`);
   if (metadata.pendingFiles?.length) missing.push(`Pending files need indexing: ${metadata.pendingFiles.slice(0, 8).join(", ")}.`);
+  if (metadata.burstMode) missing.push(`Watcher burst mode is active; ${metadata.droppedEvents ?? 0} event(s) were dropped or compressed.`);
   return missing;
 }
 
@@ -180,7 +184,10 @@ function freshnessFor(metadata: ContextBuildMetadata): FreshnessReport {
     staleFiles: metadata.staleFiles ?? [],
     pendingFiles: metadata.pendingFiles ?? [],
     indexingFiles: metadata.indexingFiles ?? [],
-    skippedFiles: metadata.skippedFiles
+    skippedFiles: metadata.skippedFiles,
+    dirtyFiles: metadata.dirtyFiles ?? [],
+    burstMode: metadata.burstMode ?? false,
+    droppedEvents: metadata.droppedEvents ?? 0
   };
 }
 

@@ -7,7 +7,8 @@ import type { DatabaseSync } from "node:sqlite";
 export class SqliteStatements {
   // Projects
   readonly upsertProject: any;
-  readonly selectProject: any;
+  readonly selectProjectByRoot: any;
+  readonly listProjects: any;
 
   // Files
   readonly selectFiles: any;
@@ -51,10 +52,34 @@ export class SqliteStatements {
   constructor(db: DatabaseSync) {
     // Projects
     this.upsertProject = db.prepare(
-      "INSERT OR REPLACE INTO projects(project_id, repo_root, indexed_at_ms) VALUES (?, ?, ?)"
+      `INSERT INTO projects(
+        project_id,
+        repo_root,
+        canonical_root,
+        display_name,
+        git_remote,
+        git_head,
+        created_at_ms,
+        last_indexed_at_ms,
+        indexed_at_ms,
+        index_generation
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET
+        repo_root = excluded.repo_root,
+        canonical_root = excluded.canonical_root,
+        display_name = excluded.display_name,
+        git_remote = excluded.git_remote,
+        git_head = excluded.git_head,
+        created_at_ms = COALESCE(projects.created_at_ms, excluded.created_at_ms),
+        last_indexed_at_ms = excluded.last_indexed_at_ms,
+        indexed_at_ms = excluded.indexed_at_ms,
+        index_generation = excluded.index_generation`
     );
-    this.selectProject = db.prepare(
-      "SELECT * FROM projects WHERE repo_root = ?"
+    this.selectProjectByRoot = db.prepare(
+      "SELECT * FROM projects WHERE lower(repo_root) = lower(?) OR lower(COALESCE(canonical_root, repo_root)) = lower(?) ORDER BY indexed_at_ms DESC LIMIT 1"
+    );
+    this.listProjects = db.prepare(
+      "SELECT * FROM projects ORDER BY COALESCE(canonical_root, repo_root), project_id"
     );
 
     // Files

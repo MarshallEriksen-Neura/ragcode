@@ -149,15 +149,20 @@ describe("RagCode foundation", () => {
       "index_repo",
       "refresh_index",
       "index_status",
+      "record_file_events",
       "search_code",
       "get_context",
       "topology_map",
       "find_symbol",
       "explain_file",
+      "expand_node",
       "find_owner",
+      "find_reuse_candidates",
       "impact_analysis",
+      "explain_impact",
       "related_tests",
       "trace_flow",
+      "trace_request_flow",
       "review_diff"
     ]);
 

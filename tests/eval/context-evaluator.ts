@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { ContextPack, RepoIndex, SearchHit } from "../../src/core/types.js";
+import type { ContextPack, ReuseCandidateReport, RepoIndex, SearchHit, VerifiedCodeSubgraph } from "../../src/core/types.js";
 import { RagCodeEngine } from "../../src/index.js";
 import { changedStaleCacheSource, type PaymentEvalFixture } from "./fixtures/payment-app.js";
 
@@ -14,6 +14,13 @@ export interface ContextEvalReport {
     contextBudgetUsage: number;
     relatedTestHitRate: number;
     flowPathCompleteness: number;
+    verifiedSubgraphPathCompleteness: number;
+    verifiedImpactCallerRecall: number;
+    reuseCandidateRecall: number;
+    duplicateFalseNegativeRate: number;
+    grepKnownSymbolHitRate: number;
+    grepLexicalGapHitRate: number;
+    grepFlowPathCompleteness: number;
     returnedLineCount: number;
     elidedLineCount: number;
     graphRerankLift: number;
@@ -23,6 +30,14 @@ export interface ContextEvalReport {
   expectedOwnerFiles: string[];
   paymentOwnerFiles: string[];
   topologyFiles: string[];
+  verifiedSubgraphFiles: string[];
+  verifiedImpactFiles: string[];
+  reuseCandidates: string[];
+  grepBaseline: {
+    knownSymbolFiles: string[];
+    lexicalGapFiles: string[];
+    checkoutOnlyFiles: string[];
+  };
   staleFiles: string[];
   pendingFiles: string[];
   deletedQueryResultFiles: string[];
@@ -58,6 +73,28 @@ export async function runContextEvaluation(root: string, fixture: PaymentEvalFix
     mode: "feature",
     budgetChars: 5_000
   });
+  const verifiedFlowSubgraph = await engine.verifiedSubgraph({
+    repoRoot: root,
+    query: "checkout payment request flow",
+    seed: "CheckoutButton",
+    mode: "flow",
+    budgetChars: 8_000
+  });
+  const verifiedImpactSubgraph = await engine.verifiedSubgraph({
+    repoRoot: root,
+    query: "createPaymentIntent impact",
+    seed: "createPaymentIntent",
+    mode: "impact",
+    budgetChars: 8_000
+  });
+  const reuseReport = await engine.findReuseCandidates({
+    repoRoot: root,
+    query: "add rate limiting middleware",
+    limit: 6
+  });
+  const grepKnownSymbolFiles = await literalFileSearch(root, "tokenBucket");
+  const grepLexicalGapFiles = await literalFileSearch(root, "rate limiting");
+  const grepCheckoutOnlyFiles = await literalFileSearch(root, "CheckoutButton");
 
   await fs.writeFile(path.join(root, fixture.staleFile), changedStaleCacheSource());
   await fs.rm(path.join(root, fixture.deletedFile));
@@ -84,6 +121,12 @@ export async function runContextEvaluation(root: string, fixture: PaymentEvalFix
     rerankHits,
     debugHits,
     skeletonPack,
+    verifiedFlowSubgraph,
+    verifiedImpactSubgraph,
+    reuseReport,
+    grepKnownSymbolFiles,
+    grepLexicalGapFiles,
+    grepCheckoutOnlyFiles,
     freshnessPack,
     staleHits,
     deletedHits,
@@ -101,6 +144,13 @@ export function assertContextEvalReport(report: ContextEvalReport): void {
   if (report.metrics.largeFullBodyViolations !== 0) failures.push(`largeFullBodyViolations expected 0, got ${report.metrics.largeFullBodyViolations}`);
   if (report.metrics.graphRerankLift <= 0) failures.push(`graphRerankLift expected positive, got ${report.metrics.graphRerankLift}`);
   if (report.metrics.relatedTestHitRate < 1) failures.push(`relatedTestHitRate expected 1, got ${report.metrics.relatedTestHitRate}`);
+  if (report.metrics.verifiedSubgraphPathCompleteness < 1) failures.push(`verifiedSubgraphPathCompleteness expected 1, got ${report.metrics.verifiedSubgraphPathCompleteness}`);
+  if (report.metrics.verifiedImpactCallerRecall < 1) failures.push(`verifiedImpactCallerRecall expected 1, got ${report.metrics.verifiedImpactCallerRecall}`);
+  if (report.metrics.reuseCandidateRecall < 1) failures.push(`reuseCandidateRecall expected 1, got ${report.metrics.reuseCandidateRecall}`);
+  if (report.metrics.duplicateFalseNegativeRate !== 0) failures.push(`duplicateFalseNegativeRate expected 0, got ${report.metrics.duplicateFalseNegativeRate}`);
+  if (report.metrics.grepKnownSymbolHitRate < 1) failures.push(`grepKnownSymbolHitRate expected 1, got ${report.metrics.grepKnownSymbolHitRate}`);
+  if (report.metrics.grepLexicalGapHitRate !== 0) failures.push(`grepLexicalGapHitRate expected 0, got ${report.metrics.grepLexicalGapHitRate}`);
+  if (report.metrics.grepFlowPathCompleteness >= 1) failures.push(`grepFlowPathCompleteness expected less than 1, got ${report.metrics.grepFlowPathCompleteness}`);
   if (report.metrics.elidedLineCount <= 0) failures.push("elidedLineCount expected to be positive");
 
   if (failures.length > 0) {
@@ -114,6 +164,12 @@ interface BuildReportInput {
   rerankHits: SearchHit[];
   debugHits: SearchHit[];
   skeletonPack: ContextPack;
+  verifiedFlowSubgraph: VerifiedCodeSubgraph;
+  verifiedImpactSubgraph: VerifiedCodeSubgraph;
+  reuseReport: ReuseCandidateReport;
+  grepKnownSymbolFiles: string[];
+  grepLexicalGapFiles: string[];
+  grepCheckoutOnlyFiles: string[];
   freshnessPack: ContextPack;
   staleHits: SearchHit[];
   deletedHits: SearchHit[];
@@ -129,6 +185,9 @@ function buildReport(input: BuildReportInput): ContextEvalReport {
   ];
   const paymentOwnerFiles = input.paymentPack.ownerChain.map((owner) => owner.filePath);
   const topologyFiles = topologyNodeFiles(input.paymentPack);
+  const verifiedSubgraphFiles = subgraphFiles(input.verifiedFlowSubgraph);
+  const verifiedImpactFiles = subgraphFiles(input.verifiedImpactSubgraph);
+  const reuseCandidates = input.reuseReport.candidates.map((candidate) => `${candidate.filePath}${candidate.symbolName ? `:${candidate.symbolName}` : ""}`);
   const visibleFlowFiles = new Set([...paymentOwnerFiles, ...topologyFiles]);
   const ranks = rankFiles(input.rerankHits);
   const serviceRank = ranks[input.fixture.serviceFile] ?? input.rerankHits.length + 1;
@@ -148,6 +207,23 @@ function buildReport(input: BuildReportInput): ContextEvalReport {
       contextBudgetUsage: input.paymentPack.usedChars / input.paymentPack.budgetChars,
       relatedTestHitRate: input.debugHits.some((hit) => hit.chunk.filePath === input.fixture.relatedTestFile) ? 1 : 0,
       flowPathCompleteness: hitRate(expectedOwnerFiles, [...visibleFlowFiles]),
+      verifiedSubgraphPathCompleteness: hitRate([
+        input.fixture.checkoutFile,
+        input.fixture.routeFile,
+        input.fixture.serviceFile,
+        input.fixture.relatedTestFile
+      ], verifiedSubgraphFiles),
+      verifiedImpactCallerRecall: hitRate([
+        input.fixture.checkoutFile,
+        input.fixture.routeFile,
+        input.fixture.serviceFile,
+        input.fixture.relatedTestFile
+      ], verifiedImpactFiles),
+      reuseCandidateRecall: input.reuseReport.candidates.some((candidate) => candidate.filePath === input.fixture.reuseFile && candidate.symbolName === "tokenBucket") ? 1 : 0,
+      duplicateFalseNegativeRate: input.reuseReport.decision === "implement_new" ? 1 : 0,
+      grepKnownSymbolHitRate: hitRate([input.fixture.reuseFile], input.grepKnownSymbolFiles),
+      grepLexicalGapHitRate: hitRate([input.fixture.reuseFile], input.grepLexicalGapFiles),
+      grepFlowPathCompleteness: hitRate(expectedOwnerFiles, input.grepCheckoutOnlyFiles),
       returnedLineCount: sumSnippetLines(input.skeletonPack, "returnedLineCount"),
       elidedLineCount: sumSnippetLines(input.skeletonPack, "elidedLineCount"),
       graphRerankLift: disconnectedRank - serviceRank,
@@ -157,12 +233,24 @@ function buildReport(input: BuildReportInput): ContextEvalReport {
     expectedOwnerFiles,
     paymentOwnerFiles,
     topologyFiles,
+    verifiedSubgraphFiles,
+    verifiedImpactFiles,
+    reuseCandidates,
+    grepBaseline: {
+      knownSymbolFiles: input.grepKnownSymbolFiles,
+      lexicalGapFiles: input.grepLexicalGapFiles,
+      checkoutOnlyFiles: input.grepCheckoutOnlyFiles
+    },
     staleFiles: input.freshnessPack.freshness.staleFiles,
     pendingFiles: input.freshnessPack.freshness.pendingFiles,
     deletedQueryResultFiles: input.deletedHits.map((hit) => hit.chunk.filePath),
     staleQueryResultFiles: input.staleHits.map((hit) => hit.chunk.filePath),
     rerankReasons: input.rerankHits.map((hit) => hit.reason).filter((reason) => reason.includes("graph rerank"))
   };
+}
+
+function subgraphFiles(subgraph: VerifiedCodeSubgraph): string[] {
+  return [...new Set(subgraph.nodes.map((node) => node.filePath).filter((filePath) => filePath !== "external"))];
 }
 
 function topologyNodeFiles(pack: ContextPack): string[] {
@@ -204,4 +292,29 @@ function staleOrDeletedHitRate(hits: SearchHit[], filePath: string): number {
 
 function sumSnippetLines(pack: ContextPack, key: "returnedLineCount" | "elidedLineCount"): number {
   return pack.snippets.reduce((sum, snippet) => sum + snippet[key], 0);
+}
+
+async function literalFileSearch(root: string, literal: string): Promise<string[]> {
+  const files = await listFiles(root);
+  const matches: string[] = [];
+  for (const file of files) {
+    const content = await fs.readFile(path.join(root, file), "utf8").catch(() => "");
+    if (content.includes(literal)) matches.push(file);
+  }
+  return matches.sort();
+}
+
+async function listFiles(root: string, relative = ""): Promise<string[]> {
+  const entries = await fs.readdir(path.join(root, relative), { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry.name === ".ragcode" || entry.name === "node_modules" || entry.name === ".git") continue;
+    const next = relative ? `${relative}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      files.push(...await listFiles(root, next));
+    } else {
+      files.push(next);
+    }
+  }
+  return files;
 }

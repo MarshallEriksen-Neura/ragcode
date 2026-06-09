@@ -18,7 +18,7 @@ export class InMemorySemanticStore implements SemanticStore {
     this.repos.set(repoRoot, existing.filter((record) => record.chunk.projectId !== projectId || record.chunk.filePath !== filePath));
   }
 
-  async upsertChunks(chunks: CodeChunk[], provider: EmbeddingProvider): Promise<void> {
+  async upsertChunks(chunks: CodeChunk[], provider: EmbeddingProvider, _generation?: number): Promise<void> {
     const grouped = new Map<string, SemanticRecord[]>();
     for (const chunk of chunks) {
       const embedding = await provider.embed(renderChunkForEmbedding(chunk));

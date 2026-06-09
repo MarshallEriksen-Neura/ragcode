@@ -10,13 +10,20 @@ import type {
   IndexStatus,
   OwnerCandidate,
   RelatedTests,
+  ReuseCandidateReport,
+  ReuseCandidateRequest,
   RepoIndex,
   SearchHit,
   SearchQuery,
   SymbolNode,
   TopologyMap,
   TopologyMapRequest,
-  TraceFlow
+  TraceFlow,
+  VerifiedCodeSubgraph,
+  VerifiedSubgraphRequest,
+  ProjectIdentity,
+  WatcherEventOptions,
+  WatcherState
 } from "./types.js";
 
 export interface EmbeddingProvider {
@@ -26,6 +33,12 @@ export interface EmbeddingProvider {
 
 export interface GraphStore {
   close?(): void;
+  getProjectByRoot?(repoRoot: string): Promise<ProjectIdentity | undefined>;
+  listProjects?(): Promise<ProjectIdentity[]>;
+  getIndexGeneration?(repoRoot: string): Promise<number>;
+  recordFileEvents?(repoRoot: string, filePaths: string[], options?: WatcherEventOptions): Promise<WatcherState>;
+  getWatcherState?(repoRoot: string): Promise<WatcherState>;
+  clearDirtyFiles?(repoRoot: string, filePaths?: string[]): Promise<void>;
   resetRepo(repoRoot: string): Promise<void>;
   upsertIndex(index: RepoIndex): Promise<void>;
   getFiles(repoRoot: string): Promise<CodeFile[]>;
@@ -46,24 +59,27 @@ export interface GraphStore {
 export interface SemanticStore {
   resetRepo(repoRoot: string): Promise<void>;
   deleteFile?(repoRoot: string, projectId: string, filePath: string): Promise<void>;
-  upsertChunks(chunks: CodeChunk[], provider: EmbeddingProvider): Promise<void>;
+  upsertChunks(chunks: CodeChunk[], provider: EmbeddingProvider, generation?: number): Promise<void>;
   search(query: SearchQuery, provider: EmbeddingProvider): Promise<SearchHit[]>;
 }
 
 export interface Indexer {
-  indexRepo(repoRoot: string, projectId: string): Promise<RepoIndex>;
+  indexRepo(repoRoot: string, projectId: string, project?: ProjectIdentity): Promise<RepoIndex>;
 }
 
 export interface ContextEngine {
   indexRepo(repoRoot: string): Promise<RepoIndex>;
   refreshIndex(repoRoot: string | undefined): Promise<RepoIndex>;
   indexStatus(repoRoot: string | undefined): Promise<IndexStatus>;
+  recordFileEvents(repoRoot: string | undefined, filePaths: string[], options?: WatcherEventOptions): Promise<WatcherState>;
   searchCode(query: SearchQuery): Promise<SearchHit[]>;
   getContext(request: ContextRequest): Promise<ContextPack>;
+  verifiedSubgraph(request: VerifiedSubgraphRequest): Promise<VerifiedCodeSubgraph>;
   topologyMap(request: TopologyMapRequest): Promise<TopologyMap>;
   findSymbol(repoRoot: string | undefined, name: string): Promise<SymbolNode[]>;
   explainFile(repoRoot: string | undefined, filePath: string): Promise<{ file?: CodeFile; chunks: CodeChunk[]; symbols: SymbolNode[] }>;
   findOwner(repoRoot: string | undefined, query: string, limit?: number): Promise<OwnerCandidate[]>;
+  findReuseCandidates(request: ReuseCandidateRequest): Promise<ReuseCandidateReport>;
   impactAnalysis(repoRoot: string | undefined, target: string): Promise<ImpactAnalysis>;
   relatedTests(repoRoot: string | undefined, target: string): Promise<RelatedTests>;
   traceFlow(repoRoot: string | undefined, entry: string, maxSteps?: number): Promise<TraceFlow>;

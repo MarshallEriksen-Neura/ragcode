@@ -40,7 +40,10 @@ export function createMcpServer(engine: ContextEngine, options: McpServerOptions
 }
 
 export async function startStdioMcpServer(options: StdioMcpServerOptions = {}): Promise<void> {
-  const engine = new RagCodeEngine(options);
+  const engine = new RagCodeEngine({
+    ...options,
+    env: persistentDefaultEnv(options.env)
+  });
   const server = createMcpServer(engine, options);
   const transport = new StdioServerTransport();
   let closed = false;
@@ -66,4 +69,12 @@ export async function startStdioMcpServer(options: StdioMcpServerOptions = {}): 
   });
 
   await server.connect(transport);
+}
+
+function persistentDefaultEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  if (env.RAGCODE_GRAPH_STORE) return env;
+  return {
+    ...env,
+    RAGCODE_GRAPH_STORE: "sqlite"
+  };
 }

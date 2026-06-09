@@ -9,6 +9,7 @@ export interface PaymentEvalFixture {
   relatedTestFile: string;
   disconnectedDocFile: string;
   disconnectedMockFile: string;
+  reuseFile: string;
   largeFile: string;
   staleFile: string;
   deletedFile: string;
@@ -30,6 +31,7 @@ export async function createPaymentEvalFixture(root: string): Promise<PaymentEva
     relatedTestFile: "src/services/billing.test.ts",
     disconnectedDocFile: "docs/payment-playbook.md",
     disconnectedMockFile: "src/mocks/payment-copy.json",
+    reuseFile: "src/services/traffic-control.ts",
     largeFile: "src/services/large-payment-ledger.ts",
     staleFile: "src/services/stale-cache.ts",
     deletedFile: "src/services/obsolete-payment-cache.ts"
@@ -40,6 +42,7 @@ export async function createPaymentEvalFixture(root: string): Promise<PaymentEva
   await fs.writeFile(path.join(root, fixture.serviceFile), serviceSource());
   await fs.writeFile(path.join(root, fixture.webhookFile), webhookSource());
   await fs.writeFile(path.join(root, fixture.relatedTestFile), relatedTestSource());
+  await fs.writeFile(path.join(root, fixture.reuseFile), trafficControlSource());
   await fs.writeFile(path.join(root, fixture.disconnectedDocFile), "payment checkout billing ".repeat(100));
   await fs.writeFile(path.join(root, fixture.disconnectedMockFile), JSON.stringify({ text: "payment checkout billing ".repeat(60) }));
   await fs.writeFile(path.join(root, fixture.largeFile), largePaymentLedgerSource());
@@ -102,6 +105,18 @@ function relatedTestSource(): string {
     "it('creates a payment intent for billing', () => {",
     "  expect(createPaymentIntent().clientSecret).toContain('payment');",
     "});"
+  ].join("\n");
+}
+
+function trafficControlSource(): string {
+  return [
+    "export function tokenBucket(key: string, capacity = 10) {",
+    "  return { key, capacity, remaining: capacity };",
+    "}",
+    "",
+    "export function throttleRequests(key: string) {",
+    "  return tokenBucket(key, 20).remaining > 0;",
+    "}"
   ].join("\n");
 }
 

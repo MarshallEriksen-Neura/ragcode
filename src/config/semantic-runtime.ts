@@ -65,7 +65,13 @@ function createSemanticStore(config: SemanticRuntimeConfig, provider: EmbeddingP
   if (config.semanticStore === "memory") return new InMemorySemanticStore();
   return new LanceSemanticStore(config.lanceDbUri ?? ".ragcode/lancedb", {
     tableName: config.lanceDbTableName,
-    vectorDimensions: provider.dimensions
+    vectorDimensions: provider.dimensions,
+    embeddingProfile: {
+      provider: config.embeddingProvider,
+      model: config.embeddingModel,
+      baseUrl: config.embeddingBaseUrl,
+      requestDimensions: config.embeddingRequestDimensions
+    }
   });
 }
 

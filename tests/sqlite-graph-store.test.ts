@@ -1,7 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import type { EmbeddingProvider, SearchHit, SearchQuery, SemanticStore } from "../src/index.js";
+import type { CodeChunk } from "../src/index.js";
 import { RagCodeEngine, SQLiteGraphStore } from "../src/index.js";
 
 const tempRoots: string[] = [];
@@ -108,6 +111,61 @@ describe("SQLiteGraphStore", () => {
     }
   });
 
+  it("increments generation and only updates semantic chunks for changed or deleted files", async () => {
+    const repoRoot = await createRepo("sqlite-incremental", {
+      "src/auth.ts": "export function loginUser() { return 'login-v1-marker'; }\n",
+      "src/profile.ts": "export function refreshProfile() { return 'profile-delete-marker'; }\n",
+      "src/stable.ts": "export function stableHelper() { return 'stable-unchanged-marker'; }\n"
+    });
+    const dbPath = await tempDbPath();
+    const store = new SQLiteGraphStore(dbPath);
+    const semantic = new RecordingSemanticStore();
+    const engine = new RagCodeEngine({ graphStore: store, semanticStore: semantic, embeddingProvider: new NoopEmbeddingProvider() });
+
+    try {
+      const first = await engine.indexRepo(repoRoot);
+      expect(first).toMatchObject({
+        indexGeneration: 1,
+        fullReindex: true,
+        deletedFiles: []
+      });
+      expect(first.changedFiles).toEqual(["src/auth.ts", "src/profile.ts", "src/stable.ts"]);
+      expect(semantic.resets).toEqual([repoRoot]);
+      expect(semantic.upserts[0]?.filePaths).toEqual(["src/auth.ts", "src/profile.ts", "src/stable.ts"]);
+
+      semantic.clear();
+      await fs.writeFile(path.join(repoRoot, "src", "auth.ts"), "export function logoutUser() { return 'login-v2-marker'; }\n");
+      await fs.rm(path.join(repoRoot, "src", "profile.ts"));
+      const second = await engine.indexRepo(repoRoot);
+
+      expect(second).toMatchObject({
+        projectId: first.projectId,
+        indexGeneration: 2,
+        fullReindex: false,
+        changedFiles: ["src/auth.ts"],
+        deletedFiles: ["src/profile.ts"]
+      });
+      expect(await store.getIndexGeneration(repoRoot)).toBe(2);
+      expect((await engine.indexStatus(repoRoot)).freshness.indexGeneration).toBe(2);
+      expect(fileGenerations(dbPath, first.projectId)).toEqual({
+        "src/auth.ts": 2,
+        "src/stable.ts": 1
+      });
+      expect(semantic.resets).toEqual([]);
+      expect(semantic.deletes.map((entry) => entry.filePath)).toEqual(["src/auth.ts", "src/profile.ts"]);
+      expect(semantic.upserts).toEqual([
+        {
+          generation: 2,
+          filePaths: ["src/auth.ts"]
+        }
+      ]);
+      expect(await store.searchText({ repoRoot, query: "profile-delete-marker", limit: 10 })).toEqual([]);
+      expect((await store.searchText({ repoRoot, query: "stable-unchanged-marker", limit: 10 }))[0]?.chunk.filePath).toBe("src/stable.ts");
+    } finally {
+      store.close();
+    }
+  });
+
   it("uses SQLite FTS bm25 ranking for keyword search", async () => {
     const repeatedTerm = Array.from({ length: 20 }, () => "critical-marker").join(" ");
     const repoRoot = await createRepo("sqlite-fts", {
@@ -171,4 +229,56 @@ async function tempDbPath(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ragcode-sqlite-db-"));
   tempRoots.push(root);
   return path.join(root, "graph.sqlite");
+}
+
+class RecordingSemanticStore implements SemanticStore {
+  resets: string[] = [];
+  deletes: Array<{ repoRoot: string; projectId: string; filePath: string }> = [];
+  upserts: Array<{ generation: number | undefined; filePaths: string[] }> = [];
+
+  async resetRepo(repoRoot: string): Promise<void> {
+    this.resets.push(repoRoot);
+  }
+
+  async deleteFile(repoRoot: string, projectId: string, filePath: string): Promise<void> {
+    this.deletes.push({ repoRoot, projectId, filePath });
+  }
+
+  async upsertChunks(chunks: CodeChunk[], _provider: EmbeddingProvider, generation?: number): Promise<void> {
+    this.upserts.push({
+      generation,
+      filePaths: [...new Set(chunks.map((chunk) => chunk.filePath))].sort()
+    });
+  }
+
+  async search(_query: SearchQuery, _provider: EmbeddingProvider): Promise<SearchHit[]> {
+    return [];
+  }
+
+  clear(): void {
+    this.resets = [];
+    this.deletes = [];
+    this.upserts = [];
+  }
+}
+
+class NoopEmbeddingProvider implements EmbeddingProvider {
+  readonly dimensions = 1;
+
+  async embed(_text: string): Promise<number[]> {
+    return [1];
+  }
+}
+
+function fileGenerations(dbPath: string, projectId: string): Record<string, number> {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return Object.fromEntries(
+      db.prepare("SELECT path, generation FROM files WHERE project_id = ? ORDER BY path")
+        .all(projectId)
+        .map((row: any) => [String(row.path), Number(row.generation)])
+    );
+  } finally {
+    db.close();
+  }
 }

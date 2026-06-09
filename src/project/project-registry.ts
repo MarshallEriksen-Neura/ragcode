@@ -15,6 +15,16 @@ export class ProjectRegistry {
       createdAtMs: existing?.createdAtMs ?? identity.createdAtMs,
       lastIndexedAtMs: Date.now()
     };
+    return this.upsert(merged);
+  }
+
+  upsert(project: ProjectIdentity): ProjectIdentity {
+    const existing = this.byId.get(project.projectId);
+    const merged = {
+      ...(existing ?? project),
+      ...project,
+      createdAtMs: existing?.createdAtMs ?? project.createdAtMs
+    };
     this.byId.set(merged.projectId, merged);
     this.byRoot.set(normalizeRoot(merged.repoRoot), merged);
     this.byRoot.set(normalizeRoot(merged.canonicalRoot), merged);

@@ -32,21 +32,181 @@ Already implemented or no longer accurate:
 - `tested_by` is now produced by `buildTestTopologyEdges` and is surfaced in related tests, impact, trace, and topology map.
 - Runtime topology has an initial TS/JS pass for `reads_from`, `writes_to`, `handles_event`, and `uses_middleware`.
 
-Still true or partially true:
+Still true or partially true after the base implementation:
 
-- CLI commands still re-index before most reads, so persistent SQLite does not yet remove repeated indexing work for CLI usage.
-- Project registry/session state is not hydrated from persisted SQLite rows; a new process cannot fully use persisted graph state without re-registering/indexing the workspace.
-- Indexing is still full reset plus full semantic re-embed; unchanged files still cost time and real embedding money.
-- File watching is not implemented yet. Current freshness is request-time scan/hash comparison; watcher/debounce only exists in docs as a target.
-- Large burst changes are not handled as a distinct mode. A script that rewrites many files will currently create many pending/stale files and the next refresh still falls back to full reindex.
-- `indexGeneration` and row `generation` are always `1`, so generation-based invalidation is not real yet.
-- The default deterministic embedding is not semantic; it is an offline test signal. Real embedding models need separate eval calibration.
-- LanceDB table dimension/model compatibility is not guarded. Existing tables can conflict after provider/model/dimension changes.
-- Non-TS/JS files still fall back to line chunks; `LanguageId` promises more than the analyzer layer delivers.
-- Framework topology remains mostly Next.js and static pattern based. Dynamic URLs, axios/API wrappers, other frameworks, and richer repository/ORM patterns are incomplete.
+- The default deterministic embedding is not semantic; it is an offline smoke-test signal. Real embedding model evals still need separate calibration.
+- File watching is a persisted dirty-event intake and coalescer, not a long-running OS watcher daemon with background indexing.
+- Incremental indexing avoids rewriting unchanged persisted rows and vectors, but the analysis pass still rebuilds a full in-memory file/chunk/symbol/edge snapshot to preserve cross-file relationship quality.
+- Framework topology remains mostly Next.js and static-pattern based. Dynamic URLs, axios/API wrappers, other frameworks, and richer repository/ORM patterns are incomplete.
 - `related` remains an unused edge kind and should either gain a producer or be removed from the public contract.
-- `traceFlow` and `impactAnalysis` are still flat lists, not path-shaped verified subgraphs.
-- Existing `find_owner` and hybrid search can find related files, but they do not yet answer the reuse question: "has this behavior already been implemented, and should the agent call, extend, or wrap it instead of writing another version?"
+- `impact_analysis` and `trace_flow` remain legacy flat tools for compatibility. The path-shaped contract is now `explain_impact` / `trace_request_flow` over `VerifiedCodeSubgraph`.
+- Python, Go, Rust, and Java have non-trivial structural indexing, but these analyzers are lightweight static extractors, not full tree-sitter/LSP-backed resolvers.
+- `find_reuse_candidates` exists and catches basic naming gaps, but duplicate detection is still heuristic and should be deepened before treating it as a hard gate.
+
+## Implementation Self-Audit
+
+This section marks which delivered pieces are base slices rather than final-form implementations. The current goal is a strong working foundation; the next quality jump is replacing heuristics with resolver-backed, continuously evaluated behavior.
+
+| Area | Current usable capability | Simple/base-slice part | Future hardening |
+| --- | --- | --- | --- |
+| SQLite persistence | Runtime can select SQLite, persist project/files/chunks/symbols/edges/dirty state, and support no-reindex reads across processes. | Schema is intentionally compact; migrations are inline; relationship rows still use JSON metadata for many source-specific fields. | Add versioned migrations, richer edge evidence columns, query indexes for subgraph traversal, and stress tests on large repos. |
+| Incremental indexing | Changed/deleted files update graph/FTS/vector rows without re-embedding unchanged chunks. | Analysis still reads/analyzes the full scanned file set before selecting changed rows to write. | Add dependency-aware affected-file analysis, neighbor invalidation, and partial resolver passes so huge repos do not rebuild full snapshots. |
+| Watcher/burst state | `record_file_events` coalesces noisy events, persists dirty files, reports burst mode, and retrieval excludes dirty indexed files. | It is not an always-on filesystem daemon; no background worker schedules reindex batches yet. | Add OS watcher service, event journal replay, background batch indexing, rate-limited embedding queues, and recovery from dropped watcher events. |
+| LanceDB profile guard | Sidecar profile catches provider/model/dimension/table mismatches before search/upsert. | Uses JSON sidecar metadata; does not inspect/migrate LanceDB table schema or automatically rebuild incompatible tables. | Add migration strategy, table/schema introspection, explicit repair command, and real-model eval profiles. |
+| Verified subgraph | `VerifiedCodeSubgraph` returns nodes, verified edges, paths, coverage, missing evidence, next queries, and budgeted snippets. | Builder is a prioritized BFS over existing graph edges; path scoring and coverage are still heuristic. | Add weighted path search, edge provenance normalization, branch pruning, dynamic dispatch handling, and coverageSummary/edit-readiness across all subgraph tools. |
+| `explain_impact` | MCP/CLI returns blast-radius subgraph plus risk score, reasons, and edit-readiness. | Risk scoring is rule-based; diff seed support is not first-class; public API detection is mostly export-based. | Add diff input, API boundary taxonomy, changed-field/type impact, test gap scoring, and same-name false-positive controls. |
+| `trace_request_flow` | MCP/CLI returns ordered flow-mode subgraphs for static TS/JS + Next.js route/client/service/test paths. | It follows existing edges; no true dataflow/taint tracking, dynamic route resolution, or wrapper-aware API client tracing. | Add framework rule modules, axios/client wrapper resolution, route params, middleware chains, repository/ORM edges, webhook/event fan-in/fan-out. |
+| `expand_node` | Agent can expand one compact node as file card, skeleton, focused body, or full body under budget. | Expansion is chunk/symbol based and does not yet use per-language AST body extraction everywhere. | Add exact AST range expansion, multi-node expansion packs, stable citations, and language-specific skeletons. |
+| Output presets | `compact` removes snippets for low-token first-pass reads; other presets preserve full subgraph output. | Presets are simple response shaping, not deeply different narrative contracts. | Add `agent_edit`, `debug_trace`, and `review_risk` tailored summaries with `why_these_files`, enough-context verdicts, and required next reads. |
+| Reuse discovery | `find_reuse_candidates` merges search hits, owner candidates, symbol similarity, exports, callers, tests, synonyms, and duplicate risk. | Similarity and duplicate detection are heuristic; synonym list is small; no normalized body/signature/import/callee comparison yet. | Add embedding-backed behavior matching, normalized AST-body similarity, import/callee overlap, API compatibility scoring, and stricter false-positive evals. |
+| Analyzer plugins | Analyzer interface/registry is in place; TS/JS is reference; Python/Go/Rust/Java emit symbols/imports/exports/calls. | Non-TS analyzers are regex/lightweight static extractors, not tree-sitter parsers or language-service resolvers. | Move Python/Go/Rust/Java to tree-sitter, add cross-file import/call resolution, framework route/test edges, and per-language golden evals. |
+| Evaluation | Eval now separates grep-solvable lookup from graph-only flow/reuse wins and tracks path/reuse/freshness/budget metrics. | Fixture set is small and synthetic; grep baseline is literal file search, not a full benchmark suite. | Add multi-repo fixtures, same-name false positives, dynamic routing cases, language matrix dashboards, and regression thresholds per metric. |
+
+## Not Yet Implemented
+
+These are not done yet. Some have scaffolding or a base slice, but the explicit capability below is still missing and should not be claimed as implemented.
+
+### Why These Are Deferred
+
+Most of the gaps are not blocked by feasibility. They were deferred deliberately because the first implementation pass optimized for a verified end-to-end spine: durable indexing, explicit graph contracts, MCP/CLI tools, compact output, reuse detection, multi-language analyzer hooks, and eval gates. The remaining work is where premature depth can easily make the engine confidently wrong or operationally expensive.
+
+| Reason | Applies to | Why it was not completed in the base slice |
+| --- | --- | --- |
+| Correctness risk | dataflow, dynamic dispatch, same-name disambiguation, non-TS cross-file resolution | Wrong graph edges are worse than missing edges. The base slice prefers explicit missing evidence over invented high-confidence paths. |
+| Operational risk | watcher daemon, background indexing, embedding queues, LanceDB migration/repair | These can run continuously, consume paid embeddings, or mutate durable state. They need stronger scheduling, rate limits, retry, and recovery semantics before being automatic. |
+| Dependency choice | tree-sitter per language, language servers, watcher libraries, framework-specific parsers | Adding parser/runtime dependencies too early can lock the architecture. The analyzer plugin seam landed first so each dependency can be evaluated per language. |
+| Scale uncertainty | large repos, monorepos, generated files, concurrent writes | Synthetic tests prove behavior, not performance ceilings. The next pass needs stress fixtures and instrumentation before optimizing hot paths. |
+| Product contract maturity | output presets, reuse guard, enough-context verdicts, review-risk summaries | The base slice establishes raw contracts. The product-shaped response layer should be driven by real agent traces so it does not become decorative JSON. |
+| Evaluation coverage | false positives, dynamic routes, incorrect reuse, wrong tests, real embedding quality | Current eval proves several graph-only wins, but not enough negative cases. Harder automation needs stricter eval first. |
+
+The practical split is:
+
+- Base slice completed: enough to run the engine, call tools, get verified subgraphs, detect obvious reuse, and measure wins over grep.
+- Deferred intentionally: anything that needs background automation, deeper language semantics, framework-specific precision, or strong false-positive guarantees.
+- Not a blocker: none of the listed gaps require a redesign of the current foundation. They should extend the current contracts rather than replace them.
+
+### Runtime And Indexing
+
+- Long-running filesystem watcher daemon:
+  - Current state: `record_file_events` can record dirty paths, coalesce bursts, and persist watcher state.
+  - Missing: a daemon/service that watches project roots continuously, survives restarts, and triggers background indexing.
+- Background batch index scheduler:
+  - Current state: refresh/index commands are explicit.
+  - Missing: dirty-file queue worker, batch sizing, retry/backoff, embedding rate limits, and progress reporting for long-running updates.
+- True affected-file analysis:
+  - Current state: persisted writes are incremental; unchanged graph/vector rows are preserved.
+  - Missing: analyzer/resolver work is still broad. It does not yet recompute only the changed file plus dependency neighbors.
+- Watcher event journal replay:
+  - Current state: dirty files are persisted.
+  - Missing: append-only event journal, replay on process restart, and reconciliation after dropped OS watcher events.
+- Large-repo stress and concurrency controls:
+  - Current state: base tests use small synthetic fixtures.
+  - Missing: limits for parallel analyzer jobs, concurrent LanceDB writes, very large file counts, permission errors, path-case changes, and generated directory churn.
+
+### Retrieval And Subgraph Quality
+
+- Weighted path search:
+  - Current state: `SubgraphBuilder` uses prioritized graph traversal.
+  - Missing: proper weighted path ranking, branch pruning, path diversity, and confidence-calibrated scoring.
+- Real coverage summary:
+  - Current state: subgraphs expose coverage signals.
+  - Missing: a single `coverageSummary` / "enough for edit" contract shared by context, impact, flow, and review outputs.
+- `why_these_files` explanation:
+  - Current state: nodes/edges contain reasons and citations.
+  - Missing: a concise per-file role explanation optimized for agent reading.
+- Same-name false-positive hardening:
+  - Current state: seed matching and graph traversal work for simple fixtures.
+  - Missing: robust disambiguation when unrelated symbols share names across files/modules/packages.
+- Dynamic dispatch and reflection:
+  - Current state: static calls/imports/framework rules only.
+  - Missing: runtime/dynamic dispatch, dependency injection containers, string-built method names, reflection, and plugin registries.
+
+### Impact Analysis
+
+- Diff-based `explain_impact` seeds:
+  - Current state: `explain_impact` accepts symbol/file-like targets.
+  - Missing: first-class unified diff input, changed symbol extraction, changed field/type extraction, and per-hunk impact.
+- Public API boundary taxonomy:
+  - Current state: exported symbols increase risk.
+  - Missing: package entrypoints, route contracts, generated clients, database schema fields, public event names, config keys, and external SDK-facing APIs.
+- Type/field blast radius:
+  - Current state: call/file/symbol edges drive impact.
+  - Missing: "renamed field", "changed type", "removed enum variant", and "schema migration" impact propagation.
+- Test gap scoring:
+  - Current state: missing `tested_by` raises risk.
+  - Missing: severity based on test type, test freshness, coverage scope, and changed behavior category.
+
+### Flow Tracing
+
+- True dataflow/taint tracking:
+  - Current state: flow follows structural edges.
+  - Missing: request body, params, headers, auth/session objects, DB rows, and event payload tracking across function boundaries.
+- Dynamic URL and API wrapper resolution:
+  - Current state: static `fetch('/api/...')` is handled for Next.js basics.
+  - Missing: axios, custom API clients, template-string URLs, route builders, generated clients, and shared fetch wrappers.
+- Framework rule modules:
+  - Current state: framework topology remains concentrated around Next.js/static rules.
+  - Missing: separate rule modules for Next.js App/Pages, Express, Fastify, NestJS, Remix, React Router, FastAPI, Flask, Go HTTP, Axum/Actix, Spring, and common ORM/repository patterns.
+- Repository/ORM precision:
+  - Current state: resource read/write edges are static heuristics.
+  - Missing: Prisma/Drizzle/TypeORM/Sequelize/SQLAlchemy/GORM/JPA-specific model/table/operation resolution.
+
+### Agent Output And Expansion
+
+- Full preset contracts:
+  - Current state: `compact` strips snippets; other presets mostly preserve the full subgraph.
+  - Missing: distinct `agent_edit`, `debug_trace`, and `review_risk` response shapes with tailored summaries and required next actions.
+- Exact AST range expansion across languages:
+  - Current state: `expand_node` expands indexed chunks and uses existing TS/JS skeleton support.
+  - Missing: precise language-aware body extraction for Python/Go/Rust/Java, nested symbol expansion, and multi-node expansion packs.
+- Citation normalization:
+  - Current state: citations exist on many nodes/edges.
+  - Missing: a normalized citation schema across snippets, edges, tests, framework rules, resource rules, and reuse evidence.
+
+### Reuse And Duplicate Prevention
+
+- Dedicated `reuse_guard` mode/tool:
+  - Current state: `find_reuse_candidates` exists.
+  - Missing: a stricter pre-edit guard that returns a pass/block/needs-human-review decision before code generation.
+- Normalized duplicate detection:
+  - Current state: duplicate risk is heuristic.
+  - Missing: normalized AST body similarity, signature compatibility, import/callee overlap, identical literals/errors/routes, and fixture/test overlap.
+- Rich behavior matching:
+  - Current state: synonym expansion catches basic examples like rate limiting/token bucket.
+  - Missing: embedding-backed behavior similarity calibrated with real models, domain vocabulary expansion, and false-positive suppression.
+- Reuse action plan:
+  - Current state: candidates include `whyReuse` and next queries.
+  - Missing: explicit "call this / extend this / wrap this / do not reuse because..." checklist with code-level integration guidance.
+
+### Multi-Language Structural Support
+
+- Tree-sitter-backed analyzers:
+  - Current state: Python/Go/Rust/Java use lightweight static extraction.
+  - Missing: real parsers with robust syntax handling, comments/docstrings, nested symbols, decorators/annotations, generics, traits/interfaces, and error-tolerant parsing.
+- Cross-file resolution for non-TS languages:
+  - Current state: non-TS calls/imports are mostly local/unresolved graph facts.
+  - Missing: import/package/module resolution, symbol definition resolution, call target resolution, and alias handling.
+- Language-specific test topology:
+  - Current state: `tested_by` is strongest for TS/JS import-based tests.
+  - Missing: pytest subject edges, Go `_test.go` subject edges, Rust cargo test/module edges, JUnit/Spring test edges.
+- Language-specific framework topology:
+  - Current state: TS/JS + Next.js has the highest-confidence topology.
+  - Missing: FastAPI/Flask, Go HTTP/Gin/Echo, Axum/Actix, Spring MVC/WebFlux, and Java annotation route/service/repository edges.
+
+### Evaluation And Product Readiness
+
+- Multi-repo benchmark suite:
+  - Current state: eval fixtures are synthetic and small.
+  - Missing: real-world repositories, large monorepos, mixed-language projects, generated-code-heavy repos, and noisy test layouts.
+- False-positive metrics:
+  - Current state: eval checks several positive retrieval paths.
+  - Missing: unrelated same-name false positives, incorrect reuse false positives, wrong test association, and invented dynamic edges.
+- Performance dashboards:
+  - Current state: eval reports JSON metrics.
+  - Missing: trend history, baseline comparison reports, latency/IO/embedding-cost metrics, and CI failure thresholds by category.
+- Real embedding calibration:
+  - Current state: deterministic embedding is used for offline smoke tests.
+  - Missing: eval profile for actual embedding providers/models, dimension migration tests, and quality/latency/cost tradeoff baselines.
 
 ## Phase 0: Runtime Readiness And Indexing Economics
 
@@ -55,6 +215,8 @@ Goal: make the durable store actually save work across process boundaries.
 This phase must land before broad multi-language expansion. Otherwise every new analyzer will amplify the same operational problems: repeated scans, repeated embeddings, stale session state, and weak resistance to large file bursts.
 
 ### Phase 0A: Persisted Workspace And No-Reindex Reads
+
+Status: completed on 2026-06-08. SQLite now persists project identity, engine read paths hydrate persisted workspace state, and CLI/MCP default read surfaces can use durable SQLite instead of process-local memory. CLI cross-process smoke covers `search`, `context`, `impact`, and `tests` without implicit reindex.
 
 - Persist or hydrate project registry state from the graph store.
 - Add a read path where CLI/MCP can search an already-indexed repo without forced full reindex.
@@ -69,6 +231,8 @@ Acceptance:
 - Missing persisted index returns a clear diagnostic instead of silently doing broad work.
 
 ### Phase 0B: Incremental Indexing And Generations
+
+Status: completed base slice on 2026-06-08. Indexing now scans hashes, persists monotonic `indexGeneration`, updates graph/FTS/vector rows only for changed/deleted files, preserves unchanged file row generations, and exposes generation through `index_status`. The current implementation still rebuilds the in-memory AST/topology analysis snapshot to preserve relationship quality; a later optimization can narrow AST/topology recomputation to affected files and neighbors.
 
 - Implement changed-file indexing:
   - scan hashes;
@@ -87,6 +251,8 @@ Acceptance:
 - Retrieval excludes stale affected files and reports freshness warnings.
 
 ### Phase 0C: Watcher And Burst-Change Resistance
+
+Status: completed base slice on 2026-06-08. The runtime now has a reusable event coalescer, persisted dirty-file state, burst-mode/dropped-event accounting, `record_file_events` MCP support, CLI `record-events` and `status` commands, and `index_status`/context freshness surfaces that report dirty pending files across process restarts. Retrieval filters dirty indexed files while continuing to serve clean last-known-good indexed context. A long-running OS file watcher daemon, dirty-event journal replay worker, and background batch index scheduler remain the next optimization layer.
 
 - Add a repository watcher service after changed-file indexing exists:
   - watch project roots;
@@ -118,6 +284,8 @@ Acceptance:
 - `index_status` exposes `indexingFiles`, `pendingFiles`, `droppedEvents`, and `burstMode`.
 
 ### Phase 0D: LanceDB Embedding Profile Guard
+
+Status: completed on 2026-06-08. LanceDB semantic storage now writes a durable embedding profile sidecar per table, including schema version, table name, provider, model/base URL when configured, request-dimensions flag, and actual vector dimensions. Upsert/search check the persisted profile before using a table and fail closed with explicit diagnostics on dimension/model/provider/profile mismatch. Legacy tables without a profile are migrated by writing the current profile on first guarded use.
 
 - Add LanceDB embedding profile metadata:
   - provider;
@@ -168,6 +336,8 @@ Rules:
 
 Goal: make current TypeScript/JavaScript graph reliable enough to be the reference implementation for other languages.
 
+Status: completed base slice on 2026-06-08. `VerifiedCodeSubgraph` is now a first-class contract with nodes, verified edges, paths, coverage signals, budgeted snippets, missing evidence, and next queries. `SubgraphBuilder` emits ordered flow/impact paths and is wired through `RagCodeEngine.verifiedSubgraph()`. Regression coverage proves `CheckoutButton -> route.ts -> billing.ts -> billing.test.ts` flow paths and transitive impact callers stay under budget.
+
 Deliverables:
 
 - Add `VerifiedCodeSubgraph` types.
@@ -198,6 +368,8 @@ Acceptance:
 
 Goal: answer "what will break if I change this function/file/field?" better than grep.
 
+Status: completed base slice on 2026-06-08. `explain_impact` is available through MCP and CLI as a verified blast-radius report over `VerifiedCodeSubgraph`, with risk score, risk reasons, and edit-readiness guidance. The legacy `impact_analysis` remains available for compatibility.
+
 Deliverables:
 
 - Add `explain_impact` MCP/CLI command as the polished version of `impact_analysis`.
@@ -226,6 +398,8 @@ Acceptance:
 
 Goal: answer "how does this request/data move from A to B?" as graph traversal, not similarity search.
 
+Status: completed base slice on 2026-06-08. `trace_request_flow` is available through MCP and CLI and returns ordered flow-mode verified subgraphs. Current high-confidence coverage remains strongest for TS/JS plus Next.js static route/client/service/test paths.
+
 Deliverables:
 
 - Add `trace_request_flow` as a dedicated contract over `VerifiedCodeSubgraph`.
@@ -248,6 +422,8 @@ Acceptance:
 ## Phase 4: Multi-Language Analyzer Architecture
 
 Goal: add languages without rewriting the core graph, retrieval, or context pack pipeline.
+
+Status: completed base slice on 2026-06-08. The analyzer plugin interface, registry, fallback analyzer, and TypeScript/JavaScript reference analyzer are in place. Python, Go, Rust, and Java now produce non-trivial symbols/imports/exports/calls instead of falling back to 80-line chunks only. These analyzers are intentionally lightweight static extractors; richer resolver/framework passes remain future hardening work.
 
 Deliverables:
 
@@ -296,6 +472,8 @@ Acceptance:
 
 Goal: make the output useful for an AI agent that is about to edit code.
 
+Status: completed base slice on 2026-06-08. Verified subgraph outputs now include coverage signals, missing evidence, path-shaped nodes/edges, budgeted snippets, and concrete `nextQueries`. `expand_node` is available through MCP and CLI for focused/skeleton/full expansion after a compact subgraph.
+
 Pain points observed:
 
 - Raw snippets are still too chunk-shaped; the agent needs path-shaped context.
@@ -335,6 +513,8 @@ Acceptance:
 ## Phase 6: Reuse Discovery And Duplicate Prevention
 
 Goal: prevent agents from implementing a second copy of behavior that already exists.
+
+Status: completed base slice on 2026-06-08. `find_reuse_candidates` is available through MCP and CLI. It merges hybrid hits, owner candidates, symbol/API similarity, export status, caller count, tested_by evidence, domain synonym expansion, duplicate risk, and next expansion/impact queries. Regression coverage proves a "rate limiting" request surfaces existing `tokenBucket` / `throttleRequests` implementations despite the naming gap.
 
 Why this matters:
 
@@ -409,6 +589,8 @@ Acceptance:
 ## Phase 7: Evaluation And Regression Harness
 
 Goal: make "better than grep" measurable.
+
+Status: completed base slice on 2026-06-08. The context eval harness now includes verified subgraph path completeness, impact caller recall, reuse candidate recall, duplicate false-negative rate, and literal grep baseline metrics. The report separates grep-solvable known-symbol lookup from graph-only flow/reuse wins.
 
 Deliverables:
 

@@ -77,13 +77,46 @@ export interface GraphEdge {
 
 export interface RepoIndex {
   projectId: string;
+  project?: ProjectIdentity;
   repoRoot: string;
   indexedAtMs: number;
+  indexGeneration: number;
+  changedFiles: string[];
+  deletedFiles: string[];
+  fullReindex: boolean;
   files: CodeFile[];
   chunks: CodeChunk[];
   symbols: SymbolNode[];
   edges: GraphEdge[];
   skippedFiles: Array<{ filePath: string; reason: string }>;
+}
+
+export type DirtyFileStatus = "pending" | "indexing";
+
+export interface DirtyFile {
+  projectId: string;
+  filePath: string;
+  status: DirtyFileStatus;
+  reason: string;
+  firstSeenAtMs: number;
+  lastSeenAtMs: number;
+  eventCount: number;
+}
+
+export interface WatcherState {
+  projectId: string;
+  dirtyFiles: DirtyFile[];
+  pendingFiles: string[];
+  indexingFiles: string[];
+  burstMode: boolean;
+  droppedEvents: number;
+  lastEventAtMs?: number;
+  updatedAtMs?: number;
+}
+
+export interface WatcherEventOptions {
+  burstThreshold?: number;
+  maxDirtyFiles?: number;
 }
 
 export interface SearchQuery {
@@ -106,6 +139,21 @@ export interface ContextRequest extends SearchQuery {
   budgetChars?: number;
   diff?: string;
   changedFiles?: string[];
+}
+
+export type VerifiedSubgraphMode = "impact" | "flow" | "review" | "debug";
+export type SubgraphOutputPreset = "compact" | "agent_edit" | "debug_trace" | "review_risk";
+
+export interface VerifiedSubgraphRequest {
+  projectId?: string;
+  repoRoot?: string;
+  workspace?: WorkspaceHint;
+  query: string;
+  seed?: string;
+  mode?: VerifiedSubgraphMode;
+  budgetChars?: number;
+  maxHops?: number;
+  preset?: SubgraphOutputPreset;
 }
 
 export interface TopologyMapRequest extends SearchQuery {
@@ -179,6 +227,9 @@ export interface FreshnessReport {
   pendingFiles: string[];
   indexingFiles: string[];
   skippedFiles: Array<{ filePath: string; reason: string }>;
+  dirtyFiles: DirtyFile[];
+  burstMode: boolean;
+  droppedEvents: number;
 }
 
 export interface OwnerNode {
@@ -226,7 +277,10 @@ export interface IndexStatus {
   freshFileCount: number;
   staleFileCount: number;
   pendingFileCount: number;
+  indexingFileCount: number;
   skippedFileCount: number;
+  burstMode: boolean;
+  droppedEventCount: number;
   freshness: FreshnessReport;
 }
 
@@ -235,6 +289,157 @@ export interface RelationshipEvidence {
   target: string;
   kind: EdgeKind;
   reason: string;
+}
+
+export type SubgraphNodeRole =
+  | "target"
+  | "caller"
+  | "callee"
+  | "route"
+  | "test"
+  | "middleware"
+  | "resource"
+  | "event"
+  | "external";
+
+export interface SubgraphCitation {
+  filePath?: string;
+  line?: number;
+  symbol?: string;
+  source: VerifiedEdgeSource;
+}
+
+export interface SubgraphNode {
+  id: string;
+  filePath: string;
+  symbolName?: string;
+  kind: SymbolKind | "external";
+  role: SubgraphNodeRole;
+  startLine?: number;
+  endLine?: number;
+  exported?: boolean;
+  confidence: "low" | "medium" | "high";
+  reason: string;
+  citation?: SubgraphCitation;
+}
+
+export type VerifiedEdgeSource =
+  | "ast"
+  | "lsp"
+  | "framework_rule"
+  | "test_import"
+  | "resource_rule"
+  | "event_rule"
+  | "heuristic";
+
+export interface VerifiedSubgraphEdge {
+  fromNodeId: string;
+  toNodeId: string;
+  kind: EdgeKind;
+  confidence: "low" | "medium" | "high";
+  source: VerifiedEdgeSource;
+  reason: string;
+  sourceFile?: string;
+  targetFile?: string;
+  line?: number;
+  targetName?: string;
+}
+
+export type CoverageSignalName =
+  | "primary_owner_found"
+  | "inbound_callers_checked"
+  | "outbound_flow_checked"
+  | "tests_checked"
+  | "unresolved_edges_present"
+  | "budget_truncated";
+
+export interface CoverageSignal {
+  name: CoverageSignalName;
+  status: "pass" | "partial" | "fail";
+  detail: string;
+}
+
+export interface VerifiedCodeSubgraph {
+  query: string;
+  repoRoot: string;
+  projectId: string;
+  mode: VerifiedSubgraphMode;
+  answerable: boolean;
+  confidence: "low" | "medium" | "high";
+  nodes: SubgraphNode[];
+  edges: VerifiedSubgraphEdge[];
+  paths: string[][];
+  snippets: ContextSnippet[];
+  coverage: CoverageSignal[];
+  missingEvidence: string[];
+  nextQueries: string[];
+  budgetChars: number;
+  usedChars: number;
+}
+
+export interface ExplainImpactReport {
+  target: string;
+  riskLevel: "low" | "medium" | "high";
+  riskScore: number;
+  riskReasons: string[];
+  editReadiness: "safe_to_edit_after_reading" | "investigate_only" | "not_enough_context";
+  subgraph: VerifiedCodeSubgraph;
+}
+
+export interface ExpandNodeResult {
+  nodeRef: string;
+  filePath: string;
+  symbolName?: string;
+  expansionLevel: ExpansionLevel;
+  snippets: ContextSnippet[];
+  missingEvidence: string[];
+  budgetChars: number;
+  usedChars: number;
+}
+
+export interface ReuseCandidateRequest {
+  projectId?: string;
+  repoRoot?: string;
+  workspace?: WorkspaceHint;
+  query: string;
+  limit?: number;
+}
+
+export type ReuseDecision = "reuse" | "extend" | "wrap" | "implement_new" | "uncertain";
+
+export type ReuseCandidateKind =
+  | "helper"
+  | "service_method"
+  | "react_hook"
+  | "component"
+  | "api_wrapper"
+  | "type_or_schema"
+  | "test_fixture"
+  | "config_constant"
+  | "unknown";
+
+export interface ReuseCandidate {
+  filePath: string;
+  symbolName?: string;
+  kind: ReuseCandidateKind;
+  score: number;
+  confidence: "low" | "medium" | "high";
+  exported: boolean;
+  callerCount: number;
+  relatedTestCount: number;
+  reasons: string[];
+  whyReuse: string[];
+  snippet?: ContextSnippet;
+}
+
+export interface ReuseCandidateReport {
+  query: string;
+  decision: ReuseDecision;
+  confidence: "low" | "medium" | "high";
+  candidates: ReuseCandidate[];
+  duplicateRisk: "low" | "medium" | "high";
+  missingEvidence: string[];
+  nextQueries: string[];
 }
 
 export interface OwnerCandidate {

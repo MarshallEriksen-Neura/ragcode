@@ -9,7 +9,7 @@ describe("MCP server", () => {
 
     expect(server.isConnected()).toBe(false);
     expect(runtimeTools.map((tool) => tool.name)).toEqual(listToolDefinitions().map((tool) => tool.name));
-    expect(runtimeTools).toHaveLength(13);
+    expect(runtimeTools).toHaveLength(18);
   });
 });
 

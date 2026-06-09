@@ -90,6 +90,131 @@ describe("semantic runtime configuration", () => {
     expect(table.seed?.vector).toHaveLength(1024);
   });
 
+  it("persists and reuses a LanceDB embedding profile", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ragcode-lancedb-profile-"));
+    try {
+      const table = new SeedCaptureTable();
+      const connection = {
+        tableNames: async () => ["code_chunks"],
+        openTable: async () => table,
+        createTable: async (_name: string, rows: LanceChunkRecord[]) => {
+          table.seed = rows[0];
+          return table;
+        }
+      } satisfies LanceConnection;
+      const provider = createSemanticRuntimeFromEnv({
+        RAGCODE_SEMANTIC_STORE: "memory",
+        RAGCODE_EMBEDDING_PROVIDER: "deterministic",
+        RAGCODE_EMBEDDING_DIMENSIONS: "32"
+      }).embeddingProvider;
+      const store = new LanceSemanticStore(root, {
+        connection,
+        vectorDimensions: 32,
+        embeddingProfile: { provider: "deterministic" }
+      });
+
+      await store.upsertChunks([chunk({ content: "profile marker" })], provider);
+
+      const profilePath = path.join(root, "code_chunks.embedding-profile.json");
+      const profile = JSON.parse(await fs.readFile(profilePath, "utf8"));
+      expect(profile).toMatchObject({
+        schemaVersion: 1,
+        tableName: "code_chunks",
+        provider: "deterministic",
+        dimensions: 32
+      });
+
+      const reopened = new LanceSemanticStore(root, {
+        connection,
+        vectorDimensions: 32,
+        embeddingProfile: { provider: "deterministic" }
+      });
+      await expect(reopened.search({ repoRoot: "repo-a", projectId: "project-a", query: "profile marker", limit: 5 }, provider)).resolves.toEqual(expect.any(Array));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the LanceDB embedding dimensions do not match the persisted profile", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ragcode-lancedb-profile-mismatch-"));
+    try {
+      const table = new SeedCaptureTable();
+      const connection = {
+        tableNames: async () => ["code_chunks"],
+        openTable: async () => table,
+        createTable: async (_name: string, rows: LanceChunkRecord[]) => {
+          table.seed = rows[0];
+          return table;
+        }
+      } satisfies LanceConnection;
+      const firstProvider = createSemanticRuntimeFromEnv({
+        RAGCODE_SEMANTIC_STORE: "memory",
+        RAGCODE_EMBEDDING_PROVIDER: "deterministic",
+        RAGCODE_EMBEDDING_DIMENSIONS: "32"
+      }).embeddingProvider;
+      await new LanceSemanticStore(root, {
+        connection,
+        vectorDimensions: 32,
+        embeddingProfile: { provider: "deterministic" }
+      }).upsertChunks([chunk({ content: "profile marker" })], firstProvider);
+
+      const mismatchedProvider = createSemanticRuntimeFromEnv({
+        RAGCODE_SEMANTIC_STORE: "memory",
+        RAGCODE_EMBEDDING_PROVIDER: "deterministic",
+        RAGCODE_EMBEDDING_DIMENSIONS: "16"
+      }).embeddingProvider;
+      const mismatched = new LanceSemanticStore(root, {
+        connection,
+        vectorDimensions: 16,
+        embeddingProfile: { provider: "deterministic" }
+      });
+
+      await expect(mismatched.upsertChunks([chunk({ id: "chunk-b", content: "profile marker changed" })], mismatchedProvider))
+        .rejects.toThrow(/embedding profile mismatch.*dimensions 32 != 16/i);
+      await expect(mismatched.search({ repoRoot: "repo-a", projectId: "project-a", query: "profile marker", limit: 5 }, mismatchedProvider))
+        .rejects.toThrow(/embedding profile mismatch.*dimensions 32 != 16/i);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the LanceDB embedding model identity changes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ragcode-lancedb-model-mismatch-"));
+    try {
+      const table = new SeedCaptureTable();
+      const connection = {
+        tableNames: async () => ["code_chunks"],
+        openTable: async () => table,
+        createTable: async (_name: string, rows: LanceChunkRecord[]) => {
+          table.seed = rows[0];
+          return table;
+        }
+      } satisfies LanceConnection;
+      const provider = createSemanticRuntimeFromEnv({
+        RAGCODE_SEMANTIC_STORE: "memory",
+        RAGCODE_EMBEDDING_PROVIDER: "deterministic",
+        RAGCODE_EMBEDDING_DIMENSIONS: "32"
+      }).embeddingProvider;
+
+      await new LanceSemanticStore(root, {
+        connection,
+        vectorDimensions: 32,
+        embeddingProfile: { provider: "openai-compatible", model: "model-a", baseUrl: "https://embed.example/v1" }
+      }).upsertChunks([chunk({ content: "profile marker" })], provider);
+
+      const mismatched = new LanceSemanticStore(root, {
+        connection,
+        vectorDimensions: 32,
+        embeddingProfile: { provider: "openai-compatible", model: "model-b", baseUrl: "https://embed.example/v1" }
+      });
+
+      await expect(mismatched.search({ repoRoot: "repo-a", projectId: "project-a", query: "profile marker", limit: 5 }, provider))
+        .rejects.toThrow(/embedding profile mismatch.*model model-a != model-b/i);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("round-trips chunks through the installed LanceDB package", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "ragcode-lancedb-runtime-"));
     try {
@@ -157,4 +282,21 @@ class SeedCaptureTable implements LanceTable {
       })
     };
   }
+}
+
+function chunk(overrides: Partial<Parameters<LanceSemanticStore["upsertChunks"]>[0][number]> = {}): Parameters<LanceSemanticStore["upsertChunks"]>[0][number] {
+  return {
+    id: "chunk-a",
+    projectId: "project-a",
+    repoRoot: "repo-a",
+    filePath: "src/auth.ts",
+    language: "typescript",
+    kind: "function",
+    symbolName: "loginUser",
+    startLine: 1,
+    endLine: 1,
+    content: "export function loginUser() { return 'profile marker'; }",
+    contentHash: "hash-a",
+    ...overrides
+  };
 }
