@@ -124,6 +124,14 @@ export class RagCodeEngine implements ContextEngine {
     return this.graphStore.recordFileEvents(scope.activeRepoRoot, filePaths, options);
   }
 
+  async markDirtyFilesIndexing(repoRoot: string | undefined, filePaths: string[]): Promise<WatcherState> {
+    const scope = await this.resolveWorkspace({ repoRoot });
+    if (!this.graphStore.markDirtyFilesIndexing) {
+      throw new Error("Current graph store does not support watcher indexing state.");
+    }
+    return this.graphStore.markDirtyFilesIndexing(scope.activeRepoRoot, filePaths);
+  }
+
   async searchCode(query: SearchQuery): Promise<SearchHit[]> {
     const scope = await this.resolveWorkspace(query);
     const { hits } = await this.searchWithFreshness({ ...query, repoRoot: scope.activeRepoRoot, projectId: scope.activeProjectId }, scope);

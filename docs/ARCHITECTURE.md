@@ -77,6 +77,17 @@ This is where the engine should eventually surpass pure RAG.
 
 MCP tools should return context packs, not raw vector hits.
 
+### Watch
+
+`src/watch` owns incremental freshness for long-running local repositories:
+
+- `FileWatchDaemon` adapts chokidar OS file events into repo-relative dirty paths;
+- `FileEventJournal` durably appends events before dirty-state flushes so restarts can replay missed work;
+- `WatchIndexScheduler` batches quiet dirty files, marks them `indexing`, and triggers `refreshIndex` in the background;
+- `file-event-coalescer` bounds bursty event sets before they enter graph-store watcher state.
+
+The watch layer depends only on the `ContextEngine` contract. It does not know about SQLite tables, semantic storage, MCP transport, or CLI formatting. Failed dirty-state flushes keep journal entries recoverable, and failed refreshes requeue `indexing` files back to pending dirty state.
+
 ### MCP
 
 `src/mcp` owns protocol adaptation:

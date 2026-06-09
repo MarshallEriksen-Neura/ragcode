@@ -12,6 +12,7 @@
     "audit:plan": "tsx scripts/audit-plan.ts",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:watcher": "node --import tsx ./node_modules/vitest/vitest.mjs run tests/watcher-state.test.ts tests/watch-daemon.test.ts",
     "eval:context": "tsx scripts/eval-context.ts",
     "dev": "tsx src/cli/index.ts"
   },
@@ -19,6 +20,7 @@
     "@lancedb/lancedb": "^0.30.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.10.0",
+    "chokidar": "^5.0.0",
     "commander": "^14.0.2",
     "typescript": "^5.9.3",
     "zod": "^4.1.13"

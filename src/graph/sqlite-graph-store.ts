@@ -91,6 +91,26 @@ export class SQLiteGraphStore implements GraphStore {
     return this.watcherStateForProject(this.requireProjectId(repoRoot));
   }
 
+  async markDirtyFilesIndexing(repoRoot: string, filePaths: string[]): Promise<WatcherState> {
+    const projectId = this.requireProjectId(repoRoot);
+    const now = Date.now();
+    this.transaction(() => {
+      for (const filePath of filePaths) {
+        this.db.prepare(`
+          UPDATE dirty_files
+          SET status = 'indexing', reason = 'background batch indexing', last_seen_at_ms = ?
+          WHERE project_id = ? AND file_path = ?
+        `).run(now, projectId, filePath);
+      }
+      this.db.prepare(`
+        INSERT INTO watcher_state(project_id, burst_mode, dropped_events, last_event_at_ms, updated_at_ms)
+        VALUES (?, 0, 0, ?, ?)
+        ON CONFLICT(project_id) DO UPDATE SET updated_at_ms = excluded.updated_at_ms
+      `).run(projectId, now, now);
+    });
+    return this.watcherStateForProject(projectId);
+  }
+
   async clearDirtyFiles(repoRoot: string, filePaths?: string[]): Promise<void> {
     const projectId = this.requireProjectId(repoRoot);
     this.transaction(() => this.clearDirtyRows(projectId, filePaths));

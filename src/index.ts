@@ -3,6 +3,7 @@ export * from "./core/engine.js";
 export * from "./core/types.js";
 export * from "./config/graph-runtime.js";
 export * from "./config/semantic-runtime.js";
+export * from "./config/dotenv.js";
 export * from "./graph/in-memory-graph-store.js";
 export * from "./graph/sqlite-graph-store.js";
 export * from "./project/project-identity.js";
@@ -13,6 +14,9 @@ export * from "./semantic/in-memory-semantic-store.js";
 export * from "./semantic/lance-semantic-store.js";
 export * from "./semantic/openai-compatible-embedding.js";
 export * from "./watch/file-event-coalescer.js";
+export * from "./watch/event-journal.js";
+export * from "./watch/index-scheduler.js";
+export * from "./watch/watch-daemon.js";
 export * from "./indexing/ast-analyzer.js";
 export * from "./subgraph/subgraph-builder.js";
 export * from "./subgraph/impact-explainer.js";
@@ -22,3 +26,5 @@ export * from "./reuse/reuse-detector.js";
 export * from "./diagnostics/doctor.js";
 export * from "./mcp/tools.js";
 export * from "./mcp/server.js";
+
+

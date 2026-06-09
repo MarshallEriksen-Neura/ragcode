@@ -120,6 +120,23 @@ export class InMemoryGraphStore implements GraphStore {
     return watcherStateFromMemory(state.projectId ?? "__unindexed__", state);
   }
 
+  async markDirtyFilesIndexing(repoRoot: string, filePaths: string[]): Promise<WatcherState> {
+    const state = this.ensureRepo(repoRoot);
+    const now = Date.now();
+    for (const filePath of filePaths) {
+      const existing = state.dirtyFiles.get(filePath);
+      if (!existing) continue;
+      state.dirtyFiles.set(filePath, {
+        ...existing,
+        status: "indexing",
+        reason: "background batch indexing",
+        lastSeenAtMs: now
+      });
+    }
+    state.watcherUpdatedAtMs = now;
+    return watcherStateFromMemory(state.projectId ?? "__unindexed__", state);
+  }
+
   async clearDirtyFiles(repoRoot: string, filePaths?: string[]): Promise<void> {
     this.clearDirtyRows(this.ensureRepo(repoRoot), filePaths);
   }

@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { loadDotEnv } from "../config/dotenv.js";
 import { RagCodeEngine } from "../core/engine.js";
 import { runDoctor } from "../diagnostics/doctor.js";
 import { startStdioMcpServer } from "../mcp/server.js";
 import { buildExplainImpactReport } from "../subgraph/impact-explainer.js";
 import { expandNode, parseNodeRef } from "../subgraph/node-expander.js";
+import { FileWatchDaemon } from "../watch/watch-daemon.js";
+
+loadDotEnv();
 
 const program = new Command();
 
@@ -180,6 +184,62 @@ program
   });
 
 program
+  .command("watch")
+  .argument("<repoRoot>")
+  .option("--batch-delay <ms>", "delay before background indexing after dirty events", parseNumber)
+  .option("--quiet <ms>", "minimum quiet period before indexing", parseNumber)
+  .option("--flush-events <ms>", "delay before flushing observed file events to dirty state", parseNumber)
+  .option("--await-write <ms>", "await-write-finish stability threshold", parseNumber)
+  .option("--burst-threshold <number>", "dirty file count that activates burst mode", parseNumber)
+  .option("--max-dirty-files <number>", "maximum dirty file paths to retain from one batch", parseNumber)
+  .option("--max-batch-files <number>", "maximum dirty file paths to mark indexing in one scheduler batch", parseNumber)
+  .option("--poll", "use polling instead of native fs.watch")
+  .option("--no-auto-index", "record dirty events but do not run background refresh")
+  .option("--no-index-on-start", "fail if the repo is not already indexed instead of indexing before watching")
+  .description("Run a long-lived filesystem watcher daemon with event journal replay and background batch indexing")
+  .action(async (repoRoot: string, options: {
+    batchDelay?: number;
+    quiet?: number;
+    flushEvents?: number;
+    awaitWrite?: number;
+    burstThreshold?: number;
+    maxDirtyFiles?: number;
+    maxBatchFiles?: number;
+    poll?: boolean;
+    autoIndex?: boolean;
+    indexOnStart?: boolean;
+  }) => {
+    const engine = new RagCodeEngine({ cwd: repoRoot, env: cliEnv() });
+    const daemon = new FileWatchDaemon(engine, repoRoot, {
+      batchDelayMs: options.batchDelay,
+      minQuietMs: options.quiet,
+      flushEventsMs: options.flushEvents,
+      awaitWriteFinishMs: options.awaitWrite,
+      burstThreshold: options.burstThreshold,
+      maxDirtyFiles: options.maxDirtyFiles,
+      maxBatchFiles: options.maxBatchFiles,
+      usePolling: options.poll,
+      autoIndex: options.autoIndex,
+      indexOnStart: options.indexOnStart,
+      onStatus: (status) => {
+        console.error(JSON.stringify({ watcher: status }));
+      }
+    });
+    const shutdown = async (): Promise<void> => {
+      await daemon.stop();
+      engine.close();
+    };
+    process.once("SIGINT", () => {
+      void shutdown().finally(() => process.exit(0));
+    });
+    process.once("SIGTERM", () => {
+      void shutdown().finally(() => process.exit(0));
+    });
+    await daemon.start();
+    console.log(JSON.stringify(await daemon.status(), null, 2));
+  });
+
+program
   .command("doctor")
   .argument("[repoRoot]")
   .option("-q, --query <query>", "query to use when repoRoot smoke indexing is enabled")
@@ -233,3 +293,5 @@ function formatCliError(error: unknown): string {
   }
   return message;
 }
+
+

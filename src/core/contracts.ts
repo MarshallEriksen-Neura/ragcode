@@ -38,6 +38,7 @@ export interface GraphStore {
   getIndexGeneration?(repoRoot: string): Promise<number>;
   recordFileEvents?(repoRoot: string, filePaths: string[], options?: WatcherEventOptions): Promise<WatcherState>;
   getWatcherState?(repoRoot: string): Promise<WatcherState>;
+  markDirtyFilesIndexing?(repoRoot: string, filePaths: string[]): Promise<WatcherState>;
   clearDirtyFiles?(repoRoot: string, filePaths?: string[]): Promise<void>;
   resetRepo(repoRoot: string): Promise<void>;
   upsertIndex(index: RepoIndex): Promise<void>;
@@ -72,6 +73,7 @@ export interface ContextEngine {
   refreshIndex(repoRoot: string | undefined): Promise<RepoIndex>;
   indexStatus(repoRoot: string | undefined): Promise<IndexStatus>;
   recordFileEvents(repoRoot: string | undefined, filePaths: string[], options?: WatcherEventOptions): Promise<WatcherState>;
+  markDirtyFilesIndexing(repoRoot: string | undefined, filePaths: string[]): Promise<WatcherState>;
   searchCode(query: SearchQuery): Promise<SearchHit[]>;
   getContext(request: ContextRequest): Promise<ContextPack>;
   verifiedSubgraph(request: VerifiedSubgraphRequest): Promise<VerifiedCodeSubgraph>;
