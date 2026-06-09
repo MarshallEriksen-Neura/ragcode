@@ -9,7 +9,7 @@ import { RepoIndexer } from "../indexing/indexer.js";
 import { scanRepo } from "../indexing/scanner.js";
 import { ProjectRegistry } from "../project/project-registry.js";
 import { WorkspaceResolver } from "../project/workspace-resolver.js";
-import { HybridRetriever } from "../retrieval/hybrid-retriever.js";
+import { hasSemanticParticipation, HybridRetriever, type HybridSearchDiagnostics } from "../retrieval/hybrid-retriever.js";
 import { DeterministicEmbeddingProvider } from "../semantic/deterministic-embedding.js";
 import { InMemorySemanticStore } from "../semantic/in-memory-semantic-store.js";
 import type { CodeFile, CodeChunk } from "./types.js";
@@ -136,6 +136,12 @@ export class RagCodeEngine implements ContextEngine {
     const scope = await this.resolveWorkspace(query);
     const { hits } = await this.searchWithFreshness({ ...query, repoRoot: scope.activeRepoRoot, projectId: scope.activeProjectId }, scope);
     return hits;
+  }
+
+  async searchCodeWithDiagnostics(query: SearchQuery): Promise<{ hits: SearchHit[]; diagnostics: HybridSearchDiagnostics }> {
+    const scope = await this.resolveWorkspace(query);
+    const { hits, diagnostics } = await this.searchWithFreshness({ ...query, repoRoot: scope.activeRepoRoot, projectId: scope.activeProjectId }, scope);
+    return { hits, diagnostics };
   }
 
   async getContext(request: ContextRequest): Promise<ContextPack> {
@@ -314,14 +320,15 @@ export class RagCodeEngine implements ContextEngine {
     }
   }
 
-  private async searchWithFreshness(query: SearchQuery, scope: WorkspaceSession): Promise<{ hits: SearchHit[]; freshness: FreshnessReport }> {
+  private async searchWithFreshness(query: SearchQuery, scope: WorkspaceSession): Promise<{ hits: SearchHit[]; freshness: FreshnessReport; diagnostics: HybridSearchDiagnostics }> {
     const freshness = await this.computeFreshness(scope);
-    const hits = await new HybridRetriever({
+    const result = await new HybridRetriever({
       graphStore: this.graphStore,
       semanticStore: this.semanticStore,
       embeddingProvider: this.embeddingProvider
-    }).search(query);
-    return { hits: filterFreshHits(hits, freshness), freshness };
+    }).searchWithDiagnostics(query);
+    const hits = filterFreshHits(result.hits, freshness);
+    return { hits, freshness, diagnostics: diagnosticsForFreshHits(result.diagnostics, hits) };
   }
 
   private async computeFreshness(scope: WorkspaceSession): Promise<FreshnessReport> {
@@ -385,6 +392,16 @@ function filterFreshHits(hits: SearchHit[], freshness: FreshnessReport): SearchH
   if (freshness.staleFiles.length === 0) return hits;
   const stale = new Set(freshness.staleFiles);
   return hits.filter((hit) => !stale.has(hit.chunk.filePath));
+}
+
+function diagnosticsForFreshHits(diagnostics: HybridSearchDiagnostics, hits: SearchHit[]): HybridSearchDiagnostics {
+  return {
+    ...diagnostics,
+    fusion: {
+      ...diagnostics.fusion,
+      semanticTopNParticipation: hits.filter(hasSemanticParticipation).length
+    }
+  };
 }
 
 function filterFreshEdges(edges: GraphEdge[], freshness: FreshnessReport): GraphEdge[] {

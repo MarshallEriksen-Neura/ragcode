@@ -21,6 +21,7 @@ import { buildImpactAnalysis, impactReference } from "./impact-report.js";
 import { isIncomingImpactEdge, isOutgoingImpactEdge, matchesImpactTarget, parseImpactTarget } from "./target-matcher.js";
 import { normalizeUserPath } from "../utils/path.js";
 import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
+import { buildQueryMatchProfile, scoreChunkText, scoreSymbolText } from "../retrieval/query-matching.js";
 
 interface RepoGraphState {
   projectId?: string;
@@ -182,24 +183,22 @@ export class InMemoryGraphStore implements GraphStore {
 
   async searchText(query: SearchQuery): Promise<SearchHit[]> {
     const repoRoot = requireRepoRoot(query.repoRoot);
-    const terms = tokenize(query.query);
-    if (terms.length === 0) return [];
+    const state = this.ensureRepo(repoRoot);
+    const scopedSymbols = query.projectId ? [...state.symbols.values()].filter((symbol) => symbol.projectId === query.projectId) : [...state.symbols.values()];
+    const profile = buildQueryMatchProfile(query.query, scopedSymbols);
+    if (profile.queryTerms.length === 0) return [];
 
     const limit = query.limit ?? 20;
     const hits: SearchHit[] = [];
-    for (const chunk of this.ensureRepo(repoRoot).chunks.values()) {
+    for (const chunk of state.chunks.values()) {
       if (query.projectId && chunk.projectId !== query.projectId) continue;
-      const haystack = `${chunk.filePath}\n${chunk.symbolName ?? ""}\n${chunk.content}`.toLowerCase();
-      let matched = 0;
-      for (const term of terms) {
-        if (haystack.includes(term)) matched += 1;
-      }
-      if (matched === 0) continue;
+      const match = scoreChunkText(chunk, profile);
+      if (!match) continue;
       hits.push({
         chunk,
-        score: matched / terms.length,
+        score: match.score,
         source: "keyword",
-        reason: `Matched ${matched}/${terms.length} query term(s)`
+        reason: match.reason
       });
     }
 
@@ -208,7 +207,7 @@ export class InMemoryGraphStore implements GraphStore {
 
   async findOwner(repoRoot: string, query: string, limit = 5): Promise<OwnerCandidate[]> {
     const state = this.ensureRepo(repoRoot);
-    const terms = tokenize(query);
+    const profile = buildQueryMatchProfile(query, [...state.symbols.values()]);
     const candidates = new Map<string, OwnerCandidate>();
 
     for (const hit of await this.searchText({ repoRoot, query, limit: limit * 4 })) {
@@ -224,17 +223,16 @@ export class InMemoryGraphStore implements GraphStore {
     }
 
     for (const symbol of state.symbols.values()) {
-      const haystack = `${symbol.name} ${symbol.filePath} ${symbol.signature ?? ""}`.toLowerCase();
-      const matched = terms.filter((term) => haystack.includes(term)).length;
-      if (matched === 0) continue;
+      const match = scoreSymbolText(symbol, profile);
+      if (!match) continue;
       const existing = candidates.get(symbol.filePath) ?? {
         filePath: symbol.filePath,
         score: 0,
         reasons: [],
         symbols: []
       };
-      existing.score += 1 + matched / Math.max(1, terms.length);
-      existing.reasons.push(`Symbol match: ${symbol.name}`);
+      existing.score += 1 + match.score;
+      existing.reasons.push(match.reason);
       existing.symbols.push(symbol);
       candidates.set(symbol.filePath, existing);
     }
@@ -374,14 +372,6 @@ export class InMemoryGraphStore implements GraphStore {
 function requireRepoRoot(repoRoot: string | undefined): string {
   if (!repoRoot) throw new Error("Internal error: graph search requires a resolved repoRoot.");
   return repoRoot;
-}
-
-function tokenize(query: string): string[] {
-  return query
-    .toLowerCase()
-    .split(/[^a-z0-9_./:-]+/i)
-    .map((part) => part.trim())
-    .filter(Boolean);
 }
 
 function uniqueSymbols(symbols: SymbolNode[]): SymbolNode[] {

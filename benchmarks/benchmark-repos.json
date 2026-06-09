@@ -1,0 +1,303 @@
+{
+  "schemaVersion": 1,
+  "sampleRoot": "../ragcode-samples",
+  "defaultSuite": "core",
+  "repositories": [
+    {
+      "name": "vite",
+      "suite": "core",
+      "localPath": "vite",
+      "cloneUrl": "https://github.com/vitejs/vite.git",
+      "branch": "main",
+      "pinnedHead": "689a0669ad926461f3f1b81701cb6c01f7b2bd4a",
+      "rationale": "Large TypeScript toolchain with plugin lifecycle, build graph, docs/tests/fixtures that can pollute retrieval.",
+      "cases": [
+        {
+          "name": "vite-plugin-config",
+          "query": "plugin config",
+          "mode": "explain",
+          "budgetChars": 6000,
+          "limit": 8,
+          "gate": true,
+          "expectedOwnerFiles": [
+            "packages/vite/src/node/server/pluginContainer.ts",
+            "packages/vite/src/node/build.ts",
+            "packages/plugin-legacy/src/index.ts"
+          ]
+        },
+        {
+          "name": "vite-resolve-plugins",
+          "query": "resolve plugins build hooks",
+          "mode": "feature",
+          "budgetChars": 6000,
+          "limit": 8,
+          "gate": false,
+          "maxExpectedOwnerRank": 4,
+          "expectedOwnerFiles": [
+            "packages/vite/src/node/plugins/index.ts",
+            "packages/vite/src/node/build.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hono",
+      "suite": "core",
+      "localPath": "hono",
+      "cloneUrl": "https://github.com/honojs/hono.git",
+      "branch": "main",
+      "pinnedHead": "e50df01453e71b071c3e6136b161b160b9fdf916",
+      "rationale": "Compact TypeScript web framework with routing, context, middleware, and many nearby tests.",
+      "cases": [
+        {
+          "name": "hono-compose-middleware",
+          "query": "compose middleware handler chain",
+          "mode": "feature",
+          "budgetChars": 6000,
+          "limit": 8,
+          "gate": true,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "src/compose.ts",
+            "src/hono-base.ts"
+          ]
+        },
+        {
+          "name": "hono-context-request",
+          "query": "context request response helpers",
+          "mode": "explain",
+          "budgetChars": 6000,
+          "limit": 8,
+          "gate": true,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "src/context.ts",
+            "src/request.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tanstack-query",
+      "suite": "core",
+      "localPath": "tanstack-query",
+      "cloneUrl": "https://github.com/TanStack/query.git",
+      "branch": "main",
+      "pinnedHead": "763782a2403aefaa52ce76601cf0f4912045be34",
+      "rationale": "Large multi-package TypeScript library with adapters and shared query-core ownership.",
+      "cases": [
+        {
+          "name": "tanstack-react-use-query",
+          "query": "useQuery react hook observer",
+          "mode": "explain",
+          "budgetChars": 7000,
+          "limit": 10,
+          "gate": true,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "packages/react-query/src/useQuery.ts",
+            "packages/query-core/src/queryObserver.ts"
+          ]
+        },
+        {
+          "name": "tanstack-query-cache-notify",
+          "query": "query cache notify manager",
+          "mode": "debug",
+          "budgetChars": 7000,
+          "limit": 10,
+          "gate": true,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "packages/query-core/src/queryCache.ts",
+            "packages/query-core/src/notifyManager.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "shadcn-ui",
+      "suite": "core",
+      "localPath": "shadcn-ui",
+      "cloneUrl": "https://github.com/shadcn-ui/ui.git",
+      "branch": "main",
+      "pinnedHead": "10f1717a3e2a3c16cfbd43877c1e44063d9d749a",
+      "rationale": "Large TypeScript CLI/component registry repo with docs, registry data, examples, commands, and schema files.",
+      "cases": [
+        {
+          "name": "shadcn-add-registry-resolver",
+          "query": "add component command registry resolver",
+          "mode": "feature",
+          "budgetChars": 7000,
+          "limit": 10,
+          "gate": true,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "packages/shadcn/src/commands/add.ts",
+            "packages/shadcn/src/registry/resolver.ts"
+          ]
+        },
+        {
+          "name": "shadcn-registry-build-schema",
+          "query": "registry build command schema",
+          "mode": "explain",
+          "budgetChars": 7000,
+          "limit": 10,
+          "gate": true,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "packages/shadcn/src/commands/registry/build.ts",
+            "packages/shadcn/src/registry/schema.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "payload",
+      "suite": "core",
+      "localPath": "payload",
+      "cloneUrl": "https://github.com/payloadcms/payload.git",
+      "branch": "main",
+      "pinnedHead": "9a3fa5ce9553bb510d072e0591d605e6cae8780a",
+      "rationale": "Very large TypeScript CMS monorepo with local/global operations, auth flows, config, hooks, and generated/test-heavy surfaces.",
+      "cases": [
+        {
+          "name": "payload-local-collection-find",
+          "query": "local collection find operation access pagination",
+          "mode": "debug",
+          "budgetChars": 8000,
+          "limit": 10,
+          "gate": true,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "packages/payload/src/collections/operations/local/find.ts",
+            "packages/payload/src/collections/operations/find.ts"
+          ]
+        },
+        {
+          "name": "payload-auth-login-strategy",
+          "query": "auth login local strategy authenticate password",
+          "mode": "explain",
+          "budgetChars": 8000,
+          "limit": 10,
+          "gate": true,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "packages/payload/src/auth/operations/login.ts",
+            "packages/payload/src/auth/strategies/local/authenticate.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "fastapi",
+      "suite": "observation",
+      "localPath": "fastapi",
+      "cloneUrl": "https://github.com/fastapi/fastapi.git",
+      "branch": "master",
+      "pinnedHead": "5cdf820c8046edaf83c306ebd7435f038fc4a75a",
+      "rationale": "Python framework sample for route/dependency/OpenAPI retrieval outside TypeScript-heavy tuning.",
+      "cases": [
+        {
+          "name": "fastapi-route-dependencies",
+          "query": "path operation route dependency injection",
+          "mode": "feature",
+          "budgetChars": 7000,
+          "limit": 10,
+          "gate": false,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "fastapi/routing.py",
+            "fastapi/dependencies/utils.py"
+          ]
+        },
+        {
+          "name": "fastapi-openapi-responses",
+          "query": "openapi schema generation responses",
+          "mode": "explain",
+          "budgetChars": 7000,
+          "limit": 10,
+          "gate": false,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "fastapi/openapi/utils.py",
+            "fastapi/responses.py"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "gin",
+      "suite": "observation",
+      "localPath": "gin",
+      "cloneUrl": "https://github.com/gin-gonic/gin.git",
+      "branch": "master",
+      "pinnedHead": "d75fcd4c9ab260e5225de590f1f0f8c0e0e12d11",
+      "rationale": "Small Go framework sample for route groups, middleware, binding, and response ownership.",
+      "cases": [
+        {
+          "name": "gin-router-group-middleware",
+          "query": "router group middleware handlers chain",
+          "mode": "feature",
+          "budgetChars": 6000,
+          "limit": 8,
+          "gate": false,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "routergroup.go",
+            "gin.go"
+          ]
+        },
+        {
+          "name": "gin-context-json-binding",
+          "query": "context json response binding",
+          "mode": "debug",
+          "budgetChars": 6000,
+          "limit": 8,
+          "gate": false,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "context.go",
+            "binding/json.go"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "axum",
+      "suite": "observation",
+      "localPath": "axum",
+      "cloneUrl": "https://github.com/tokio-rs/axum.git",
+      "branch": "main",
+      "pinnedHead": "e1f5f5eaa7ed3aca1a9420cc4b2f759b5893a9fc",
+      "rationale": "Rust framework sample for route composition, handlers, extractors, and rejection-heavy code paths.",
+      "cases": [
+        {
+          "name": "axum-method-routing-handler",
+          "query": "router method routing service handler",
+          "mode": "feature",
+          "budgetChars": 7000,
+          "limit": 10,
+          "gate": false,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "axum/src/routing/method_routing.rs",
+            "axum/src/handler/mod.rs"
+          ]
+        },
+        {
+          "name": "axum-path-query-extractors",
+          "query": "path query extractors rejection",
+          "mode": "debug",
+          "budgetChars": 7000,
+          "limit": 10,
+          "gate": false,
+          "maxExpectedOwnerRank": 6,
+          "expectedOwnerFiles": [
+            "axum/src/extract/path/mod.rs",
+            "axum/src/extract/query.rs"
+          ]
+        }
+      ]
+    }
+  ]
+}

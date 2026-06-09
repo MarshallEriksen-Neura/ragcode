@@ -1,0 +1,53 @@
+.npmignore
+# Source files - only publish built artifacts
+src/
+tests/
+scripts/
+web/src/
+
+# Development files
+*.test.ts
+*.spec.ts
+vitest.config.ts
+tsconfig.json
+tsconfig.*.json
+
+# Documentation (keep README)
+docs/
+CLAUDE.md
+.claude/
+
+# Build artifacts (except dist/)
+.ragcode/
+node_modules/
+*.log
+*.sqlite
+*.sqlite-*
+
+# Development
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Misc
+coverage/
+*.tgz

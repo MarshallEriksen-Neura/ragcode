@@ -1,6 +1,7 @@
 import type { GraphStore } from "../core/contracts.js";
 import type { CodeChunk, SearchHit, SearchQuery } from "../core/types.js";
-import { applyRankingSignals, isExplicitTestQuery, isTestPath } from "./ranking-signals.js";
+import { isExplicitTestQuery, isTestPath } from "./path-classification.js";
+import { applyRankingSignals } from "./ranking-signals.js";
 import type { ResolvedContextMode } from "./query-planner.js";
 import { buildFileGraph, computeTopologyDistances, graphDegree } from "./topology-distance.js";
 
@@ -46,7 +47,16 @@ export async function rerankWithGraph(
           hasStructuralSeeds: seedFiles.length > 0
         });
         return signal.reason
-          ? { ...hit, score: signal.score, reason: `${hit.reason}; ${signal.reason}` }
+          ? {
+            ...hit,
+            score: signal.score,
+            scoreBreakdown: {
+              ...hit.scoreBreakdown,
+              graphAdjustment: (hit.scoreBreakdown?.graphAdjustment ?? 0) + signal.adjustment,
+              final: signal.score
+            },
+            reason: `${hit.reason}; ${signal.reason}`
+          }
           : hit;
       })
       .sort((a, b) => {

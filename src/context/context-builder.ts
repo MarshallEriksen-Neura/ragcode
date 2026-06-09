@@ -1,5 +1,6 @@
 import type { ContextPack, ContextRequest, ContextSnippet, DirtyFile, FreshnessReport, GraphEdge, OwnerNode, RelationshipEvidence, SearchHit, TopologyEdge } from "../core/types.js";
 import { nextQueriesForMode, resolveContextMode } from "../retrieval/query-planner.js";
+import { classifyEvidencePath, isExplicitSupportingEvidenceQuery } from "../retrieval/path-classification.js";
 import { renderSnippet } from "./snippet-renderer.js";
 
 const DEFAULT_BUDGET_CHARS = 18_000;
@@ -22,16 +23,7 @@ export class ContextBuilder {
   build(request: ContextRequest, hits: SearchHit[], edges: GraphEdge[] = [], metadata: ContextBuildMetadata): ContextPack {
     const budgetChars = request.budgetChars ?? DEFAULT_BUDGET_CHARS;
     const mode = resolveContextMode(request.query, request.mode);
-    const snippets: ContextSnippet[] = [];
-    let usedChars = 0;
-
-    for (const hit of hits) {
-      const snippet = renderSnippet(hit, request.query, mode);
-      const cost = estimateSnippetCost(snippet);
-      if (usedChars + cost > budgetChars) continue;
-      snippets.push(snippet);
-      usedChars += cost;
-    }
+    const { snippets, usedChars } = selectDiverseSnippets(request, hits, mode, budgetChars);
     const ownerChain = ownerNodes(snippets);
     const ownerPaths = ownerChain.map((owner) => owner.filePath);
     const relationships = relationshipEvidence(edges, ownerPaths);
@@ -59,6 +51,52 @@ export class ContextBuilder {
   }
 }
 
+function selectDiverseSnippets(
+  request: ContextRequest,
+  hits: SearchHit[],
+  mode: Exclude<ContextPack["mode"], "auto">,
+  budgetChars: number
+): { snippets: ContextSnippet[]; usedChars: number } {
+  const candidates = hits.map((hit, index) => {
+    const snippet = renderSnippet(hit, request.query, mode);
+    return {
+      index,
+      key: `${snippet.filePath}\0${snippet.startLine}\0${snippet.endLine}\0${snippet.role}`,
+      snippet,
+      cost: estimateSnippetCost(snippet)
+    };
+  });
+  const selected: typeof candidates = [];
+  const selectedKeys = new Set<string>();
+  const snippetsByFile = new Map<string, number>();
+  let usedChars = 0;
+
+  const tryAdd = (candidate: typeof candidates[number], maxForFile: number): void => {
+    if (selectedKeys.has(candidate.key)) return;
+    const currentForFile = snippetsByFile.get(candidate.snippet.filePath) ?? 0;
+    if (currentForFile >= maxForFile) return;
+    if (usedChars + candidate.cost > budgetChars) return;
+    selectedKeys.add(candidate.key);
+    snippetsByFile.set(candidate.snippet.filePath, currentForFile + 1);
+    selected.push(candidate);
+    usedChars += candidate.cost;
+  };
+
+  for (const candidate of candidates) {
+    if ((snippetsByFile.get(candidate.snippet.filePath) ?? 0) === 0) {
+      tryAdd(candidate, 1);
+    }
+  }
+  for (const candidate of candidates) {
+    tryAdd(candidate, maxSnippetsForFile(candidate.snippet.filePath, request.query));
+  }
+
+  return {
+    snippets: selected.sort((a, b) => a.index - b.index).map((candidate) => candidate.snippet),
+    usedChars
+  };
+}
+
 function missingEvidenceFor(snippets: ContextSnippet[], metadata: ContextBuildMetadata): string[] {
   const missing: string[] = [];
   if (snippets.length === 0) missing.push("No indexed context matched the query.");
@@ -70,6 +108,12 @@ function missingEvidenceFor(snippets: ContextSnippet[], metadata: ContextBuildMe
 
 function estimateSnippetCost(snippet: ContextSnippet): number {
   return snippet.filePath.length + snippet.reason.length + snippet.content.length + 80;
+}
+
+function maxSnippetsForFile(filePath: string, query: string): number {
+  const kind = classifyEvidencePath(filePath);
+  if (kind === "implementation") return 3;
+  return isExplicitSupportingEvidenceQuery(query) ? 2 : 1;
 }
 
 function confidenceFor(snippets: ContextSnippet[]): ContextPack["confidence"] {

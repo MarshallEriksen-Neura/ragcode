@@ -4,6 +4,27 @@ RagCode is a local code intelligence foundation for agent-facing context retriev
 
 The intended direction is to stand on the shoulders of projects such as CodeGraph and Understand-Anything while adding a LanceDB semantic layer and a stronger context-engine contract.
 
+## Quick Start
+
+```bash
+# Install globally
+npm install -g ragcode-context-engine
+
+# Initialize configuration (interactive wizard)
+ragcode init
+
+# Index your codebase
+ragcode index .
+
+# Search code
+ragcode search . "your query"
+
+# Setup MCP integration for Claude Desktop
+ragcode setup-mcp
+```
+
+See [docs/INSTALLATION.md](docs/INSTALLATION.md) for detailed installation instructions.
+
 ## Web Dashboard (New!)
 
 A web-based management interface is now available for easier configuration and monitoring:
@@ -63,7 +84,7 @@ This scaffold provides:
 
 See `docs/SEMANTIC_RUNTIME.md` for LanceDB and embedding model configuration.
 
-## Commands
+## Development Commands
 
 ```bash
 bun install
@@ -76,6 +97,22 @@ bun run build
 ```
 
 RagCode currently requires Node >=24 because the SQLite graph store uses `node:sqlite`.
+
+## CLI Commands
+
+```bash
+ragcode init [directory]           # Initialize configuration
+ragcode index <repoRoot>           # Index a repository
+ragcode search <repoRoot> <query>  # Search code
+ragcode status <repoRoot>          # Check index status
+ragcode context <repoRoot> <query> # Build context pack
+ragcode mcp                        # Start MCP server
+ragcode setup-mcp                  # Configure MCP for Claude Desktop
+ragcode doctor [repoRoot]          # Runtime diagnostics
+ragcode watch <repoRoot>           # File watcher daemon
+```
+
+Run `ragcode --help` or `ragcode <command> --help` for more details.
 
 Offline smoke with deterministic embeddings:
 

@@ -131,8 +131,18 @@ export interface SearchQuery {
 export interface SearchHit {
   chunk: CodeChunk;
   score: number;
+  scoreBreakdown?: SearchScoreBreakdown;
   source: "exact" | "graph" | "semantic" | "keyword";
   reason: string;
+}
+
+export interface SearchScoreBreakdown {
+  keyword?: number;
+  semantic?: number;
+  sourceNormalized?: number;
+  modeBoost?: number;
+  graphAdjustment?: number;
+  final: number;
 }
 
 export interface ContextRequest extends SearchQuery {

@@ -23,6 +23,8 @@ export * from "./subgraph/impact-explainer.js";
 export * from "./subgraph/node-expander.js";
 export * from "./subgraph/output-preset.js";
 export * from "./reuse/reuse-detector.js";
+export * from "./retrieval/hybrid-retriever.js";
+export * from "./retrieval/path-classification.js";
 export * from "./diagnostics/doctor.js";
 export * from "./mcp/tools.js";
 export * from "./mcp/server.js";

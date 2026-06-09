@@ -1,14 +1,37 @@
 {
   "name": "ragcode-context-engine",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "description": "Local code intelligence foundation: structural code graph, LanceDB semantic layer, retrieval, context packing, and MCP tools.",
+  "keywords": [
+    "code-intelligence",
+    "mcp",
+    "model-context-protocol",
+    "semantic-search",
+    "code-graph",
+    "lancedb",
+    "rag",
+    "ai-agents",
+    "claude",
+    "code-analysis"
+  ],
+  "author": "RagCode Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/ragcode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/ragcode/issues"
+  },
+  "homepage": "https://github.com/yourusername/ragcode#readme",
   "bin": {
-    "ragcode": "./dist/cli/index.js"
+    "ragcode": "./dist/src/cli/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
     "audit:plan": "tsx scripts/audit-plan.ts",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
@@ -18,7 +41,12 @@
     "web:server": "tsx src/web/server.ts",
     "web:client": "cd web && npm run dev",
     "benchmark": "tsx scripts/benchmark.ts",
-    "benchmark:assert": "tsx scripts/benchmark.ts --assert"
+    "benchmark:assert": "tsx scripts/benchmark.ts --assert",
+    "benchmark:list": "tsx scripts/benchmark.ts --list",
+    "benchmark:all": "tsx scripts/benchmark.ts --all",
+    "benchmark:observation": "tsx scripts/benchmark.ts --suite observation",
+    "setup-mcp": "tsx scripts/setup-mcp.ts",
+    "init-config": "tsx scripts/init-config.ts"
   },
   "dependencies": {
     "@lancedb/lancedb": "^0.30.0",
@@ -26,6 +54,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/ws": "^8.18.1",
+    "apache-arrow": "^18.1.0",
     "better-sqlite3": "^12.10.0",
     "chokidar": "^5.0.0",
     "commander": "^14.0.2",

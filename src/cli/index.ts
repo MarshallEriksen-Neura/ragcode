@@ -257,6 +257,52 @@ program
     await startStdioMcpServer();
   });
 
+program
+  .command("init")
+  .argument("[directory]")
+  .description("Initialize RagCode configuration (interactive wizard)")
+  .action(async (directory?: string) => {
+    const { spawnSync } = await import("node:child_process");
+    const targetDir = directory || process.cwd();
+
+    const result = spawnSync("tsx", ["scripts/init-config.ts", targetDir], {
+      stdio: "inherit",
+      cwd: process.cwd()
+    });
+
+    if (result.error) {
+      console.error("Failed to run init wizard:", result.error);
+      process.exitCode = 1;
+    } else if (result.status !== 0) {
+      process.exitCode = result.status ?? 1;
+    }
+  });
+
+program
+  .command("setup-mcp")
+  .option("--config <path>", "Custom MCP config path")
+  .option("--print", "Print config without writing")
+  .description("Auto-configure RagCode as an MCP server for Claude Desktop")
+  .action(async (options: { config?: string; print?: boolean }) => {
+    const { spawnSync } = await import("node:child_process");
+    const args = ["scripts/setup-mcp.ts"];
+
+    if (options.print) args.push("--print");
+    if (options.config) args.push("--config", options.config);
+
+    const result = spawnSync("tsx", args, {
+      stdio: "inherit",
+      cwd: process.cwd()
+    });
+
+    if (result.error) {
+      console.error("Failed to run setup-mcp:", result.error);
+      process.exitCode = 1;
+    } else if (result.status !== 0) {
+      process.exitCode = result.status ?? 1;
+    }
+  });
+
 program.parseAsync().catch((error: unknown) => {
   const message = formatCliError(error);
   console.error(message);

@@ -25,6 +25,7 @@ import { isIncomingImpactEdge, isOutgoingImpactEdge, matchesImpactTarget, parseI
 import { normalizeUserPath } from "../utils/path.js";
 import { SqliteStatements } from "./sqlite-statements.js";
 import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
+import { buildQueryMatchProfile, scoreChunkText, scoreSymbolText } from "../retrieval/query-matching.js";
 
 export class SQLiteGraphStore implements GraphStore {
   private readonly db: DatabaseSync;
@@ -230,24 +231,23 @@ export class SQLiteGraphStore implements GraphStore {
   async searchText(query: SearchQuery): Promise<SearchHit[]> {
     const repoRoot = requireRepoRoot(query.repoRoot);
     const projectId = this.scopedProjectId(repoRoot, query.projectId);
-    const terms = tokenize(query.query);
-    if (terms.length === 0) return [];
-    const ftsQuery = ftsQueryFor(query.query);
+    const profile = buildQueryMatchProfile(query.query, this.symbolsForProject(projectId));
+    if (profile.queryTerms.length === 0) return [];
+    const ftsQuery = ftsQueryForTerms(profile.ftsTerms);
     if (!ftsQuery) return [];
     const rows = this.sql.searchFts.all(projectId, ftsQuery, Math.max(query.limit ?? 20, 20) * 4);
     const hits: SearchHit[] = [];
     for (const row of rows) {
       const chunk = chunkFromRow(row);
-      const haystack = `${chunk.filePath}\n${chunk.symbolName ?? ""}\n${chunk.content}`.toLowerCase();
-      const matched = terms.filter((term) => haystack.includes(term)).length;
-      if (matched === 0) continue;
+      const match = scoreChunkText(chunk, profile);
+      if (!match) continue;
       const rank = Number((row as Record<string, unknown>).rank);
-      const rankBoost = Number.isFinite(rank) ? Math.max(0, -rank) * 1000 : 0;
+      const rankSignal = Number.isFinite(rank) ? Math.min(0.25, Math.log1p(Math.max(0, -rank))) : 0;
       hits.push({
         chunk,
-        score: matched / terms.length + rankBoost,
+        score: match.score + rankSignal,
         source: "keyword",
-        reason: `FTS MATCH matched ${matched}/${terms.length} query term(s); bm25=${formatRank(rank)}`
+        reason: `FTS MATCH ${match.reason}; bm25=${formatRank(rank)}`
       });
     }
     return hits.sort((a, b) => b.score - a.score || a.chunk.filePath.localeCompare(b.chunk.filePath)).slice(0, query.limit ?? 20);
@@ -256,7 +256,7 @@ export class SQLiteGraphStore implements GraphStore {
   async findOwner(repoRoot: string, query: string, limit = 5): Promise<OwnerCandidate[]> {
     const hits = await this.searchText({ repoRoot, query, limit: limit * 4 });
     const symbols = await this.getSymbols(repoRoot);
-    const terms = tokenize(query);
+    const profile = buildQueryMatchProfile(query, symbols);
     const candidates = new Map<string, OwnerCandidate>();
 
     for (const hit of hits) {
@@ -267,12 +267,11 @@ export class SQLiteGraphStore implements GraphStore {
     }
 
     for (const symbol of symbols) {
-      const haystack = `${symbol.name} ${symbol.filePath} ${symbol.signature ?? ""}`.toLowerCase();
-      const matched = terms.filter((term) => haystack.includes(term)).length;
-      if (matched === 0) continue;
+      const match = scoreSymbolText(symbol, profile);
+      if (!match) continue;
       const current = candidates.get(symbol.filePath) ?? { filePath: symbol.filePath, score: 0, reasons: [], symbols: [] };
-      current.score += 1 + matched / Math.max(1, terms.length);
-      current.reasons.push(`Symbol match: ${symbol.name}`);
+      current.score += 1 + match.score;
+      current.reasons.push(match.reason);
       current.symbols.push(symbol);
       candidates.set(symbol.filePath, current);
     }
@@ -687,17 +686,12 @@ function parseMetadata(value: unknown): Record<string, unknown> {
   }
 }
 
-function tokenize(query: string): string[] {
-  return query.toLowerCase().split(/[^a-z0-9_./:-]+/i).map((part) => part.trim()).filter(Boolean);
-}
-
-function ftsQueryFor(query: string): string {
-  const parts = query
-    .toLowerCase()
-    .split(/[^a-z0-9_]+/i)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  return [...new Set(parts)].map((part) => `"${part.replaceAll('"', '""')}"`).join(" OR ");
+function ftsQueryForTerms(terms: string[]): string {
+  return [...new Set(terms)]
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean)
+    .map((part) => `"${part.replaceAll('"', '""')}"`)
+    .join(" OR ");
 }
 
 function formatRank(rank: number): string {
