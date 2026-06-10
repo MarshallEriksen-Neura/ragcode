@@ -203,10 +203,12 @@ export class LanceSemanticStore implements SemanticStore {
 
     for (let start = 0; start < batches.length; start += this.embeddingConcurrency) {
       const window = batches.slice(start, start + this.embeddingConcurrency);
-      const embeddedBatches = await Promise.all(window.map((batch) => this.embedChunkBatch(batch, provider, generation)));
+      const settled = await Promise.allSettled(window.map((batch) => this.embedChunkBatch(batch, provider, generation)));
 
-      for (let offset = 0; offset < embeddedBatches.length; offset += 1) {
-        const rows = embeddedBatches[offset];
+      for (let offset = 0; offset < settled.length; offset += 1) {
+        const outcome = settled[offset];
+        if (outcome.status !== "fulfilled") continue;
+        const rows = outcome.value;
         const vectorDimensions = rows[0]?.vector.length;
         if (!vectorDimensions) continue;
 
@@ -224,6 +226,11 @@ export class LanceSemanticStore implements SemanticStore {
           elapsedMs: Date.now() - startedAt
         });
       }
+
+      // Surface a failure only after persisting every batch that succeeded in this window, so
+      // one transient error never discards (and forces re-embedding of) already-completed batches.
+      const failure = settled.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+      if (failure) throw failure.reason;
     }
   }
 
@@ -709,7 +716,10 @@ function identifier(value: string): string {
 }
 
 function escapeSqlLiteral(value: string): string {
-  return value.replaceAll("\\", "\\\\").replaceAll("'", "''");
+  // DataFusion (LanceDB's query engine) follows standard SQL: backslashes are literal inside
+  // string literals — only single quotes are escaped, by doubling. Doubling backslashes too
+  // made Windows paths (repoRoot from path.resolve) query as `\\` and miss the stored single `\`.
+  return value.replaceAll("'", "''");
 }
 
 function searchPredicate(query: SearchQuery): string {

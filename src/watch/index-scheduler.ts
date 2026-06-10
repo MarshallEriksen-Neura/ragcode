@@ -121,7 +121,11 @@ export class WatchIndexScheduler {
       if (attempts >= maxAttempts) deadLetter.push(filePath);
       else retryable.push(filePath);
     }
-    if (deadLetter.length > 0) await this.engine.markDirtyFilesDeadLetter(this.repoRoot, deadLetter, `background indexing failed ${maxAttempts} times: ${reason}`);
+    if (deadLetter.length > 0) {
+      await this.engine.markDirtyFilesDeadLetter(this.repoRoot, deadLetter, `background indexing failed ${maxAttempts} times: ${reason}`);
+      // Drop dead-lettered files from the attempt counter so it can't grow unbounded over a long watch.
+      for (const filePath of deadLetter) this.failureAttemptsByFile.delete(filePath);
+    }
     if (retryable.length > 0) await this.engine.recordFileEvents(this.repoRoot, retryable, this.options);
   }
 

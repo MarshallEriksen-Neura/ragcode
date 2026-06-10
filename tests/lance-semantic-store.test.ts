@@ -133,7 +133,7 @@ describe("Lance semantic embedding reliability", () => {
     expect(table.records.map((record) => record.id)).toEqual(["real-row"]);
   });
 
-  it("escapes backslashes and single quotes in Lance predicates", async () => {
+  it("escapes single quotes and leaves backslashes literal for DataFusion predicates", async () => {
     const table = new FakeLanceTable();
     const store = new LanceSemanticStore("memory://predicate", {
       connection: fakeConnection(table)
@@ -141,7 +141,8 @@ describe("Lance semantic embedding reliability", () => {
 
     await store.deleteFile("repo-a", "project'a", "src\\owner's.ts");
 
-    expect(table.deletes).toContain("projectId = 'project''a' AND filePath = 'src\\\\owner''s.ts'");
+    // DataFusion treats backslashes literally inside string literals; only single quotes are doubled.
+    expect(table.deletes).toContain("projectId = 'project''a' AND filePath = 'src\\owner''s.ts'");
   });
 });
 
@@ -300,7 +301,8 @@ function parsePredicateList(list: string): string[] {
 }
 
 function unescapePredicateLiteral(value: string): string {
-  return value.replaceAll("''", "'").replaceAll("\\\\", "\\");
+  // Mirror escapeSqlLiteral: only single quotes are doubled; backslashes are literal in DataFusion.
+  return value.replaceAll("''", "'");
 }
 
 function row(overrides: Partial<LanceChunkRecord> = {}): LanceChunkRecord {

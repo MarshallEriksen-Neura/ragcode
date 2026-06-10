@@ -48,6 +48,38 @@ describe("graph-based reranking", () => {
       .toContain("graph rerank: graph proximity 1 hop via routes_to");
   });
 
+  it("caches the scoped graph by index generation across reranks", async () => {
+    const projectId = "project-a";
+    const symbols = [
+      symbol(projectId, "route", "POST", "src/app/api/payments/route.ts"),
+      symbol(projectId, "service", "createPaymentIntent", "src/services/billing.ts")
+    ];
+    const edges: GraphEdge[] = [
+      edge(projectId, "route", "service", "routes_to", {
+        sourceFile: "src/app/api/payments/route.ts",
+        targetFile: "src/services/billing.ts",
+        targetName: "createPaymentIntent"
+      })
+    ];
+    let symbolLoads = 0;
+    const store = {
+      getIndexGeneration: async () => 7,
+      getSymbols: async () => { symbolLoads += 1; return symbols; },
+      getEdges: async () => edges,
+      getChunks: async () => []
+    } as unknown as GraphStore;
+    const hits: SearchHit[] = [
+      hit("src/services/billing.ts", "typescript", 0.8, "keyword", "owner"),
+      hit("src/app/api/payments/route.ts", "typescript", 0.2, "keyword", "route")
+    ];
+
+    await rerankWithGraph(hits, { repoRoot: tempRoot, projectId, query: "payment billing", mode: "feature" }, "feature", { graphStore: store, maxSeeds: 1 });
+    await rerankWithGraph(hits, { repoRoot: tempRoot, projectId, query: "payment billing", mode: "feature" }, "feature", { graphStore: store, maxSeeds: 1 });
+
+    // Second rerank at the same index generation reuses the cached scoped graph (no reload).
+    expect(symbolLoads).toBe(1);
+  });
+
   it("keeps graph traversal scoped to the requested project", async () => {
     const hits: SearchHit[] = [
       hit("docs/payment-playbook.md", "markdown", 1.2, "semantic", "Disconnected docs"),

@@ -39,6 +39,10 @@ export class RepoIndexer implements Indexer {
       : 0;
     const indexGeneration = currentGeneration + 1;
     const changedFilePaths = changedFiles.map((file) => file.path);
+    // Incremental refresh loads the full prior graph into memory: chunkFilesIncremental needs the
+    // whole symbol/edge set to re-resolve cross-file references for the changed files. Peak memory
+    // therefore scales with total graph size, not the changed slice — an accepted trade-off for
+    // correctness; revisit with windowed loading if it becomes a ceiling (see todo.md D/L6).
     const cached = fullReindex
       ? undefined
       : {
@@ -138,6 +142,9 @@ function refreshedFilePaths(files: CodeFile[], previousEdges: GraphEdge[], chang
     const sourceFile = stringMetadata(edge, "sourceFile");
     if (!sourceFile || !currentPaths.has(sourceFile)) continue;
 
+    // Any edge whose recorded target file was touched invalidates its source. This is uniform
+    // across imports, resolved calls, and framework edges (calls_api/routes_to/uses_middleware):
+    // they all carry targetFile metadata, so this single pass covers them — no per-kind reverse pass.
     const previousTargetFile = stringMetadata(edge, "targetFile");
     if (previousTargetFile && touchedPaths.has(previousTargetFile)) {
       refreshed.add(sourceFile);
@@ -149,23 +156,7 @@ function refreshedFilePaths(files: CodeFile[], previousEdges: GraphEdge[], chang
     if (nextTargetFile && touchedPaths.has(nextTargetFile)) refreshed.add(sourceFile);
   }
 
-  refreshFrameworkReverseRelations(previousEdges, touchedPaths, currentPaths, refreshed);
-
   return [...refreshed].sort();
-}
-
-function refreshFrameworkReverseRelations(previousEdges: GraphEdge[], touchedPaths: Set<string>, currentPaths: Set<string>, refreshed: Set<string>): void {
-  for (const edge of previousEdges) {
-    const sourceFile = stringMetadata(edge, "sourceFile");
-    if (!sourceFile || !currentPaths.has(sourceFile)) continue;
-
-    const targetFile = stringMetadata(edge, "targetFile");
-    if (!targetFile || !touchedPaths.has(targetFile)) continue;
-
-    if (edge.kind === "calls_api" || edge.kind === "routes_to" || edge.kind === "uses_middleware") {
-      refreshed.add(sourceFile);
-    }
-  }
 }
 
 function stringMetadata(edge: GraphEdge, key: string): string | undefined {

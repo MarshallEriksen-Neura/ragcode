@@ -350,14 +350,10 @@ function apiUrlForCall(node: ts.CallExpression, stringConstants: Map<string, str
 
   const chain = propertyChain(expression);
   if (chain.length >= 2 && chain[0] === "axios" && httpMethodNames.has(chain[chain.length - 1] ?? "") && directUrl) {
-    return {
-      ...directUrl,
-      resolution: directUrl.resolution === "framework_template"
-        ? "framework_template"
-        : directUrl.resolution === "framework_dataflow"
-          ? "framework_dataflow"
-          : "framework_wrapper"
-    };
+    // Preserve the URL's own resolution (a literal stays framework_static, a const stays
+    // framework_dataflow). Flattening static literals to framework_wrapper understated their
+    // certainty and dropped them to heuristic confidence downstream.
+    return directUrl;
   }
 
   const clientUrl = urlFromClientCall(chain);
@@ -469,7 +465,7 @@ function routePathMatches(routePath: string, requestPath: string): boolean {
   const routeSegments = routePath.split("/");
   const requestSegments = requestPath.split("/");
   if (routeSegments.length !== requestSegments.length) return false;
-  return routeSegments.every((segment, index) => segment === requestSegments[index] || segment.startsWith(":") || requestSegments[index] === "*");
+  return routeSegments.every((segment, index) => segment === requestSegments[index] || segment.startsWith(":"));
 }
 
 function isWebhookRoute(routePath: string, filePath: string): boolean {

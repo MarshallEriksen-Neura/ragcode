@@ -18,6 +18,10 @@ interface OrmAccess {
   dataflowKind?: "request_payload";
 }
 
+// Bounded ORM resolver: recognizes the conventional client identifiers `prisma.<model>.<op>()`
+// and `db.<op>(<model>)` / `db.select().from(<model>)` only. Renamed clients (e.g. `database`,
+// `drizzleDb`) are intentionally out of scope — broadening detection needs a resolver that
+// tracks the import binding rather than the literal name, which is deferred (see todo.md D/L4).
 export function buildOrmTopologyEdges(repoRoot: string, _files: CodeFile[], sources: TypeScriptSourceFile[], symbols: SymbolNode[]): GraphEdge[] {
   const edges: GraphEdge[] = [];
   for (const source of sources) {
