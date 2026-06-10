@@ -307,7 +307,10 @@ export class LanceSemanticStore implements SemanticStore {
           .toArray();
         for (const reusable of rows) {
           const key = reuseVectorKey(projectId, reusable.contentHash);
-          if (!vectors.has(key)) vectors.set(key, reusable.vector);
+          // A vector read back from LanceDB is an Arrow Vector, not a plain number[]; re-adding it
+          // verbatim makes the next table.add() fail Arrow schema inference ("vector.isValid").
+          // Materialize a plain number[] so reused rows write back cleanly on real LanceDB.
+          if (!vectors.has(key)) vectors.set(key, Array.from(reusable.vector as Iterable<number>));
         }
       }
     }
