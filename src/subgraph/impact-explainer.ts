@@ -29,7 +29,7 @@ export function buildExplainImpactReport(target: string, subgraph: VerifiedCodeS
   if (riskReasons.length === 0) riskReasons.push("Impact is limited to a small verified internal subgraph with test evidence.");
 
   const riskLevel = riskScore >= 9 ? "high" : riskScore >= 4 ? "medium" : "low";
-  const editReadiness = readinessFor(subgraph, riskLevel, noPrimaryOwner, truncated, unresolvedCount);
+  const editReadiness = readinessFor(subgraph, riskLevel, noPrimaryOwner, unresolvedCount);
 
   return {
     target,
@@ -45,10 +45,9 @@ function readinessFor(
   subgraph: VerifiedCodeSubgraph,
   riskLevel: ExplainImpactReport["riskLevel"],
   noPrimaryOwner: boolean,
-  truncated: boolean,
   unresolvedCount: number
 ): ExplainImpactReport["editReadiness"] {
-  if (!subgraph.answerable || noPrimaryOwner || truncated) return "not_enough_context";
+  if (subgraph.coverageSummary.verdict === "not_enough_context" || !subgraph.answerable || noPrimaryOwner) return "not_enough_context";
   if (riskLevel === "high" || unresolvedCount > 0) return "investigate_only";
-  return "safe_to_edit_after_reading";
+  return subgraph.coverageSummary.verdict;
 }

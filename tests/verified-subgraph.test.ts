@@ -89,14 +89,25 @@ describe("verified code subgraphs", () => {
         source: "framework_rule",
         confidence: "high",
         sourceFile: "src/app/checkout/CheckoutButton.tsx",
-        targetFile: "src/app/api/payments/route.ts"
+        targetFile: "src/app/api/payments/route.ts",
+        metadata: expect.objectContaining({
+          framework: "nextjs",
+          route: "/api/payments",
+          requestPath: "/api/payments",
+          resolution: "framework_static"
+        })
       }),
       expect.objectContaining({
         kind: "routes_to",
         source: "framework_rule",
         confidence: "high",
         sourceFile: "src/app/api/payments/route.ts",
-        targetFile: "src/services/billing.ts"
+        targetFile: "src/services/billing.ts",
+        metadata: expect.objectContaining({
+          framework: "nextjs",
+          route: "/api/payments",
+          resolution: "framework_call_graph"
+        })
       }),
       expect.objectContaining({
         kind: "tested_by",
@@ -129,7 +140,11 @@ describe("verified code subgraphs", () => {
       expect.objectContaining({
         filePath: "src/app/api/payments/route.ts",
         roles: expect.arrayContaining(["route"]),
-        evidence: expect.arrayContaining([expect.objectContaining({ kind: "calls_api", source: "framework_rule" })])
+        evidence: expect.arrayContaining([expect.objectContaining({
+          kind: "calls_api",
+          source: "framework_rule",
+          metadata: expect.objectContaining({ route: "/api/payments" })
+        })])
       })
     ]));
   });

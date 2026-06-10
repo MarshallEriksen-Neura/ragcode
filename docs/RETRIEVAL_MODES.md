@@ -58,4 +58,6 @@ Expected tools:
 
 ## Scoring
 
-The current ranker fuses keyword and semantic hits, then applies small mode-specific boosts. This is intentionally conservative: structural graph evidence should improve ranking without hiding raw evidence.
+The current ranker fuses keyword and semantic hits, then applies mode-specific boosts and graph reranking. Candidates with a non-positive final score are filtered before output, so semantic nearest neighbors that were demoted to zero do not appear as usable evidence.
+
+Structural graph evidence should improve ranking without hiding raw evidence. For route/data-flow questions, framework and ORM metadata may appear in subgraph edge `metadata` so callers can distinguish static route links, bounded string/dataflow links, and ORM request-payload write evidence.

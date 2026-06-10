@@ -38,6 +38,7 @@ interface ContextPack {
   ownerChain: OwnerNode[];
   topology: TopologyEdge[];
   snippets: EvidenceSnippet[];
+  relationships: RelationshipEvidence[];
   missingEvidence: string[];
   nextQueries: string[];
   budgetChars: number;
@@ -104,6 +105,51 @@ interface TopologyEdge {
   sourceFile?: string;
   targetFile?: string;
 }
+
+type SubgraphOutputPreset = "compact" | "agent_edit" | "debug_trace" | "review_risk";
+
+interface VerifiedCodeSubgraph {
+  query: string;
+  mode: "impact" | "flow" | "review" | "debug";
+  answerable: boolean;
+  confidence: "low" | "medium" | "high";
+  coverageSummary: CoverageSummary;
+  whyTheseFiles: WhyThisFile[];
+  nodes: SubgraphNode[];
+  edges: VerifiedSubgraphEdge[];
+  paths: string[][];
+  snippets: EvidenceSnippet[];
+  coverage: CoverageSignal[];
+  missingEvidence: string[];
+  nextQueries: string[];
+  budgetChars: number;
+  usedChars: number;
+}
+
+interface VerifiedSubgraphEdge {
+  fromNodeId: string;
+  toNodeId: string;
+  kind: string;
+  confidence: "low" | "medium" | "high";
+  source: "ast" | "lsp" | "framework_rule" | "test_import" | "resource_rule" | "event_rule" | "heuristic";
+  reason: string;
+  sourceFile?: string;
+  targetFile?: string;
+  line?: number;
+  targetName?: string;
+  metadata?: {
+    framework?: string;
+    route?: string;
+    requestPath?: string;
+    resource?: string;
+    model?: string;
+    operation?: string;
+    resolution?: string;
+    dataflowSource?: string;
+    dataflowKind?: string;
+    producer?: string;
+  };
+}
 ```
 
 ## Design Rules
@@ -118,10 +164,20 @@ interface TopologyEdge {
 - Core owner files should return focused function bodies when that is enough.
 - Snippets should expose how much code was elided.
 - Candidate ranking should include graph-distance signals after keyword/vector recall.
+- `VerifiedSubgraphEdge.metadata` carries bounded topology facts such as route, request path, ORM resource, operation, resolution, and request-payload source. These fields are evidence metadata, not proof of runtime reachability beyond the resolver boundary.
+- `compact` omits snippets and full node details for low-token first-pass reads. `agent_edit` keeps edit-readiness and snippets, `debug_trace` keeps paths/edges/coverage, and `review_risk` keeps non-passing coverage and lower-confidence edge evidence.
 
 ## Current Implementation
 
-The current compiler uses keyword + deterministic vector retrieval, mode boosts, graph relationship evidence, and a character budget. Future implementations can replace stores and rankers without changing this contract.
+The current compiler uses keyword + semantic retrieval, mode boosts, graph relationship evidence, and a character budget. Search filters out reranked candidates with non-positive final score before returning results. Future implementations can replace stores and rankers without changing this contract.
+
+Framework and dataflow topology are intentionally bounded:
+
+- Next.js app/pages API routes, Express routes, and Fastify routes can produce `calls_api`, `routes_to`, and `handles_webhook` edges.
+- Same-file string constants and fully resolved template literals can produce `framework_dataflow` request-path evidence.
+- Unresolved template URLs are not connected to concrete routes.
+- Prisma and Drizzle reads/writes can produce `reads_from` and `writes_to` resource edges.
+- ORM write calls that directly use `req.body`, `req.params`, `req.query`, `req.json()`, or a same-file binding derived from those sources can be marked `orm_dataflow` with `dataflowKind: "request_payload"`.
 
 ## Planned Shaping Pipeline
 

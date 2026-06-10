@@ -60,6 +60,12 @@ function drizzleAccessFromCall(node: ts.CallExpression): OrmAccess | undefined {
   if (!ts.isPropertyAccessExpression(node.expression)) return undefined;
   const operation = node.expression.name.text;
 
+  if (operation === "values" || operation === "set") {
+    const writeCall = ts.isCallExpression(node.expression.expression) ? node.expression.expression : undefined;
+    const writeAccess = writeCall ? drizzleAccessFromCall(writeCall) : undefined;
+    if (writeAccess?.kind === "writes_to") return writeAccess;
+  }
+
   if (DRIZZLE_WRITE_OPERATIONS.has(operation) && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "db") {
     const model = identifierText(node.arguments[0]);
     if (model) return { orm: "drizzle", kind: "writes_to", operation, model, resource: `drizzle.${model}` };
@@ -138,9 +144,22 @@ function collectRequestPayloadBindings(sourceFile: ts.SourceFile): Set<string> {
 }
 
 function dataflowSourceForCall(node: ts.CallExpression, sourceFile: ts.SourceFile, bindings: Set<string>): string | undefined {
+  const direct = directRequestPayloadSource(node, sourceFile);
+  if (direct) return direct;
   if (bindings.size === 0) return undefined;
   const text = node.getText(sourceFile);
   return [...bindings].find((binding) => new RegExp(`\\b${escapeRegExp(binding)}\\b`).test(text));
+}
+
+function directRequestPayloadSource(node: ts.CallExpression, sourceFile: ts.SourceFile): string | undefined {
+  for (const argument of node.arguments) {
+    const text = argument.getText(sourceFile);
+    const propertyMatch = /\b([A-Za-z_$][\w$]*)\.(body|params|query)\b/.exec(text);
+    if (propertyMatch) return propertyMatch[0];
+    const jsonMatch = /\b([A-Za-z_$][\w$]*)\.json\s*\(/.exec(text);
+    if (jsonMatch?.[1]) return `${jsonMatch[1]}.json()`;
+  }
+  return undefined;
 }
 
 function escapeRegExp(value: string): string {

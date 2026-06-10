@@ -71,7 +71,8 @@ export function applySubgraphOutputPreset(subgraph: VerifiedCodeSubgraph, preset
       sourceFile: edge.sourceFile,
       targetFile: edge.targetFile,
       line: edge.line,
-      targetName: edge.targetName
+      targetName: edge.targetName,
+      metadata: edge.metadata
     })),
     paths: subgraph.paths,
     coverage: subgraph.coverage,

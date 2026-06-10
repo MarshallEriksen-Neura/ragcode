@@ -41,6 +41,8 @@ export async function chunkFilesIncremental(
   if (analyzedPaths.size === 0) return currentCached;
 
   const analyzed = await analyzeFiles(repoRoot, filesToAnalyze);
+  const cachedSources = await sourcesForCachedTypescriptFiles(repoRoot, files, analyzedPaths);
+  const allSources = [...cachedSources, ...analyzed.sources];
   const chunks = [
     ...currentCached.chunks,
     ...analyzed.chunks
@@ -49,13 +51,25 @@ export async function chunkFilesIncremental(
     ...currentCached.symbols,
     ...analyzed.symbols
   ];
-  const refreshedEdges = resolveChunkEdges(repoRoot, files, analyzed.sources, symbols, analyzed.edges)
+  const refreshedEdges = resolveChunkEdges(repoRoot, files, allSources, symbols, analyzed.edges)
     .filter((edge) => {
       const sourceFile = edgeSourceFile(edge);
       return sourceFile ? analyzedPaths.has(sourceFile) : false;
     });
 
   return { chunks, symbols, edges: dedupeEdges([...currentCached.edges, ...refreshedEdges]) };
+}
+
+async function sourcesForCachedTypescriptFiles(repoRoot: string, files: CodeFile[], analyzedPaths: Set<string>): Promise<TypeScriptSourceFile[]> {
+  const sources: TypeScriptSourceFile[] = [];
+  for (const file of files) {
+    if (analyzedPaths.has(file.path)) continue;
+    if (file.language !== "typescript" && file.language !== "javascript") continue;
+    const content = await fs.readFile(file.absolutePath, "utf8").catch(() => undefined);
+    if (content === undefined) continue;
+    sources.push({ filePath: file.path, absolutePath: file.absolutePath, content });
+  }
+  return sources;
 }
 
 interface AnalyzedFiles {

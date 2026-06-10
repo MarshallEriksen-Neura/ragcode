@@ -255,6 +255,79 @@ describe("framework topology detection", () => {
     ]));
   });
 
+  it("does not connect unresolved template API URLs as concrete routes", async () => {
+    await fs.writeFile(
+      path.join(tempRoot, "src", "app", "checkout", "CheckoutButton.tsx"),
+      [
+        "\"use client\";",
+        "",
+        "export function CheckoutButton({ slug }: { slug: string }) {",
+        "  async function onClick() {",
+        "    await fetch(`/api/${slug}`);",
+        "  }",
+        "  return <button onClick={onClick}>Pay</button>;",
+        "}"
+      ].join("\n")
+    );
+
+    const engine = new RagCodeEngine();
+    const index = await engine.indexRepo(tempRoot);
+
+    expect(index.edges).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "calls_api",
+        metadata: expect.objectContaining({
+          sourceFile: "src/app/checkout/CheckoutButton.tsx",
+          resolution: "framework_template"
+        })
+      })
+    ]));
+  });
+
+  it("preserves Express/Fastify route catalogs during incremental client refreshes", async () => {
+    const engine = new RagCodeEngine();
+    await engine.indexRepo(tempRoot);
+
+    await fs.writeFile(
+      path.join(tempRoot, "src", "app", "checkout", "CheckoutButton.tsx"),
+      [
+        "\"use client\";",
+        "",
+        "export function CheckoutButton() {",
+        "  async function onClick() {",
+        "    await fetch('/api/orders', { method: 'POST' });",
+        "    await fetch('/api/fast-orders');",
+        "  }",
+        "  return <button onClick={onClick}>Pay</button>;",
+        "}"
+      ].join("\n")
+    );
+    const index = await engine.indexRepo(tempRoot);
+
+    expect(index.changedFiles).toEqual(["src/app/checkout/CheckoutButton.tsx"]);
+    expect(index.refreshedFiles).toEqual(["src/app/checkout/CheckoutButton.tsx"]);
+    expect(index.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "calls_api",
+        metadata: expect.objectContaining({
+          framework: "express",
+          sourceFile: "src/app/checkout/CheckoutButton.tsx",
+          targetFile: "src/services/orders.ts",
+          route: "/api/orders"
+        })
+      }),
+      expect.objectContaining({
+        kind: "calls_api",
+        metadata: expect.objectContaining({
+          framework: "fastify",
+          sourceFile: "src/app/checkout/CheckoutButton.tsx",
+          targetFile: "src/services/orders.ts",
+          route: "/api/fast-orders"
+        })
+      })
+    ]));
+  });
+
   it("emits provider-specific Prisma and Drizzle ORM resource edges", async () => {
     const engine = new RagCodeEngine();
     const index = await engine.indexRepo(tempRoot);
@@ -302,6 +375,42 @@ describe("framework topology detection", () => {
           model: "orders",
           operation: "select",
           resolution: "orm_static"
+        })
+      })
+    ]));
+  });
+
+  it("marks direct request payload ORM writes as bounded dataflow evidence", async () => {
+    await fs.writeFile(
+      path.join(tempRoot, "src", "services", "orders.ts"),
+      [
+        "export async function createOrder(req: Request) {",
+        "  await prisma.order.create({ data: req.body });",
+        "  await db.insert(orders).values(await req.json());",
+        "}"
+      ].join("\n")
+    );
+
+    const engine = new RagCodeEngine();
+    const index = await engine.indexRepo(tempRoot);
+
+    expect(index.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "writes_to",
+        metadata: expect.objectContaining({
+          orm: "prisma",
+          resolution: "orm_dataflow",
+          dataflowSource: "req.body",
+          dataflowKind: "request_payload"
+        })
+      }),
+      expect.objectContaining({
+        kind: "writes_to",
+        metadata: expect.objectContaining({
+          orm: "drizzle",
+          resolution: "orm_dataflow",
+          dataflowSource: "req.json()",
+          dataflowKind: "request_payload"
         })
       })
     ]));

@@ -361,6 +361,7 @@ export interface VerifiedSubgraphEdge {
   targetFile?: string;
   line?: number;
   targetName?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export type CoverageSignalName =
@@ -396,6 +397,7 @@ export interface WhyThisFileEvidence {
   targetFile?: string;
   line?: number;
   targetName?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface WhyThisFile {

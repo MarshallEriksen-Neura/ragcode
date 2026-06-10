@@ -86,7 +86,7 @@ describe("same-name symbol disambiguation", () => {
 });
 
 describe("API wrapper and dynamic URL topology", () => {
-  it("links axios, template fetch, local clients, and generated clients to Next.js routes", async () => {
+  it("links axios, resolved local clients, and generated clients to Next.js routes while leaving unresolved templates unlinked", async () => {
     await writeFiles({
       "src/app/checkout/CheckoutButton.tsx": [
         "\"use client\";",
@@ -146,11 +146,13 @@ describe("API wrapper and dynamic URL topology", () => {
           resolution: "framework_wrapper"
         })
       }),
+    ]));
+
+    expect(apiEdges).not.toEqual(expect.arrayContaining([
       expect.objectContaining({
         metadata: expect.objectContaining({
           targetFile: "src/app/api/users/[userId]/profile/route.ts",
           route: "/api/users/:userId/profile",
-          requestPath: "/api/users/*/profile",
           resolution: "framework_template"
         })
       })

@@ -41,7 +41,7 @@ export class HybridRetriever {
     const mode = resolveContextMode(query.query, query.mode);
     const fused = fuseHits(keywordHits, semanticResult.hits).map((hit) => applyModeBoost(hit, mode, query.query));
     const reranked = await rerankWithGraph(fused, query, mode, { graphStore: this.options.graphStore });
-    const hits = reranked.slice(0, limit);
+    const hits = reranked.filter((hit) => hit.score > 0).slice(0, limit);
     return {
       hits,
       diagnostics: {

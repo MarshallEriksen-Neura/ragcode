@@ -133,7 +133,7 @@ export class SubgraphBuilder {
     missingEvidence.push(...missingFromCoverage(coverage, input.query));
     const answerable = orderedNodes.length > 0;
     const confidence = confidenceFor(answerable, orderedEdges, coverage);
-    const coverageSummary = summarizeCoverage(coverage, answerable);
+    const coverageSummary = summarizeCoverage(coverage, answerable, orderedEdges);
     const whyTheseFiles = summarizeWhyTheseFiles(orderedNodes, orderedEdges);
 
     return {
@@ -254,7 +254,8 @@ function verifiedEdge(edge: GraphEdge, symbolsById: Map<string, SymbolNode>): Ve
     sourceFile,
     targetFile,
     line: numberMetadata(edge, "line"),
-    targetName: target?.name ?? stringMetadata(edge, "targetName")
+    targetName: target?.name ?? stringMetadata(edge, "targetName"),
+    metadata: subgraphEdgeMetadata(edge)
   };
 }
 
@@ -607,13 +608,21 @@ function isFlowKind(kind: EdgeKind): boolean {
     || kind === "writes_to";
 }
 
-function summarizeCoverage(coverage: CoverageSignal[], answerable: boolean): CoverageSummary {
+function summarizeCoverage(coverage: CoverageSignal[], answerable: boolean, edges: VerifiedSubgraphEdge[]): CoverageSummary {
   const passed = coverage.filter((signal) => signal.status === "pass").length;
   const partial = coverage.filter((signal) => signal.status === "partial").length;
   const failed = coverage.filter((signal) => signal.status === "fail").length;
-  const verdict = editReadinessFor(answerable, failed, partial);
+  const blockingFailed = coverage.filter((signal) => signal.status === "fail" && isBlockingCoverageFailure(signal, edges)).length;
+  const softFailed = failed - blockingFailed;
+  const verdict = editReadinessFor(answerable, blockingFailed, partial + softFailed);
   const summary = summaryForVerdict(verdict, passed, partial, failed);
   return { verdict, summary, passed, partial, failed };
+}
+
+function isBlockingCoverageFailure(signal: CoverageSignal, edges: VerifiedSubgraphEdge[]): boolean {
+  if (signal.name === "budget_truncated") return false;
+  if (signal.name === "unresolved_edges_present") return edges.some((edge) => edge.confidence === "low" || edge.source === "heuristic");
+  return true;
 }
 
 function editReadinessFor(answerable: boolean, failed: number, partial: number): EditReadiness {
@@ -659,7 +668,8 @@ function summarizeWhyTheseFiles(nodes: SubgraphNode[], edges: VerifiedSubgraphEd
         sourceFile: edge.sourceFile,
         targetFile: edge.targetFile,
         line: edge.line,
-        targetName: edge.targetName
+        targetName: edge.targetName,
+        metadata: edge.metadata
       });
     }
   }
@@ -686,4 +696,13 @@ function stringMetadata(edge: GraphEdge, key: string): string | undefined {
 function numberMetadata(edge: GraphEdge, key: string): number | undefined {
   const value = edge.metadata?.[key];
   return typeof value === "number" ? value : undefined;
+}
+
+function subgraphEdgeMetadata(edge: GraphEdge): Record<string, unknown> | undefined {
+  const metadata: Record<string, unknown> = {};
+  for (const key of ["framework", "route", "requestPath", "resource", "model", "operation", "resolution", "dataflowSource", "dataflowKind", "producer"]) {
+    const value = edge.metadata?.[key];
+    if (value !== undefined) metadata[key] = value;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
 }

@@ -43,6 +43,16 @@ beforeEach(async () => {
       "}"
     ].join("\n")
   );
+  await fs.writeFile(
+    path.join(tempRoot, "src", "services", "billing.test.ts"),
+    [
+      "import { createPaymentIntent } from './billing';",
+      "",
+      "it('creates a payment intent', () => {",
+      "  expect(createPaymentIntent().clientSecret).toContain('agent-tools-secret');",
+      "});"
+    ].join("\n")
+  );
   await fs.writeFile(path.join(tempRoot, ".env"), "SECRET_TOKEN=do-not-index\n");
 });
 

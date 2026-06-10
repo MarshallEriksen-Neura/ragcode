@@ -87,6 +87,7 @@ function clientApiEdges(sources: TypeScriptSourceFile[], symbols: SymbolNode[], 
   for (const source of sources) {
     if (!isClientSource(source)) continue;
     for (const call of apiCalls(source)) {
+      if (call.resolution === "framework_template") continue;
       const route = findRoute(routes, call.url);
       if (!route) continue;
       const sourceSymbol = containingSymbol(symbols, source.filePath, call.line) ?? fileSymbol(symbols, source.filePath);
