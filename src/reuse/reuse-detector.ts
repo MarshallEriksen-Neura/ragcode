@@ -420,8 +420,16 @@ function buildStructureIndex(symbols: SymbolNode[], edges: GraphEdge[], chunks: 
 
   for (const group of byFingerprint.values()) {
     if (group.length < 2) continue;
+    // Pairwise similarity inside one fingerprint group is O(group²); a degenerate group
+    // (thousands of same-shaped boilerplate functions) made this pass take ~40s. Cap each
+    // structure's comparison pool to a fixed window so the pass stays linear in group size.
+    // For oversized groups the signals become a sampled lower bound — acceptable, because a
+    // shape shared by hundreds of functions is boilerplate, not a meaningful reuse target.
+    const pool = group.length > FINGERPRINT_COMPARISON_WINDOW + 1
+      ? group.slice(0, FINGERPRINT_COMPARISON_WINDOW + 1)
+      : group;
     for (const structure of group) {
-      const others = group.filter((candidate) => candidate.symbol.id !== structure.symbol.id);
+      const others = pool.filter((candidate) => candidate.symbol.id !== structure.symbol.id);
       // A shared body fingerprint over-matches on its own: identifiers and literals are
       // normalized away, so e.g. `enable(id)` and `remove(id)` collapse to one shape.
       // Require callee overlap (Jaccard >= 0.5) so only behavioral copies — not every
@@ -516,7 +524,24 @@ function whyReuseFromStructure(signals: ReuseCandidate["structuralSignals"]): st
   return reasons;
 }
 
+// A fingerprint depends only on (language, script kind, content), and contentHash already keys
+// the content — so cache by hash to skip re-running ts.createSourceFile on every chunk for every
+// reuse query. The per-chunk AST parse is the dominant fixed cost of buildStructureIndex
+// (~1.1s per 4k chunks measured); repeated queries in one process now pay it once.
+const fingerprintCache = new Map<string, string>();
+const FINGERPRINT_CACHE_MAX_ENTRIES = 100_000;
+
 function normalizedBodyFingerprint(chunk: CodeChunk): string {
+  const key = `${chunk.language}|${scriptKindForPath(chunk.filePath)}|${chunk.contentHash}`;
+  const cached = fingerprintCache.get(key);
+  if (cached !== undefined) return cached;
+  const fingerprint = computeBodyFingerprint(chunk);
+  if (fingerprintCache.size >= FINGERPRINT_CACHE_MAX_ENTRIES) fingerprintCache.clear();
+  fingerprintCache.set(key, fingerprint);
+  return fingerprint;
+}
+
+function computeBodyFingerprint(chunk: CodeChunk): string {
   if (chunk.language === "typescript" || chunk.language === "javascript") {
     const sourceFile = ts.createSourceFile(chunk.filePath, chunk.content, ts.ScriptTarget.Latest, true, scriptKindForPath(chunk.filePath));
     const parts: string[] = [];
@@ -588,3 +613,5 @@ function scriptKindForPath(filePath: string): ts.ScriptKind {
 }
 
 const signatureKeywordTokens = new Set(["export", "default", "async", "function", "class", "interface", "type", "const", "let", "var", "string", "number", "boolean", "void", "Promise"]);
+
+const FINGERPRINT_COMPARISON_WINDOW = 64;

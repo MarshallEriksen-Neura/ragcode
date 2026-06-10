@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RagCodeEngine } from "../src/index.js";
+import { buildReuseCandidateReport } from "../src/reuse/reuse-detector.js";
+import type { CodeChunk, GraphEdge, SymbolNode } from "../src/core/types.js";
 
 let tempRoot: string;
 
@@ -211,5 +213,63 @@ describe("reuse candidate detection", () => {
     expect(report.reuseGuard.candidates).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ symbolName: "activateUser" })
     ]));
+  });
+
+  it("still detects behavioral duplicates inside an oversized fingerprint group via the sampled window", () => {
+    // 150 same-shaped functions (one fingerprint group, beyond the 64-comparison window),
+    // all calling the same helper. The capped pairwise pass must stay fast AND still confirm
+    // duplicates for members both inside and outside the sampling window.
+    const symbols: SymbolNode[] = [];
+    const chunks: CodeChunk[] = [];
+    const edges: GraphEdge[] = [];
+    for (let i = 0; i < 150; i += 1) {
+      const filePath = `src/generated/handler-${i}.ts`;
+      symbols.push({
+        id: `sym-${i}`,
+        projectId: "p",
+        filePath,
+        name: `handler_${i}`,
+        kind: "function",
+        language: "typescript",
+        startLine: 1,
+        endLine: 3,
+        exported: false,
+        signature: `function handler_${i}(input: string): string`
+      } as SymbolNode);
+      chunks.push({
+        id: `chunk-${i}`,
+        projectId: "p",
+        repoRoot: "/repo",
+        filePath,
+        language: "typescript",
+        kind: "function",
+        symbolName: `handler_${i}`,
+        startLine: 1,
+        endLine: 3,
+        content: `export function handler_${i}(input) {\n  return sharedHelper(input);\n}`,
+        contentHash: `hash-${i}`
+      } as CodeChunk);
+      edges.push({
+        projectId: "p",
+        sourceId: `sym-${i}`,
+        targetId: "sym-helper",
+        kind: "calls",
+        metadata: { sourceFile: filePath, targetName: "sharedHelper", line: 2 }
+      } as GraphEdge);
+    }
+
+    const report = buildReuseCandidateReport({
+      query: "shared helper handler",
+      hits: [],
+      owners: [],
+      symbols,
+      edges,
+      chunks,
+      limit: 8
+    });
+
+    const withDuplicates = report.candidates.filter((candidate) => candidate.structuralSignals.bodyDuplicateCount > 0);
+    expect(withDuplicates.length).toBeGreaterThan(0);
+    expect(withDuplicates[0]?.structuralSignals.calleeOverlap).toBe(1);
   });
 });
