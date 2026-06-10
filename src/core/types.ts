@@ -377,6 +377,35 @@ export interface CoverageSignal {
   detail: string;
 }
 
+export type EditReadiness = "safe_to_edit_after_reading" | "investigate_only" | "not_enough_context";
+
+export interface CoverageSummary {
+  verdict: EditReadiness;
+  summary: string;
+  passed: number;
+  partial: number;
+  failed: number;
+}
+
+export interface WhyThisFileEvidence {
+  kind: EdgeKind;
+  confidence: "low" | "medium" | "high";
+  source: VerifiedEdgeSource;
+  reason: string;
+  sourceFile?: string;
+  targetFile?: string;
+  line?: number;
+  targetName?: string;
+}
+
+export interface WhyThisFile {
+  filePath: string;
+  roles: SubgraphNodeRole[];
+  confidence: "low" | "medium" | "high";
+  reasons: string[];
+  evidence: WhyThisFileEvidence[];
+}
+
 export interface VerifiedCodeSubgraph {
   query: string;
   repoRoot: string;
@@ -384,6 +413,8 @@ export interface VerifiedCodeSubgraph {
   mode: VerifiedSubgraphMode;
   answerable: boolean;
   confidence: "low" | "medium" | "high";
+  coverageSummary: CoverageSummary;
+  whyTheseFiles: WhyThisFile[];
   nodes: SubgraphNode[];
   edges: VerifiedSubgraphEdge[];
   paths: string[][];
@@ -400,7 +431,7 @@ export interface ExplainImpactReport {
   riskLevel: "low" | "medium" | "high";
   riskScore: number;
   riskReasons: string[];
-  editReadiness: "safe_to_edit_after_reading" | "investigate_only" | "not_enough_context";
+  editReadiness: EditReadiness;
   subgraph: VerifiedCodeSubgraph;
 }
 
@@ -421,6 +452,7 @@ export interface ReuseCandidateRequest {
   workspace?: WorkspaceHint;
   query: string;
   limit?: number;
+  reuseGuard?: boolean;
 }
 
 export type ReuseDecision = "reuse" | "extend" | "wrap" | "implement_new" | "uncertain";
@@ -445,9 +477,27 @@ export interface ReuseCandidate {
   exported: boolean;
   callerCount: number;
   relatedTestCount: number;
+  structuralSignals: {
+    bodyFingerprint?: string;
+    bodyDuplicateCount: number;
+    signatureSimilarity: number;
+    importOverlap: number;
+    calleeOverlap: number;
+  };
   reasons: string[];
   whyReuse: string[];
   snippet?: ContextSnippet;
+}
+
+export interface ReuseGuard {
+  status: "allow_new" | "block_new" | "review_required";
+  reason: string;
+  candidates: Array<{
+    filePath: string;
+    symbolName?: string;
+    score: number;
+    confidence: "low" | "medium" | "high";
+  }>;
 }
 
 export interface ReuseCandidateReport {
@@ -456,6 +506,7 @@ export interface ReuseCandidateReport {
   confidence: "low" | "medium" | "high";
   candidates: ReuseCandidate[];
   duplicateRisk: "low" | "medium" | "high";
+  reuseGuard: ReuseGuard;
   missingEvidence: string[];
   nextQueries: string[];
 }

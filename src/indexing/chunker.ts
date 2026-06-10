@@ -3,6 +3,7 @@ import type { CodeChunk, CodeFile, GraphEdge, SymbolNode } from "../core/types.j
 import { resolveCallDefinitionsWithTypeScript } from "../lsp/definition-resolver.js";
 import type { TypeScriptSourceFile } from "../lsp/typescript-language-service.js";
 import { buildFrameworkTopologyEdges } from "../topology/framework-topology.js";
+import { buildOrmTopologyEdges } from "../topology/orm-topology.js";
 import { buildRuntimeTopologyEdges } from "../topology/runtime-topology.js";
 import { resolveGraphEdges } from "../topology/symbol-resolver.js";
 import { buildTestTopologyEdges } from "../topology/test-topology.js";
@@ -96,7 +97,8 @@ function resolveChunkEdges(
   const testEdges = buildTestTopologyEdges(symbols, lspResolvedEdges);
   const frameworkEdges = buildFrameworkTopologyEdges(files, sources, symbols, lspResolvedEdges);
   const runtimeEdges = buildRuntimeTopologyEdges(repoRoot, files, sources, symbols);
-  return [...lspResolvedEdges, ...testEdges, ...frameworkEdges, ...runtimeEdges];
+  const ormEdges = buildOrmTopologyEdges(repoRoot, files, sources, symbols);
+  return [...lspResolvedEdges, ...testEdges, ...frameworkEdges, ...runtimeEdges, ...ormEdges];
 }
 
 function edgeSourceFile(edge: GraphEdge): string | undefined {

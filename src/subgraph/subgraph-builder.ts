@@ -1,6 +1,9 @@
 import type {
   CodeChunk,
+  CoverageSignal,
+  CoverageSummary,
   ContextSnippet,
+  EditReadiness,
   EdgeKind,
   GraphEdge,
   SubgraphNode,
@@ -9,7 +12,8 @@ import type {
   VerifiedCodeSubgraph,
   VerifiedEdgeSource,
   VerifiedSubgraphEdge,
-  VerifiedSubgraphMode
+  VerifiedSubgraphMode,
+  WhyThisFile
 } from "../core/types.js";
 import { renderSnippet } from "../context/snippet-renderer.js";
 
@@ -40,6 +44,7 @@ export class SubgraphBuilder {
     const nodes = new Map<string, SubgraphNode>();
     const selectedEdges = new Map<string, VerifiedSubgraphEdge>();
     const pathsByNode = new Map<string, string[]>();
+    const pathCostByNode = new Map<string, number>();
     const missingEvidence = [...(input.missingEvidence ?? [])];
     let truncated = false;
 
@@ -48,45 +53,57 @@ export class SubgraphBuilder {
       const node = nodeFromSymbol(seed, "target", "Matched primary seed symbol.", "high");
       nodes.set(node.id, node);
       pathsByNode.set(node.id, [node.id]);
+      pathCostByNode.set(node.id, 0);
     }
 
-    let frontier = new Set(seedSymbols.map((symbol) => symbol.id));
     const includeIncoming = input.mode !== "flow";
     const includeOutgoing = true;
+    const adjacency = buildAdjacency(input.edges, includeIncoming, includeOutgoing);
+    const queue: TraversalState[] = seedSymbols.map((symbol) => ({
+      nodeId: symbol.id,
+      path: [symbol.id],
+      cost: 0,
+      hops: 0
+    }));
 
-    for (let hop = 0; hop < maxHops && frontier.size > 0; hop += 1) {
-      const nextFrontier = new Set<string>();
-      const candidates = candidateEdges(input.edges, frontier, includeIncoming, includeOutgoing);
+    while (queue.length > 0) {
+      const state = popLowestCost(queue);
+      if (!state || state.hops >= maxHops) continue;
+      if (state.cost > (pathCostByNode.get(state.nodeId) ?? Number.POSITIVE_INFINITY)) continue;
+      const candidates = adjacency.get(state.nodeId) ?? [];
       for (const candidate of candidates) {
         if (shouldSkipUnresolvedCall(candidate.edge, symbolsById)) continue;
-        if (nodes.size >= MAX_NODES || selectedEdges.size >= MAX_EDGES) {
+        const nextNodeId = candidate.direction === "outgoing" ? candidate.edge.targetId : candidate.edge.sourceId;
+        const hasSource = nodes.has(candidate.edge.sourceId);
+        const hasTarget = nodes.has(candidate.edge.targetId);
+        if (((!hasSource || !hasTarget) && nodes.size >= MAX_NODES) || selectedEdges.size >= MAX_EDGES) {
           truncated = true;
           break;
         }
 
         const edge = verifiedEdge(candidate.edge, symbolsById);
         const edgeKey = edgeKeyFor(edge);
-        if (selectedEdges.has(edgeKey)) continue;
-
         const sourceRole = nodes.get(candidate.edge.sourceId)?.role ?? roleForSource(candidate.edge, candidate.direction);
         const targetRole = nodes.get(candidate.edge.targetId)?.role ?? roleForTarget(candidate.edge, candidate.direction);
         const source = nodeForEndpoint(candidate.edge, "source", symbolsById, sourceRole);
         const target = nodeForEndpoint(candidate.edge, "target", symbolsById, targetRole);
         mergeNode(nodes, source);
         mergeNode(nodes, target);
-        selectedEdges.set(edgeKey, edge);
+        if (!selectedEdges.has(edgeKey)) selectedEdges.set(edgeKey, edge);
 
-        const nextNodeId = candidate.direction === "outgoing" ? target.id : source.id;
-        const baseNodeId = candidate.direction === "outgoing" ? source.id : target.id;
-        const basePath = pathsByNode.get(baseNodeId) ?? [baseNodeId];
+        const basePath = pathsByNode.get(state.nodeId) ?? state.path;
         const nextPath = candidate.direction === "outgoing"
           ? [...basePath, nextNodeId]
           : [nextNodeId, ...basePath];
-        pathsByNode.set(nextNodeId, shortestPath(pathsByNode.get(nextNodeId), nextPath));
-        if (!frontier.has(nextNodeId)) nextFrontier.add(nextNodeId);
+        const nextCost = state.cost + edgeTraversalCost(candidate.edge, edge);
+        const existingCost = pathCostByNode.get(nextNodeId) ?? Number.POSITIVE_INFINITY;
+        if (nextCost < existingCost || (nextCost === existingCost && nextPath.length < (pathsByNode.get(nextNodeId)?.length ?? Number.POSITIVE_INFINITY))) {
+          pathCostByNode.set(nextNodeId, nextCost);
+          pathsByNode.set(nextNodeId, nextPath);
+          queue.push({ nodeId: nextNodeId, path: nextPath, cost: nextCost, hops: state.hops + 1 });
+        }
       }
       if (truncated) break;
-      frontier = nextFrontier;
     }
 
     if (seedSymbols.length === 0) {
@@ -116,6 +133,8 @@ export class SubgraphBuilder {
     missingEvidence.push(...missingFromCoverage(coverage, input.query));
     const answerable = orderedNodes.length > 0;
     const confidence = confidenceFor(answerable, orderedEdges, coverage);
+    const coverageSummary = summarizeCoverage(coverage, answerable);
+    const whyTheseFiles = summarizeWhyTheseFiles(orderedNodes, orderedEdges);
 
     return {
       query: input.query,
@@ -124,6 +143,8 @@ export class SubgraphBuilder {
       mode: input.mode,
       answerable,
       confidence,
+      coverageSummary,
+      whyTheseFiles,
       nodes: orderedNodes,
       edges: orderedEdges,
       paths,
@@ -142,14 +163,41 @@ interface CandidateEdge {
   direction: "incoming" | "outgoing";
 }
 
-function candidateEdges(edges: GraphEdge[], frontier: Set<string>, includeIncoming: boolean, includeOutgoing: boolean): CandidateEdge[] {
-  const candidates: CandidateEdge[] = [];
+interface TraversalState {
+  nodeId: string;
+  path: string[];
+  cost: number;
+  hops: number;
+}
+
+function buildAdjacency(edges: GraphEdge[], includeIncoming: boolean, includeOutgoing: boolean): Map<string, CandidateEdge[]> {
+  const adjacency = new Map<string, CandidateEdge[]>();
   for (const edge of edges) {
     if (!isSubgraphEdge(edge.kind)) continue;
-    if (includeOutgoing && frontier.has(edge.sourceId)) candidates.push({ edge, direction: "outgoing" });
-    if (includeIncoming && frontier.has(edge.targetId)) candidates.push({ edge, direction: "incoming" });
+    if (includeOutgoing) addAdjacent(adjacency, edge.sourceId, { edge, direction: "outgoing" });
+    if (includeIncoming) addAdjacent(adjacency, edge.targetId, { edge, direction: "incoming" });
   }
-  return candidates.sort((a, b) => edgePriority(b.edge) - edgePriority(a.edge) || edgeLabel(a.edge).localeCompare(edgeLabel(b.edge)));
+  for (const candidates of adjacency.values()) {
+    candidates.sort((a, b) => edgeTraversalCost(a.edge) - edgeTraversalCost(b.edge) || edgeLabel(a.edge).localeCompare(edgeLabel(b.edge)));
+  }
+  return adjacency;
+}
+
+function addAdjacent(adjacency: Map<string, CandidateEdge[]>, nodeId: string, candidate: CandidateEdge): void {
+  const candidates = adjacency.get(nodeId) ?? [];
+  candidates.push(candidate);
+  adjacency.set(nodeId, candidates);
+}
+
+function popLowestCost(queue: TraversalState[]): TraversalState | undefined {
+  if (queue.length === 0) return undefined;
+  let bestIndex = 0;
+  for (let index = 1; index < queue.length; index += 1) {
+    const best = queue[bestIndex]!;
+    const next = queue[index]!;
+    if (next.cost < best.cost || (next.cost === best.cost && next.hops < best.hops)) bestIndex = index;
+  }
+  return queue.splice(bestIndex, 1)[0];
 }
 
 function isSubgraphEdge(kind: EdgeKind): boolean {
@@ -182,6 +230,12 @@ function edgePriority(edge: GraphEdge): number {
   if (edge.kind === "calls") return 60;
   if (edge.kind === "contains") return 55;
   return 20;
+}
+
+function edgeTraversalCost(edge: GraphEdge, verified?: VerifiedSubgraphEdge): number {
+  const confidence = verified?.confidence ?? confidenceForEdge(edge, edgeSource(edge), false);
+  const confidenceDiscount = confidence === "high" ? 25 : confidence === "medium" ? 12 : 0;
+  return Math.max(1, 120 - edgePriority(edge) - confidenceDiscount);
 }
 
 function verifiedEdge(edge: GraphEdge, symbolsById: Map<string, SymbolNode>): VerifiedSubgraphEdge {
@@ -483,11 +537,6 @@ function orderEdges(edges: VerifiedSubgraphEdge[], pathsByNode: Map<string, stri
     || edgeLabelFromVerified(a).localeCompare(edgeLabelFromVerified(b)));
 }
 
-function shortestPath(existing: string[] | undefined, candidate: string[]): string[] {
-  if (!existing) return candidate;
-  return candidate.length < existing.length ? candidate : existing;
-}
-
 function edgeKeyFor(edge: VerifiedSubgraphEdge): string {
   return [edge.kind, edge.fromNodeId, edge.toNodeId, edge.sourceFile, edge.targetFile, edge.targetName].join("::");
 }
@@ -556,6 +605,73 @@ function isFlowKind(kind: EdgeKind): boolean {
     || kind === "uses_middleware"
     || kind === "reads_from"
     || kind === "writes_to";
+}
+
+function summarizeCoverage(coverage: CoverageSignal[], answerable: boolean): CoverageSummary {
+  const passed = coverage.filter((signal) => signal.status === "pass").length;
+  const partial = coverage.filter((signal) => signal.status === "partial").length;
+  const failed = coverage.filter((signal) => signal.status === "fail").length;
+  const verdict = editReadinessFor(answerable, failed, partial);
+  const summary = summaryForVerdict(verdict, passed, partial, failed);
+  return { verdict, summary, passed, partial, failed };
+}
+
+function editReadinessFor(answerable: boolean, failed: number, partial: number): EditReadiness {
+  if (!answerable || failed > 0) return "not_enough_context";
+  if (partial > 1) return "investigate_only";
+  return "safe_to_edit_after_reading";
+}
+
+function summaryForVerdict(verdict: EditReadiness, passed: number, partial: number, failed: number): string {
+  if (verdict === "safe_to_edit_after_reading") return `Edit-ready after reading selected snippets: ${passed} checks passed and no blocking evidence is missing.`;
+  if (verdict === "investigate_only") return `Investigate before editing: ${partial} coverage check(s) are partial even though no blocking failure was found.`;
+  return `Not enough verified context to edit safely: ${failed} coverage check(s) failed and ${partial} are partial.`;
+}
+
+function summarizeWhyTheseFiles(nodes: SubgraphNode[], edges: VerifiedSubgraphEdge[]): WhyThisFile[] {
+  const byFile = new Map<string, WhyThisFile>();
+  for (const node of nodes) {
+    const entry = byFile.get(node.filePath) ?? {
+      filePath: node.filePath,
+      roles: [],
+      confidence: node.confidence,
+      reasons: [],
+      evidence: []
+    };
+    if (!entry.roles.includes(node.role)) entry.roles.push(node.role);
+    if (!entry.reasons.includes(node.reason)) entry.reasons.push(node.reason);
+    if (confidencePriority(node.confidence) > confidencePriority(entry.confidence)) entry.confidence = node.confidence;
+    byFile.set(node.filePath, entry);
+  }
+
+  for (const edge of edges) {
+    for (const filePath of [edge.sourceFile, edge.targetFile]) {
+      if (!filePath) continue;
+      const entry = byFile.get(filePath);
+      if (!entry) continue;
+      if (!entry.reasons.includes(edge.reason)) entry.reasons.push(edge.reason);
+      if (confidencePriority(edge.confidence) > confidencePriority(entry.confidence)) entry.confidence = edge.confidence;
+      entry.evidence.push({
+        kind: edge.kind,
+        confidence: edge.confidence,
+        source: edge.source,
+        reason: edge.reason,
+        sourceFile: edge.sourceFile,
+        targetFile: edge.targetFile,
+        line: edge.line,
+        targetName: edge.targetName
+      });
+    }
+  }
+
+  return [...byFile.values()]
+    .map((entry) => ({
+      ...entry,
+      roles: entry.roles.sort((a, b) => rolePriority(a) - rolePriority(b)),
+      reasons: entry.reasons.slice(0, 6),
+      evidence: entry.evidence.slice(0, 8)
+    }))
+    .sort((a, b) => rolePriority(a.roles[0] ?? "external") - rolePriority(b.roles[0] ?? "external") || a.filePath.localeCompare(b.filePath));
 }
 
 function uniqueSymbols(symbols: SymbolNode[]): SymbolNode[] {

@@ -3,6 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RagCodeEngine } from "../src/index.js";
+import { applySubgraphOutputPreset } from "../src/subgraph/output-preset.js";
+import { SubgraphBuilder } from "../src/subgraph/subgraph-builder.js";
+import type { CodeChunk, GraphEdge, SymbolNode, VerifiedCodeSubgraph } from "../src/core/types.js";
 
 let tempRoot: string;
 
@@ -112,6 +115,23 @@ describe("verified code subgraphs", () => {
     expect(signalStatus(subgraph, "outbound_flow_checked")).toBe("pass");
     expect(signalStatus(subgraph, "tests_checked")).toBe("pass");
     expect(signalStatus(subgraph, "unresolved_edges_present")).toBe("pass");
+    expect(subgraph.coverageSummary).toEqual(expect.objectContaining({
+      verdict: "safe_to_edit_after_reading",
+      failed: 0
+    }));
+    expect(subgraph.coverageSummary.summary).toContain("Edit-ready");
+    expect(subgraph.whyTheseFiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        filePath: "src/app/checkout/CheckoutButton.tsx",
+        roles: expect.arrayContaining(["target"]),
+        reasons: expect.arrayContaining([expect.stringContaining("Matched primary seed symbol")])
+      }),
+      expect.objectContaining({
+        filePath: "src/app/api/payments/route.ts",
+        roles: expect.arrayContaining(["route"]),
+        evidence: expect.arrayContaining([expect.objectContaining({ kind: "calls_api", source: "framework_rule" })])
+      })
+    ]));
   });
 
   it("returns transitive blast-radius callers and tests for an impact seed", async () => {
@@ -141,8 +161,117 @@ describe("verified code subgraphs", () => {
     expect(signalStatus(subgraph, "tests_checked")).toBe("pass");
     expect(subgraph.missingEvidence).not.toContain("No indexed primary owner matched the subgraph seed.");
   });
+
+  it("prefers high-confidence weighted paths over lower-confidence short paths", () => {
+    const symbols: SymbolNode[] = [
+      symbol("seed", "src/seed.ts", "seed"),
+      symbol("weak", "src/weak.ts", "weak"),
+      symbol("route", "src/route.ts", "route"),
+      symbol("service", "src/service.ts", "service"),
+      symbol("strong", "src/strong.ts", "strong")
+    ];
+    const edges: GraphEdge[] = [
+      edge("seed", "weak", "references", { sourceFile: "src/seed.ts", targetFile: "src/weak.ts" }),
+      edge("weak", "strong", "references", { sourceFile: "src/weak.ts", targetFile: "src/strong.ts" }),
+      edge("seed", "route", "calls_api", { sourceFile: "src/seed.ts", targetFile: "src/route.ts", framework: "nextjs", resolution: "framework_static" }),
+      edge("route", "service", "routes_to", { sourceFile: "src/route.ts", targetFile: "src/service.ts", framework: "nextjs", resolution: "framework_call_graph" }),
+      edge("service", "strong", "calls", { sourceFile: "src/service.ts", targetFile: "src/strong.ts", resolution: "resolved_lsp" })
+    ];
+
+    const subgraph = new SubgraphBuilder().build({
+      query: "weighted path",
+      repoRoot: "/repo",
+      projectId: "project",
+      mode: "flow",
+      seedSymbols: [symbols[0]!],
+      symbols,
+      edges,
+      chunks: chunksFor(symbols),
+      budgetChars: 20_000,
+      maxHops: 4
+    });
+
+    const pathToStrong = subgraph.paths.find((steps) => steps.at(-1) === "src/strong.ts:strong");
+    expect(pathToStrong).toEqual([
+      "src/seed.ts:seed",
+      "src/route.ts:route",
+      "src/service.ts:service",
+      "src/strong.ts:strong"
+    ]);
+  });
+
+  it("returns differentiated output preset contracts", async () => {
+    const engine = new RagCodeEngine();
+    await engine.indexRepo(tempRoot);
+
+    const subgraph = await engine.verifiedSubgraph({
+      repoRoot: tempRoot,
+      query: "checkout payment request flow",
+      seed: "CheckoutButton",
+      mode: "flow",
+      budgetChars: 8_000
+    });
+
+    const agentEdit = applySubgraphOutputPreset(subgraph, "agent_edit") as Partial<VerifiedCodeSubgraph>;
+    const debugTrace = applySubgraphOutputPreset(subgraph, "debug_trace") as Partial<VerifiedCodeSubgraph>;
+    const reviewRisk = applySubgraphOutputPreset(subgraph, "review_risk") as Partial<VerifiedCodeSubgraph> & { riskEvidence?: unknown[] };
+
+    expect(agentEdit).toEqual(expect.objectContaining({
+      coverageSummary: subgraph.coverageSummary,
+      whyTheseFiles: subgraph.whyTheseFiles,
+      snippets: subgraph.snippets
+    }));
+    expect(agentEdit.nodes).toBeUndefined();
+    expect(debugTrace).toEqual(expect.objectContaining({
+      paths: subgraph.paths,
+      edges: subgraph.edges,
+      coverage: subgraph.coverage
+    }));
+    expect(debugTrace.snippets).toBeUndefined();
+    expect(reviewRisk).toEqual(expect.objectContaining({
+      coverageSummary: subgraph.coverageSummary,
+      whyTheseFiles: subgraph.whyTheseFiles,
+      riskEvidence: expect.any(Array)
+    }));
+    expect(reviewRisk.snippets).toBeUndefined();
+    expect(reviewRisk.edges).toBeUndefined();
+  });
 });
 
 function signalStatus(subgraph: Awaited<ReturnType<RagCodeEngine["verifiedSubgraph"]>>, name: string): string | undefined {
   return subgraph.coverage.find((signal) => signal.name === name)?.status;
+}
+
+function symbol(id: string, filePath: string, name: string): SymbolNode {
+  return {
+    id,
+    projectId: "project",
+    filePath,
+    name,
+    kind: "function",
+    language: "typescript",
+    startLine: 1,
+    endLine: 3,
+    exported: true
+  };
+}
+
+function edge(sourceId: string, targetId: string, kind: GraphEdge["kind"], metadata: Record<string, unknown>): GraphEdge {
+  return { projectId: "project", sourceId, targetId, kind, metadata };
+}
+
+function chunksFor(symbols: SymbolNode[]): CodeChunk[] {
+  return symbols.map((item) => ({
+    id: `chunk:${item.id}`,
+    projectId: item.projectId,
+    repoRoot: "/repo",
+    filePath: item.filePath,
+    language: "typescript",
+    kind: "function",
+    symbolName: item.name,
+    startLine: item.startLine,
+    endLine: item.endLine,
+    content: `export function ${item.name}() { return true; }`,
+    contentHash: `hash:${item.id}`
+  }));
 }

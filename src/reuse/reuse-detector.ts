@@ -1,3 +1,4 @@
+import ts from "typescript";
 import type {
   CodeChunk,
   ContextSnippet,
@@ -6,10 +7,12 @@ import type {
   ReuseCandidate,
   ReuseCandidateKind,
   ReuseCandidateReport,
+  ReuseGuard,
   SearchHit,
   SymbolNode
 } from "../core/types.js";
 import { renderSnippet } from "../context/snippet-renderer.js";
+import { sha256 } from "../utils/hash.js";
 
 export interface ReuseDetectorInput {
   query: string;
@@ -19,6 +22,7 @@ export interface ReuseDetectorInput {
   edges: GraphEdge[];
   chunks: CodeChunk[];
   limit?: number;
+  reuseGuard?: boolean;
 }
 
 interface CandidateDraft {
@@ -31,16 +35,37 @@ interface CandidateDraft {
   snippets: SearchHit[];
 }
 
+interface SymbolStructure {
+  symbol: SymbolNode;
+  chunk?: CodeChunk;
+  bodyFingerprint?: string;
+  duplicateCount: number;
+  signatureTokens: Set<string>;
+  imports: Set<string>;
+  callees: Set<string>;
+  signatureSimilarity: number;
+  importOverlap: number;
+  calleeOverlap: number;
+}
+
+interface StructureIndex {
+  bySymbolId: Map<string, SymbolStructure>;
+  byFingerprint: Map<string, SymbolStructure[]>;
+}
+
 export function buildReuseCandidateReport(input: ReuseDetectorInput): ReuseCandidateReport {
   const limit = input.limit ?? 8;
   const drafts = new Map<string, CandidateDraft>();
   const symbolsById = new Map(input.symbols.map((symbol) => [symbol.id, symbol]));
   const expandedTerms = expandedQueryTerms(input.query);
+  const structureIndex = buildStructureIndex(input.symbols, input.edges, input.chunks, symbolsById);
 
   for (const hit of input.hits) {
+    const symbol = symbolForHit(hit, input.symbols);
     addDraft(drafts, {
       filePath: hit.chunk.filePath,
       symbolName: hit.chunk.symbolName,
+      symbol,
       score: Math.max(0.1, hit.score * 2),
       reason: hit.reason,
       hit
@@ -81,14 +106,17 @@ export function buildReuseCandidateReport(input: ReuseDetectorInput): ReuseCandi
     });
   }
 
+  expandStructuralDuplicates(drafts, structureIndex);
+
   const candidates = [...drafts.values()]
-    .map((draft) => finalizeCandidate(draft, input.edges, input.chunks, symbolsById, input.query))
+    .map((draft) => finalizeCandidate(draft, input.edges, input.chunks, symbolsById, input.query, structureIndex))
     .sort((a, b) => b.score - a.score || a.filePath.localeCompare(b.filePath))
     .slice(0, limit);
 
   const decision = decisionFor(candidates);
   const confidence = reportConfidence(candidates);
   const duplicateRisk = duplicateRiskFor(candidates);
+  const reuseGuard = reuseGuardFor(candidates, Boolean(input.reuseGuard));
   const missingEvidence = missingEvidenceFor(candidates);
 
   return {
@@ -97,6 +125,7 @@ export function buildReuseCandidateReport(input: ReuseDetectorInput): ReuseCandi
     confidence,
     candidates,
     duplicateRisk,
+    reuseGuard,
     missingEvidence,
     nextQueries: nextQueriesFor(candidates)
   };
@@ -133,22 +162,28 @@ function finalizeCandidate(
   edges: GraphEdge[],
   chunks: CodeChunk[],
   symbolsById: Map<string, SymbolNode>,
-  query: string
+  query: string,
+  structureIndex: StructureIndex
 ): ReuseCandidate {
   const symbolId = draft.symbol?.id;
   const callerCount = symbolId ? edges.filter((edge) => edge.targetId === symbolId && edge.kind === "calls").length : 0;
   const relatedTestCount = symbolId ? edges.filter((edge) => edge.sourceId === symbolId && edge.kind === "tested_by").length : 0;
+  const structure = symbolId ? structureIndex.bySymbolId.get(symbolId) : undefined;
+  const structuralSignals = structuralSignalsFor(structure);
+  const structuralScore = structuralScoreFor(structuralSignals);
   const score = draft.score
     + (draft.exported ? 1.2 : 0)
     + Math.min(2, callerCount * 0.4)
-    + Math.min(1.5, relatedTestCount * 0.8);
+    + Math.min(1.5, relatedTestCount * 0.8)
+    + structuralScore;
   const kind = candidateKind(draft);
   const snippet = candidateSnippet(draft, chunks, query);
   const confidence = score >= 3.5 ? "high" : score >= 2 ? "medium" : "low";
   const whyReuse = [
     draft.exported ? "Exported/public symbol is available to call or wrap." : "Candidate is private; prefer extending nearby code before creating a duplicate.",
     callerCount > 0 ? `${callerCount} indexed caller(s) already depend on it.` : "No indexed callers were found.",
-    relatedTestCount > 0 ? `${relatedTestCount} related test edge(s) cover it.` : "No explicit tested_by edge was found."
+    relatedTestCount > 0 ? `${relatedTestCount} related test edge(s) cover it.` : "No explicit tested_by edge was found.",
+    ...whyReuseFromStructure(structuralSignals)
   ];
 
   return {
@@ -160,6 +195,7 @@ function finalizeCandidate(
     exported: draft.exported,
     callerCount,
     relatedTestCount,
+    structuralSignals,
     reasons: [...new Set(draft.reasons)].slice(0, 6),
     whyReuse,
     snippet
@@ -239,9 +275,49 @@ function duplicateRiskFor(candidates: ReuseCandidate[]): ReuseCandidateReport["d
   if (candidates.length === 0) return "low";
   const top = candidates[0]!;
   const close = candidates.slice(1).filter((candidate) => top.score - candidate.score < 1).length;
+  if (candidates.some((candidate) => candidate.structuralSignals.bodyDuplicateCount > 0 && candidate.confidence === "high")) return "high";
   if (top.confidence === "high" || close >= 2) return "high";
   if (top.confidence === "medium" || candidates.length > 1) return "medium";
   return "low";
+}
+
+function reuseGuardFor(candidates: ReuseCandidate[], enabled: boolean): ReuseGuard {
+  const structuralBlockers = candidates
+    .filter((candidate) => candidate.exported && candidate.confidence === "high" && candidate.structuralSignals.bodyDuplicateCount > 0)
+    .slice(0, 5);
+  if (structuralBlockers.length > 0) {
+    return {
+      status: enabled ? "block_new" : "review_required",
+      reason: enabled
+        ? "reuse_guard is enabled and high-confidence normalized duplicate implementations already exist. Reuse or extend them instead of implementing a new copy."
+        : "High-confidence normalized duplicate implementations already exist; enable reuseGuard to hard block new duplicate work.",
+      candidates: guardCandidates(structuralBlockers)
+    };
+  }
+
+  const highReuse = candidates.filter((candidate) => candidate.exported && candidate.confidence === "high").slice(0, 5);
+  if (!enabled && highReuse.length > 0) {
+    return {
+      status: "review_required",
+      reason: "High-confidence reusable candidates exist. Review them before implementing new code.",
+      candidates: guardCandidates(highReuse)
+    };
+  }
+
+  return {
+    status: "allow_new",
+    reason: enabled ? "No high-confidence structural duplicate blocks new implementation." : "No reuse guard blockers were found.",
+    candidates: []
+  };
+}
+
+function guardCandidates(candidates: ReuseCandidate[]): ReuseGuard["candidates"] {
+  return candidates.map((candidate) => ({
+    filePath: candidate.filePath,
+    symbolName: candidate.symbolName,
+    score: candidate.score,
+    confidence: candidate.confidence
+  }));
 }
 
 function missingEvidenceFor(candidates: ReuseCandidate[]): string[] {
@@ -270,3 +346,209 @@ function splitIdentifier(value: string): string[] {
     .map((part) => part.toLowerCase())
     .filter(Boolean);
 }
+
+function symbolForHit(hit: SearchHit, symbols: SymbolNode[]): SymbolNode | undefined {
+  if (!hit.chunk.symbolName) return undefined;
+  return symbols.find((symbol) => symbol.filePath === hit.chunk.filePath && symbol.name === hit.chunk.symbolName);
+}
+
+function expandStructuralDuplicates(drafts: Map<string, CandidateDraft>, structureIndex: StructureIndex): void {
+  const initialDrafts = [...drafts.values()];
+  for (const draft of initialDrafts) {
+    if (!draft.symbol) continue;
+    const structure = structureIndex.bySymbolId.get(draft.symbol.id);
+    if (!structure?.bodyFingerprint) continue;
+    const duplicates = structureIndex.byFingerprint.get(structure.bodyFingerprint) ?? [];
+    for (const duplicate of duplicates) {
+      if (duplicate.symbol.id === draft.symbol.id) continue;
+      addDraft(drafts, {
+        filePath: duplicate.symbol.filePath,
+        symbolName: duplicate.symbol.name,
+        symbol: duplicate.symbol,
+        score: Math.max(1.5, draft.score * 0.6),
+        reason: `Normalized body fingerprint matches ${draft.symbol.name}.`
+      });
+    }
+  }
+}
+
+function buildStructureIndex(symbols: SymbolNode[], edges: GraphEdge[], chunks: CodeChunk[], symbolsById: Map<string, SymbolNode>): StructureIndex {
+  const bySymbolId = new Map<string, SymbolStructure>();
+  const byFingerprint = new Map<string, SymbolStructure[]>();
+  for (const symbol of symbols) {
+    if (symbol.kind === "file") continue;
+    const chunk = chunkForSymbol(symbol, chunks);
+    const bodyFingerprint = chunk ? normalizedBodyFingerprint(chunk) : undefined;
+    const structure: SymbolStructure = {
+      symbol,
+      chunk,
+      bodyFingerprint,
+      duplicateCount: 0,
+      signatureTokens: normalizedSignatureTokens(symbol.signature ?? ""),
+      imports: importsForSymbol(symbol, edges),
+      callees: calleesForSymbol(symbol, edges, symbolsById),
+      signatureSimilarity: 0,
+      importOverlap: 0,
+      calleeOverlap: 0
+    };
+    bySymbolId.set(symbol.id, structure);
+    if (bodyFingerprint) {
+      const group = byFingerprint.get(bodyFingerprint) ?? [];
+      group.push(structure);
+      byFingerprint.set(bodyFingerprint, group);
+    }
+  }
+
+  for (const group of byFingerprint.values()) {
+    if (group.length < 2) continue;
+    for (const structure of group) {
+      const others = group.filter((candidate) => candidate.symbol.id !== structure.symbol.id);
+      structure.duplicateCount = others.length;
+      structure.signatureSimilarity = maxSimilarity(structure.signatureTokens, others.map((candidate) => candidate.signatureTokens));
+      structure.importOverlap = maxSimilarity(structure.imports, others.map((candidate) => candidate.imports));
+      structure.calleeOverlap = maxSimilarity(structure.callees, others.map((candidate) => candidate.callees));
+    }
+  }
+
+  return { bySymbolId, byFingerprint };
+}
+
+function chunkForSymbol(symbol: SymbolNode, chunks: CodeChunk[]): CodeChunk | undefined {
+  return chunks.find((chunk) => chunk.filePath === symbol.filePath && chunk.symbolName === symbol.name)
+    ?? chunks.find((chunk) => chunk.filePath === symbol.filePath && chunk.startLine <= symbol.startLine && chunk.endLine >= symbol.endLine);
+}
+
+function importsForSymbol(symbol: SymbolNode, edges: GraphEdge[]): Set<string> {
+  const imports = new Set<string>();
+  for (const edge of edges) {
+    if (edge.kind !== "imports" || stringMetadata(edge, "sourceFile") !== symbol.filePath) continue;
+    const source = stringMetadata(edge, "source");
+    if (source) imports.add(source);
+    const bindings = edge.metadata?.bindings;
+    if (Array.isArray(bindings)) {
+      for (const binding of bindings) {
+        if (!binding || typeof binding !== "object") continue;
+        const record = binding as Record<string, unknown>;
+        if (typeof record.imported === "string") imports.add(record.imported);
+        if (typeof record.local === "string") imports.add(record.local);
+      }
+    }
+  }
+  return imports;
+}
+
+function calleesForSymbol(symbol: SymbolNode, edges: GraphEdge[], symbolsById: Map<string, SymbolNode>): Set<string> {
+  const callees = new Set<string>();
+  for (const edge of edges) {
+    if (edge.kind !== "calls") continue;
+    const sourceFile = stringMetadata(edge, "sourceFile");
+    const line = numberMetadata(edge, "line");
+    const sourceMatches = edge.sourceId === symbol.id
+      || (sourceFile === symbol.filePath && line !== undefined && line >= symbol.startLine && line <= symbol.endLine);
+    if (!sourceMatches) continue;
+    const targetName = stringMetadata(edge, "targetName") ?? symbolsById.get(edge.targetId)?.name;
+    if (targetName) callees.add(targetName);
+  }
+  return callees;
+}
+
+function structuralSignalsFor(structure: SymbolStructure | undefined): ReuseCandidate["structuralSignals"] {
+  return {
+    bodyFingerprint: structure?.bodyFingerprint,
+    bodyDuplicateCount: structure?.duplicateCount ?? 0,
+    signatureSimilarity: roundSignal(structure?.signatureSimilarity ?? 0),
+    importOverlap: roundSignal(structure?.importOverlap ?? 0),
+    calleeOverlap: roundSignal(structure?.calleeOverlap ?? 0)
+  };
+}
+
+function structuralScoreFor(signals: ReuseCandidate["structuralSignals"]): number {
+  let score = 0;
+  if (signals.bodyDuplicateCount > 0) score += 2.5;
+  if (signals.signatureSimilarity >= 0.75) score += 0.7;
+  if (signals.importOverlap >= 0.5) score += 0.5;
+  if (signals.calleeOverlap >= 0.5) score += 0.5;
+  return score;
+}
+
+function whyReuseFromStructure(signals: ReuseCandidate["structuralSignals"]): string[] {
+  const reasons: string[] = [];
+  if (signals.bodyDuplicateCount > 0) reasons.push(`Normalized body fingerprint matches ${signals.bodyDuplicateCount} other indexed symbol(s).`);
+  if (signals.signatureSimilarity >= 0.75) reasons.push(`Signature shape similarity is ${signals.signatureSimilarity}.`);
+  if (signals.importOverlap >= 0.5) reasons.push(`Import overlap with duplicate implementation is ${signals.importOverlap}.`);
+  if (signals.calleeOverlap >= 0.5) reasons.push(`Callee overlap with duplicate implementation is ${signals.calleeOverlap}.`);
+  return reasons;
+}
+
+function normalizedBodyFingerprint(chunk: CodeChunk): string {
+  if (chunk.language === "typescript" || chunk.language === "javascript") {
+    const sourceFile = ts.createSourceFile(chunk.filePath, chunk.content, ts.ScriptTarget.Latest, true, scriptKindForPath(chunk.filePath));
+    const parts: string[] = [];
+    function visit(node: ts.Node): void {
+      if (node.kind === ts.SyntaxKind.SourceFile || node.kind === ts.SyntaxKind.EndOfFileToken) {
+        ts.forEachChild(node, visit);
+        return;
+      }
+      if (ts.isIdentifier(node)) {
+        parts.push("Identifier");
+        return;
+      }
+      if (ts.isStringLiteralLike(node) || ts.isNumericLiteral(node) || node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) {
+        parts.push("Literal");
+        return;
+      }
+      parts.push(ts.SyntaxKind[node.kind] ?? String(node.kind));
+      ts.forEachChild(node, visit);
+    }
+    ts.forEachChild(sourceFile, visit);
+    return sha256(parts.join("|")).slice(0, 32);
+  }
+  return sha256(chunk.content.replace(/[A-Za-z_$][\w$]*/g, "Identifier").replace(/\d+(?:\.\d+)?|(['\"]).*?\1/g, "Literal").replace(/\s+/g, " ").trim()).slice(0, 32);
+}
+
+function normalizedSignatureTokens(signature: string): Set<string> {
+  const normalized = signature
+    .replace(/(['\"]).*?\1/g, " Literal ")
+    .replace(/\b\d+(?:\.\d+)?\b/g, " Literal ")
+    .replace(/[A-Za-z_$][\w$]*/g, (token) => signatureKeywordTokens.has(token) ? token : "Identifier");
+  return new Set(tokenize(normalized));
+}
+
+function maxSimilarity(base: Set<string>, candidates: Set<string>[]): number {
+  let max = 0;
+  for (const candidate of candidates) max = Math.max(max, jaccard(base, candidate));
+  return max;
+}
+
+function jaccard(left: Set<string>, right: Set<string>): number {
+  if (left.size === 0 && right.size === 0) return 0;
+  const union = new Set([...left, ...right]);
+  let intersection = 0;
+  for (const value of left) {
+    if (right.has(value)) intersection += 1;
+  }
+  return intersection / union.size;
+}
+
+function roundSignal(value: number): number {
+  return Number(value.toFixed(3));
+}
+
+function stringMetadata(edge: GraphEdge, key: string): string | undefined {
+  const value = edge.metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberMetadata(edge: GraphEdge, key: string): number | undefined {
+  const value = edge.metadata?.[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function scriptKindForPath(filePath: string): ts.ScriptKind {
+  if (filePath.endsWith(".tsx")) return ts.ScriptKind.TSX;
+  if (filePath.endsWith(".jsx")) return ts.ScriptKind.JSX;
+  if (filePath.endsWith(".js") || filePath.endsWith(".mjs") || filePath.endsWith(".cjs")) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+const signatureKeywordTokens = new Set(["export", "default", "async", "function", "class", "interface", "type", "const", "let", "var", "string", "number", "boolean", "void", "Promise"]);

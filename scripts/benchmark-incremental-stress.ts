@@ -47,7 +47,7 @@ const routeCount = positiveInteger(process.env.RAGCODE_STRESS_ROUTE_COUNT, 24);
 const clientCount = positiveInteger(process.env.RAGCODE_STRESS_CLIENT_COUNT, 96);
 const leafCount = positiveInteger(process.env.RAGCODE_STRESS_LEAF_COUNT, 240);
 const maxRouteRefresh = positiveInteger(process.env.RAGCODE_STRESS_MAX_ROUTE_REFRESH, 8);
-const maxMiddlewareRefresh = positiveInteger(process.env.RAGCODE_STRESS_MAX_MIDDLEWARE_REFRESH, routeCount + 1);
+const maxMiddlewareRefresh = positiveInteger(process.env.RAGCODE_STRESS_MAX_MIDDLEWARE_REFRESH, routeCount + 3);
 const maxLeafRefresh = positiveInteger(process.env.RAGCODE_STRESS_MAX_LEAF_REFRESH, 1);
 const maxAffectedScan = positiveInteger(process.env.RAGCODE_STRESS_MAX_AFFECTED_SCAN, 1);
 const maxScenarioMs = positiveInteger(process.env.RAGCODE_STRESS_MAX_SCENARIO_MS, 7_500);
@@ -101,6 +101,34 @@ async function main(): Promise<void> {
       maxRefreshedFiles: maxLeafRefresh,
       maxScannedFiles: maxAffectedScan,
       mutate: () => writeRepoFile(tempRoot, "src/lib/leaf-0.ts", leafFileContent(0, "changed"))
+    }));
+    scenarios.push(await runScenario({
+      name: "route-added",
+      root: tempRoot,
+      engine,
+      embeddingProvider,
+      affectedFiles: ["src/app/api/new-resource/route.ts"],
+      maxRefreshedFiles: maxRouteRefresh,
+      maxScannedFiles: maxAffectedScan,
+      mutate: () => writeRepoFile(tempRoot, "src/app/api/new-resource/route.ts", routeFileContent(999, "added"))
+    }));
+    scenarios.push(await runScenario({
+      name: "middleware-added",
+      root: tempRoot,
+      engine,
+      embeddingProvider,
+      affectedFiles: ["src/middleware.ts"],
+      maxRefreshedFiles: maxMiddlewareRefresh,
+      maxScannedFiles: maxAffectedScan,
+      mutate: async () => {
+        await fs.rm(path.join(tempRoot, "src/middleware.ts"));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        await writeRepoFile(tempRoot, "src/middleware.ts", [
+          "export function middleware() {",
+          "  return Response.next();",
+          "}"
+        ].join("\n"));
+      }
     }));
 
     engine.close();

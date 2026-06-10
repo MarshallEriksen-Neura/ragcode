@@ -53,7 +53,7 @@ export const ExpandNodeInput = z.object({
   budgetChars: z.number().int().positive().optional()
 });
 export const FindOwnerInput = z.object({ repoRoot: z.string().min(1).optional(), workspace: WorkspaceHintInput, query: z.string().min(1), limit: z.number().int().positive().optional() });
-export const FindReuseCandidatesInput = FindOwnerInput;
+export const FindReuseCandidatesInput = FindOwnerInput.extend({ reuseGuard: z.boolean().optional() });
 export const ImpactAnalysisInput = z.object({ repoRoot: z.string().min(1).optional(), workspace: WorkspaceHintInput, target: z.string().min(1) });
 export const ExplainImpactInput = ImpactAnalysisInput.extend({ budgetChars: z.number().int().positive().optional(), maxHops: z.number().int().positive().optional(), preset: SubgraphOutputPresetSchema.optional() });
 export const RelatedTestsInput = ImpactAnalysisInput;
@@ -260,7 +260,7 @@ export async function callTool(engine: ContextEngine, name: ToolName, rawInput: 
         budgetChars: input.budgetChars,
         maxHops: input.maxHops
       });
-      return applyExplainImpactOutputPreset(buildExplainImpactReport(input.target, subgraph), input.preset);
+      return applyExplainImpactOutputPreset(buildExplainImpactReport(input.target, subgraph), input.preset ?? "compact");
     }
     case "related_tests": {
       const input = RelatedTestsInput.parse(rawInput);
@@ -281,7 +281,7 @@ export async function callTool(engine: ContextEngine, name: ToolName, rawInput: 
         budgetChars: input.budgetChars,
         maxHops: input.maxHops
       });
-      return applySubgraphOutputPreset(subgraph, input.preset);
+      return applySubgraphOutputPreset(subgraph, input.preset ?? "compact");
     }
     case "review_diff": {
       const input = ReviewDiffInput.parse(rawInput);

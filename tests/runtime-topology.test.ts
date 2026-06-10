@@ -40,6 +40,11 @@ beforeEach(async () => {
       "",
       "export function handleInvoicePaid() {",
       "  return true;",
+      "}",
+      "",
+      "export async function saveInvoiceRequest(request: Request) {",
+      "  const payload = await request.json();",
+      "  return prisma.invoice.create({ data: payload });",
       "}"
     ].join("\n")
   );
@@ -90,6 +95,18 @@ describe("runtime topology edges", () => {
           targetFile: "src/middleware.ts",
           targetName: "middleware",
           resolution: "framework_static"
+        })
+      }),
+      expect.objectContaining({
+        kind: "writes_to",
+        metadata: expect.objectContaining({
+          orm: "prisma",
+          sourceFile: "src/services/billing.ts",
+          resource: "prisma.invoice",
+          operation: "create",
+          dataflowSource: "payload",
+          dataflowKind: "request_payload",
+          resolution: "orm_dataflow"
         })
       })
     ]));

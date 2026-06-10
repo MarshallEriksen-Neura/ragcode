@@ -160,7 +160,11 @@ export class LanceSemanticStore implements SemanticStore {
 
   async resetRepo(repoRoot: string): Promise<void> {
     const table = await this.getExistingTable();
-    if (!table) return;
+    if (!table) {
+      const dimensions = this.vectorDimensions ?? 64;
+      await this.getTable(dimensions, [emptySeedRecord(dimensions)]);
+      return;
+    }
     await table.delete(equalsPredicate("repoRoot", repoRoot));
   }
 
@@ -253,7 +257,11 @@ export class LanceSemanticStore implements SemanticStore {
     const fileScopes = new Set(chunks.map((chunk) => JSON.stringify([chunk.projectId, chunk.filePath])));
     for (const fileScope of fileScopes) {
       const [projectId, filePath] = JSON.parse(fileScope) as [string, string];
-      await table.delete(andPredicate(equalsPredicate("projectId", projectId), equalsPredicate("filePath", filePath)));
+      await table.delete(andPredicate(
+        equalsPredicate("projectId", projectId),
+        equalsPredicate("filePath", filePath),
+        "id != '__seed__'"
+      ));
     }
   }
 
@@ -351,7 +359,12 @@ export class LanceSemanticStore implements SemanticStore {
       const problems = await tableSchemaProblems(table, vectorDimensions);
       if (problems.length > 0) {
         await this.dropTableForRepair(db, problems);
-        return db.createTable(this.tableName, seedRows?.length ? seedRows : [emptySeedRecord(vectorDimensions)]);
+        if (seedRows?.length) {
+          return db.createTable(this.tableName, seedRows);
+        }
+        const seedRow = emptySeedRecord(vectorDimensions);
+        const created = await db.createTable(this.tableName, [seedRow]);
+        return created;
       }
       if (seedRows?.length) {
         await deleteSeedRecord(table);
@@ -359,7 +372,11 @@ export class LanceSemanticStore implements SemanticStore {
       }
       return table;
     }
-    return db.createTable(this.tableName, seedRows?.length ? seedRows : [emptySeedRecord(vectorDimensions)]);
+    if (seedRows?.length) {
+      return db.createTable(this.tableName, seedRows);
+    }
+    const seedRow = emptySeedRecord(vectorDimensions);
+    return db.createTable(this.tableName, [seedRow]);
   }
 
   private async getConnection(): Promise<LanceConnection> {

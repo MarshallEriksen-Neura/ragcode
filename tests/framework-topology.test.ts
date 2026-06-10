@@ -11,6 +11,7 @@ beforeEach(async () => {
   await fs.mkdir(path.join(tempRoot, "src", "app", "checkout"), { recursive: true });
   await fs.mkdir(path.join(tempRoot, "src", "app", "api", "payments"), { recursive: true });
   await fs.mkdir(path.join(tempRoot, "src", "app", "api", "stripe", "webhook"), { recursive: true });
+  await fs.mkdir(path.join(tempRoot, "src", "server"), { recursive: true });
   await fs.mkdir(path.join(tempRoot, "src", "services"), { recursive: true });
 
   await fs.writeFile(
@@ -21,6 +22,12 @@ beforeEach(async () => {
       "export function CheckoutButton() {",
       "  async function onClick() {",
       "    await fetch('/api/payments', { method: 'POST' });",
+      "    await fetch('/api/orders', { method: 'POST' });",
+      "    await fetch('/api/fast-orders');",
+      "    const apiRoot = '/api';",
+      "    const resource = 'dynamic-orders';",
+      "    const dynamicOrderPath = `${apiRoot}/${resource}`;",
+      "    await fetch(dynamicOrderPath);",
       "  }",
       "  return <button onClick={onClick}>Pay</button>;",
       "}"
@@ -50,6 +57,49 @@ beforeEach(async () => {
       "export function createPaymentIntent() {",
       "  return { clientSecret: 'payment-intent-secret' };",
       "}"
+    ].join("\n")
+  );
+  await fs.writeFile(
+    path.join(tempRoot, "src", "services", "orders.ts"),
+    [
+      "import { orders } from '../db/schema';",
+      "",
+      "export async function createOrder() {",
+      "  await prisma.order.create({ data: { total: 42 } });",
+      "  await db.insert(orders).values({ id: 1 });",
+      "  return { ok: true };",
+      "}",
+      "",
+      "export async function listOrders() {",
+      "  const existing = await prisma.order.findMany();",
+      "  const rows = await db.select().from(orders);",
+      "  return { existing, rows };",
+      "}"
+    ].join("\n")
+  );
+  await fs.mkdir(path.join(tempRoot, "src", "db"), { recursive: true });
+  await fs.writeFile(path.join(tempRoot, "src", "db", "schema.ts"), "export const orders = {};\n");
+  await fs.writeFile(
+    path.join(tempRoot, "src", "server", "express.ts"),
+    [
+      "import express from 'express';",
+      "import { createOrder } from '../services/orders';",
+      "",
+      "const app = express();",
+      "app.post('/api/orders', createOrder);",
+      "app.get('/api/dynamic-orders', createOrder);",
+      "export { app };"
+    ].join("\n")
+  );
+  await fs.writeFile(
+    path.join(tempRoot, "src", "server", "fastify.ts"),
+    [
+      "import fastify from 'fastify';",
+      "import { listOrders } from '../services/orders';",
+      "",
+      "const app = fastify();",
+      "app.get('/api/fast-orders', listOrders);",
+      "export { app };"
     ].join("\n")
   );
 });
@@ -151,6 +201,108 @@ describe("framework topology detection", () => {
         edge: "routes_to",
         targetFile: "src/services/billing.ts",
         confidence: "high"
+      })
+    ]));
+  });
+
+  it("links client calls to Express and Fastify route resolver plugins", async () => {
+    const engine = new RagCodeEngine();
+    const index = await engine.indexRepo(tempRoot);
+
+    expect(index.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "calls_api",
+        metadata: expect.objectContaining({
+          framework: "express",
+          sourceFile: "src/app/checkout/CheckoutButton.tsx",
+          targetFile: "src/services/orders.ts",
+          route: "/api/orders",
+          targetName: "createOrder",
+          resolution: "framework_static"
+        })
+      }),
+      expect.objectContaining({
+        kind: "calls_api",
+        metadata: expect.objectContaining({
+          framework: "fastify",
+          sourceFile: "src/app/checkout/CheckoutButton.tsx",
+          targetFile: "src/services/orders.ts",
+          route: "/api/fast-orders",
+          targetName: "listOrders",
+          resolution: "framework_static"
+        })
+      })
+    ]));
+  });
+
+  it("resolves const/template API URL dataflow to concrete framework routes", async () => {
+    const engine = new RagCodeEngine();
+    const index = await engine.indexRepo(tempRoot);
+
+    expect(index.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "calls_api",
+        metadata: expect.objectContaining({
+          framework: "express",
+          sourceFile: "src/app/checkout/CheckoutButton.tsx",
+          targetFile: "src/services/orders.ts",
+          route: "/api/dynamic-orders",
+          requestPath: "/api/dynamic-orders",
+          targetName: "createOrder",
+          resolution: "framework_dataflow"
+        })
+      })
+    ]));
+  });
+
+  it("emits provider-specific Prisma and Drizzle ORM resource edges", async () => {
+    const engine = new RagCodeEngine();
+    const index = await engine.indexRepo(tempRoot);
+
+    expect(index.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "writes_to",
+        metadata: expect.objectContaining({
+          orm: "prisma",
+          sourceFile: "src/services/orders.ts",
+          resource: "prisma.order",
+          model: "order",
+          operation: "create",
+          resolution: "orm_static"
+        })
+      }),
+      expect.objectContaining({
+        kind: "reads_from",
+        metadata: expect.objectContaining({
+          orm: "prisma",
+          sourceFile: "src/services/orders.ts",
+          resource: "prisma.order",
+          model: "order",
+          operation: "findMany",
+          resolution: "orm_static"
+        })
+      }),
+      expect.objectContaining({
+        kind: "writes_to",
+        metadata: expect.objectContaining({
+          orm: "drizzle",
+          sourceFile: "src/services/orders.ts",
+          resource: "drizzle.orders",
+          model: "orders",
+          operation: "insert",
+          resolution: "orm_static"
+        })
+      }),
+      expect.objectContaining({
+        kind: "reads_from",
+        metadata: expect.objectContaining({
+          orm: "drizzle",
+          sourceFile: "src/services/orders.ts",
+          resource: "drizzle.orders",
+          model: "orders",
+          operation: "select",
+          resolution: "orm_static"
+        })
       })
     ]));
   });

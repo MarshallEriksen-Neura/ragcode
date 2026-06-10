@@ -263,7 +263,8 @@ export class RagCodeEngine implements ContextEngine {
       symbols: filterFreshSymbols(symbols, freshness),
       edges: filterFreshEdges(edges, freshness),
       chunks: filterFreshChunks(chunks, freshness),
-      limit: request.limit
+      limit: request.limit,
+      reuseGuard: request.reuseGuard
     });
   }
 

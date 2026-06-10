@@ -24,8 +24,10 @@ describe("semantic vector consistency", () => {
     await store.upsertChunks([chunk({ id: "new", content: "new login vector", symbolName: "loginUser" })], provider);
 
     expect(table.deletes).toEqual([
-      "projectId = 'project-a' AND filePath = 'src/auth.ts'",
-      "projectId = 'project-a' AND filePath = 'src/auth.ts'"
+      "projectId = 'project-a' AND filePath = 'src/auth.ts' AND id != '__seed__'",
+      "id = '__seed__'",
+      "projectId = 'project-a' AND filePath = 'src/auth.ts' AND id != '__seed__'",
+      "id = '__seed__'"
     ]);
     expect(table.records.map((record) => record.id)).toEqual(["new"]);
     expect(table.records[0]).toMatchObject({
@@ -162,9 +164,15 @@ async function createRepo(files: Record<string, string>): Promise<string> {
 function matchesPredicate(record: LanceChunkRecord, predicate: string): boolean {
   const clauses = predicate.split(/\s+AND\s+/i);
   return clauses.every((clause) => {
-    const match = /^\s*(projectId|repoRoot|filePath)\s*=\s*'([^']*)'\s*$/.exec(clause);
-    if (!match) return false;
-    const key = match[1] as "projectId" | "repoRoot" | "filePath";
-    return record[key] === match[2];
+    const match = /^\s*(projectId|repoRoot|filePath|id)\s*=\s*'([^']*)'\s*$/.exec(clause);
+    if (match) {
+      const key = match[1] as "projectId" | "repoRoot" | "filePath" | "id";
+      return record[key] === match[2];
+    }
+    const notMatch = /^\s*id\s*!=\s*'([^']*)'\s*$/.exec(clause);
+    if (notMatch) {
+      return record.id !== notMatch[1];
+    }
+    return false;
   });
 }

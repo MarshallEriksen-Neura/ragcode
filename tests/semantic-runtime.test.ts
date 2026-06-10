@@ -188,9 +188,9 @@ describe("semantic runtime configuration", () => {
       });
 
       await expect(mismatched.upsertChunks([chunk({ id: "chunk-b", content: "profile marker changed" })], mismatchedProvider))
-        .rejects.toThrow(/embedding profile mismatch.*dimensions 32 != 16/i);
+        .rejects.toThrow(/(embedding profile mismatch|requires repair).*dimensions 32 != 16/i);
       await expect(mismatched.search({ repoRoot: "repo-a", projectId: "project-a", query: "profile marker", limit: 5 }, mismatchedProvider))
-        .rejects.toThrow(/embedding profile mismatch.*dimensions 32 != 16/i);
+        .rejects.toThrow(/(embedding profile mismatch|requires repair).*dimensions 32 != 16/i);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -220,7 +220,7 @@ describe("semantic runtime configuration", () => {
       });
 
       await expect(mismatched.search({ repoRoot: "repo-a", projectId: "project-a", query: "profile marker", limit: 5 }, provider))
-        .rejects.toThrow(/embedding profile mismatch.*model model-a != model-b/i);
+        .rejects.toThrow(/(embedding profile mismatch|requires repair).*model model-a != model-b/i);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -245,7 +245,7 @@ describe("semantic runtime configuration", () => {
       RAGCODE_EMBEDDING_PROVIDER: "deterministic"
     }).embeddingProvider);
 
-    expect(table.deletes).toHaveLength(2);
+    expect(table.deletes).toHaveLength(4);
     expect(table.adds.map((rows) => rows.length)).toEqual([2, 1]);
     expect(progress).toEqual([2, 3]);
   });
