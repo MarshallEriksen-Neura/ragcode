@@ -30,14 +30,65 @@ interface FrameworkResolver {
   routes(context: FrameworkResolverContext): RouteInfo[];
 }
 
-export function buildFrameworkTopologyEdges(files: CodeFile[], sources: TypeScriptSourceFile[], symbols: SymbolNode[], edges: GraphEdge[]): GraphEdge[] {
+export function buildFrameworkTopologyEdges(files: CodeFile[], sources: TypeScriptSourceFile[], symbols: SymbolNode[], edges: GraphEdge[], priorEdges: GraphEdge[] = []): GraphEdge[] {
   const context: FrameworkResolverContext = { files, sources, symbols, edges };
-  const routes = frameworkResolvers.flatMap((resolver) => resolver.routes(context));
+  const routes = dedupeRoutes([
+    ...routesFromEdges(priorEdges),
+    ...frameworkResolvers.flatMap((resolver) => resolver.routes(context))
+  ]);
   const frameworkEdges: GraphEdge[] = [];
   frameworkEdges.push(...clientApiEdges(sources, symbols, routes));
   frameworkEdges.push(...routeServiceEdges(edges, symbols, routes));
   frameworkEdges.push(...webhookEdges(routes));
   return dedupeEdges(frameworkEdges);
+}
+
+function routesFromEdges(edges: GraphEdge[]): RouteInfo[] {
+  const routes: RouteInfo[] = [];
+  for (const edge of edges) {
+    if (edge.kind !== "calls_api" && edge.kind !== "routes_to" && edge.kind !== "handles_webhook") continue;
+    const routePath = stringMetadata(edge, "route") ?? stringMetadata(edge, "requestPath");
+    const routeFile = stringMetadata(edge, "routeFile") ?? stringMetadata(edge, "targetFile") ?? stringMetadata(edge, "sourceFile");
+    const filePath = stringMetadata(edge, "targetFile") ?? stringMetadata(edge, "sourceFile");
+    const targetName = stringMetadata(edge, "targetName") ?? edge.targetId;
+    if (!routePath || !routeFile || !filePath) continue;
+    routes.push({
+      framework: stringMetadata(edge, "framework") ?? "unknown",
+      routePath,
+      routeFile,
+      filePath,
+      symbol: {
+        id: edge.targetId,
+        projectId: edge.projectId,
+        filePath,
+        name: targetName,
+        kind: "unknown",
+        language: "unknown",
+        startLine: 0,
+        endLine: 0,
+        exported: false
+      },
+      isWebhook: /webhook/i.test(routePath) || /webhook/i.test(path.posix.basename(routeFile))
+    });
+  }
+  return routes;
+}
+
+function dedupeRoutes(routes: RouteInfo[]): RouteInfo[] {
+  const seen = new Set<string>();
+  const deduped: RouteInfo[] = [];
+  for (const route of routes) {
+    const key = [route.framework, route.routePath, route.routeFile, route.filePath, route.symbol.id].join("::");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(route);
+  }
+  return deduped;
+}
+
+function stringMetadata(edge: GraphEdge, key: string): string | undefined {
+  const value = edge.metadata?.[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 const nextJsResolver: FrameworkResolver = {
@@ -205,11 +256,13 @@ function routeDefinitionFromCall(
 
 function routeHandlerFromArgument(node: ts.Expression, symbols: SymbolNode[], filePath: string, line: number): SymbolNode | undefined {
   if (ts.isIdentifier(node)) {
-    return symbols.find((symbol) => symbol.name === node.text && symbol.kind !== "file")
+    return symbols.find((symbol) => symbol.name === node.text && symbol.kind !== "file" && symbol.exported)
+      ?? symbols.find((symbol) => symbol.name === node.text && symbol.kind !== "file" && symbol.filePath === filePath)
       ?? containingSymbol(symbols, filePath, line);
   }
   if (ts.isPropertyAccessExpression(node)) {
-    return symbols.find((symbol) => symbol.name === node.name.text && symbol.kind !== "file")
+    return symbols.find((symbol) => symbol.name === node.name.text && symbol.kind !== "file" && symbol.exported)
+      ?? symbols.find((symbol) => symbol.name === node.name.text && symbol.kind !== "file" && symbol.filePath === filePath)
       ?? containingSymbol(symbols, filePath, line);
   }
   return containingSymbol(symbols, filePath, line);

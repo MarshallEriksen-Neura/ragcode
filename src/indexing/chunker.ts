@@ -41,8 +41,6 @@ export async function chunkFilesIncremental(
   if (analyzedPaths.size === 0) return currentCached;
 
   const analyzed = await analyzeFiles(repoRoot, filesToAnalyze);
-  const cachedSources = await sourcesForCachedTypescriptFiles(repoRoot, files, analyzedPaths);
-  const allSources = [...cachedSources, ...analyzed.sources];
   const chunks = [
     ...currentCached.chunks,
     ...analyzed.chunks
@@ -51,25 +49,13 @@ export async function chunkFilesIncremental(
     ...currentCached.symbols,
     ...analyzed.symbols
   ];
-  const refreshedEdges = resolveChunkEdges(repoRoot, files, allSources, symbols, analyzed.edges)
+  const refreshedEdges = resolveChunkEdges(repoRoot, files, analyzed.sources, symbols, analyzed.edges, routeCatalogEdges(cached.edges, currentPaths, analyzedPaths))
     .filter((edge) => {
       const sourceFile = edgeSourceFile(edge);
       return sourceFile ? analyzedPaths.has(sourceFile) : false;
     });
 
   return { chunks, symbols, edges: dedupeEdges([...currentCached.edges, ...refreshedEdges]) };
-}
-
-async function sourcesForCachedTypescriptFiles(repoRoot: string, files: CodeFile[], analyzedPaths: Set<string>): Promise<TypeScriptSourceFile[]> {
-  const sources: TypeScriptSourceFile[] = [];
-  for (const file of files) {
-    if (analyzedPaths.has(file.path)) continue;
-    if (file.language !== "typescript" && file.language !== "javascript") continue;
-    const content = await fs.readFile(file.absolutePath, "utf8").catch(() => undefined);
-    if (content === undefined) continue;
-    sources.push({ filePath: file.path, absolutePath: file.absolutePath, content });
-  }
-  return sources;
 }
 
 interface AnalyzedFiles {
@@ -104,12 +90,13 @@ function resolveChunkEdges(
   files: CodeFile[],
   sources: TypeScriptSourceFile[],
   symbols: SymbolNode[],
-  edges: GraphEdge[]
+  edges: GraphEdge[],
+  priorEdges: GraphEdge[] = []
 ): GraphEdge[] {
   const importResolvedEdges = resolveGraphEdges(files, symbols, edges);
   const lspResolvedEdges = resolveCallDefinitionsWithTypeScript(repoRoot, sources, symbols, importResolvedEdges);
   const testEdges = buildTestTopologyEdges(symbols, lspResolvedEdges);
-  const frameworkEdges = buildFrameworkTopologyEdges(files, sources, symbols, lspResolvedEdges);
+  const frameworkEdges = buildFrameworkTopologyEdges(files, sources, symbols, lspResolvedEdges, priorEdges);
   const runtimeEdges = buildRuntimeTopologyEdges(repoRoot, files, sources, symbols);
   const ormEdges = buildOrmTopologyEdges(repoRoot, files, sources, symbols);
   return [...lspResolvedEdges, ...testEdges, ...frameworkEdges, ...runtimeEdges, ...ormEdges];
@@ -117,6 +104,15 @@ function resolveChunkEdges(
 
 function edgeSourceFile(edge: GraphEdge): string | undefined {
   return typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : undefined;
+}
+
+function routeCatalogEdges(edges: GraphEdge[], currentPaths: Set<string>, analyzedPaths: Set<string>): GraphEdge[] {
+  return edges.filter((edge) => {
+    if (edge.kind !== "calls_api" && edge.kind !== "routes_to" && edge.kind !== "handles_webhook") return false;
+    const routeFile = stringMetadata(edge, "routeFile") ?? stringMetadata(edge, "targetFile");
+    if (!routeFile || !currentPaths.has(routeFile)) return false;
+    return !analyzedPaths.has(routeFile);
+  });
 }
 
 function filterCachedChunking(cached: ChunkingResult, currentPaths: Set<string>, analyzedPaths: Set<string>): ChunkingResult {
@@ -176,6 +172,11 @@ function scalarMetadata(metadata: GraphEdge["metadata"], key: string): string {
   const value = metadata?.[key];
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
   return "";
+}
+
+function stringMetadata(edge: GraphEdge, key: string): string | undefined {
+  const value = edge.metadata?.[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 function bindingsMetadata(metadata: GraphEdge["metadata"]): string {

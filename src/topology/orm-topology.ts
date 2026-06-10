@@ -153,13 +153,25 @@ function dataflowSourceForCall(node: ts.CallExpression, sourceFile: ts.SourceFil
 
 function directRequestPayloadSource(node: ts.CallExpression, sourceFile: ts.SourceFile): string | undefined {
   for (const argument of node.arguments) {
-    const text = argument.getText(sourceFile);
-    const propertyMatch = /\b([A-Za-z_$][\w$]*)\.(body|params|query)\b/.exec(text);
-    if (propertyMatch) return propertyMatch[0];
-    const jsonMatch = /\b([A-Za-z_$][\w$]*)\.json\s*\(/.exec(text);
-    if (jsonMatch?.[1]) return `${jsonMatch[1]}.json()`;
+    const source = requestPayloadExpression(argument, sourceFile);
+    if (source) return source;
   }
   return undefined;
+}
+
+function requestPayloadExpression(node: ts.Node, sourceFile: ts.SourceFile): string | undefined {
+  if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && ["body", "params", "query"].includes(node.name.text)) {
+    return `${node.expression.text}.${node.name.text}`;
+  }
+  if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression) && node.expression.name.text === "json") {
+    return `${node.expression.expression.text}.json()`;
+  }
+  let found: string | undefined;
+  node.forEachChild((child) => {
+    if (found) return;
+    found = requestPayloadExpression(child, sourceFile);
+  });
+  return found;
 }
 
 function escapeRegExp(value: string): string {

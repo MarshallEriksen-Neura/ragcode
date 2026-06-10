@@ -251,6 +251,41 @@ describe("verified code subgraphs", () => {
     expect(reviewRisk.snippets).toBeUndefined();
     expect(reviewRisk.edges).toBeUndefined();
   });
+
+  it("treats truncated subgraphs as investigate-only rather than safe to edit", () => {
+    const symbols: SymbolNode[] = [symbol("seed", "src/seed.ts", "seed")];
+    const edges: GraphEdge[] = [];
+    const chunks: CodeChunk[] = [
+      {
+        id: "chunk:seed",
+        projectId: "project",
+        repoRoot: "/repo",
+        filePath: "src/seed.ts",
+        language: "typescript",
+        kind: "function",
+        symbolName: "seed",
+        startLine: 1,
+        endLine: 3,
+        content: "export function seed() { return true; }",
+        contentHash: "hash:seed"
+      }
+    ];
+
+    const subgraph = new SubgraphBuilder().build({
+      query: "truncated budget",
+      repoRoot: "/repo",
+      projectId: "project",
+      mode: "flow",
+      seedSymbols: symbols,
+      symbols,
+      edges,
+      chunks,
+      budgetChars: 1,
+      maxHops: 1
+    });
+
+    expect(subgraph.coverageSummary.verdict).toBe("investigate_only");
+  });
 });
 
 function signalStatus(subgraph: Awaited<ReturnType<RagCodeEngine["verifiedSubgraph"]>>, name: string): string | undefined {

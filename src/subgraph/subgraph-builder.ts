@@ -614,7 +614,7 @@ function summarizeCoverage(coverage: CoverageSignal[], answerable: boolean, edge
   const failed = coverage.filter((signal) => signal.status === "fail").length;
   const blockingFailed = coverage.filter((signal) => signal.status === "fail" && isBlockingCoverageFailure(signal, edges)).length;
   const softFailed = failed - blockingFailed;
-  const verdict = editReadinessFor(answerable, blockingFailed, partial + softFailed);
+  const verdict = editReadinessFor(answerable, blockingFailed, partial + softFailed, coverage.some((signal) => signal.name === "budget_truncated" && signal.status === "fail"));
   const summary = summaryForVerdict(verdict, passed, partial, failed);
   return { verdict, summary, passed, partial, failed };
 }
@@ -625,8 +625,9 @@ function isBlockingCoverageFailure(signal: CoverageSignal, edges: VerifiedSubgra
   return true;
 }
 
-function editReadinessFor(answerable: boolean, failed: number, partial: number): EditReadiness {
+function editReadinessFor(answerable: boolean, failed: number, partial: number, truncated: boolean): EditReadiness {
   if (!answerable || failed > 0) return "not_enough_context";
+  if (truncated) return "investigate_only";
   if (partial > 1) return "investigate_only";
   return "safe_to_edit_after_reading";
 }
