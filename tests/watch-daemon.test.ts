@@ -130,6 +130,37 @@ describe("file watch daemon", () => {
     expect(recoveringEngine.recordedBatches.flat()).toContain("src/recover.ts");
     expect(await journal.replay()).toEqual([]);
   });
+
+  it("retries a failed dirty-state flush without waiting for another event", async () => {
+    const root = await createTempRepo("ragcode-watch-flush-retry-");
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, "src", "retry.ts"), "export const value = 1;\n");
+
+    const journal = FileEventJournal.forRepo(root);
+    const engine = new FakeEngine(root);
+    engine.failRecordCount = 1;
+    const daemon = new FileWatchDaemon(engine, root, {
+      autoIndex: false,
+      indexOnStart: false,
+      flushEventsMs: 20,
+      flushRetryMaxDelayMs: 20,
+      awaitWriteFinishMs: 10,
+      pollIntervalMs: 20,
+      usePolling: true,
+      journal
+    });
+
+    await daemon.start();
+    await waitFor(async () => (await daemon.status()).ready);
+    await fs.writeFile(path.join(root, "src", "retry.ts"), "export const value = 2;\n");
+
+    await waitFor(() => engine.recordedBatches.some((batch) => batch.includes("src/retry.ts")), 3_000);
+    await daemon.stop();
+
+    expect(engine.recordFailures).toBe(1);
+    expect(engine.recordedBatches.flat()).toContain("src/retry.ts");
+    expect(await journal.replay()).toEqual([]);
+  });
 });
 
 describe("watch index scheduler", () => {
@@ -177,6 +208,49 @@ describe("watch index scheduler", () => {
     expect(engine.recordedBatches).toContainEqual(["src/a.ts", "src/b.ts"]);
     expect((await engine.indexStatus(root)).freshness.pendingFiles).toEqual(["src/a.ts", "src/b.ts"]);
   });
+
+  it("passes the bounded dirty batch as affected refresh files", async () => {
+    const root = await createTempRepo("ragcode-watch-scheduler-affected-");
+    const engine = new FakeEngine(root);
+    engine.seedDirty(["src/a.ts", "src/b.ts", "src/c.ts"], Date.now() - 10_000);
+    const scheduler = new WatchIndexScheduler(engine, root, { maxBatchFiles: 2, minQuietMs: 0 });
+
+    scheduler.start();
+    await scheduler.flush();
+    await scheduler.stop();
+
+    expect(engine.affectedRefreshBatches).toEqual([["src/a.ts", "src/b.ts"]]);
+    expect((await engine.indexStatus(root)).freshness.pendingFiles).toEqual(["src/c.ts"]);
+  });
+
+  it("computes quiet time for very large dirty queues without spreading into Math.max", async () => {
+    const root = await createTempRepo("ragcode-watch-scheduler-large-");
+    const engine = new FakeEngine(root);
+    engine.seedDirty(Array.from({ length: 20_000 }, (_, index) => `src/file-${index}.ts`), Date.now() - 10_000);
+    const scheduler = new WatchIndexScheduler(engine, root, { maxBatchFiles: 1, minQuietMs: 0 });
+
+    scheduler.start();
+    await expect(scheduler.flush()).resolves.toBeDefined();
+    await scheduler.stop();
+
+    expect(engine.affectedRefreshBatches[0]).toEqual(["src/file-0.ts"]);
+  });
+
+  it("dead-letters poison files after bounded retry attempts", async () => {
+    const root = await createTempRepo("ragcode-watch-scheduler-deadletter-");
+    const engine = new FakeEngine(root);
+    engine.seedDirty(["src/poison.ts"], Date.now() - 10_000);
+    engine.failRefresh = true;
+    const scheduler = new WatchIndexScheduler(engine, root, { minQuietMs: 0, maxRetryAttempts: 2 });
+
+    scheduler.start();
+    await scheduler.flush();
+    await scheduler.flush();
+    await scheduler.stop();
+
+    expect(engine.deadLetterBatches).toEqual([["src/poison.ts"]]);
+    expect((await engine.indexStatus(root)).freshness.dirtyFiles[0]?.status).toBe("dead_letter");
+  });
 });
 
 async function createTempRepo(prefix: string): Promise<string> {
@@ -197,10 +271,14 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
 class FakeEngine implements ContextEngine {
   recordedBatches: string[][] = [];
   indexingBatches: string[][] = [];
+  affectedRefreshBatches: string[][] = [];
+  deadLetterBatches: string[][] = [];
   refreshCount = 0;
   failRecord = false;
+  failRecordCount = 0;
+  recordFailures = 0;
   failRefresh = false;
-  private dirty = new Map<string, { status: "pending" | "indexing"; lastSeenAtMs: number; eventCount: number }>();
+  private dirty = new Map<string, { status: "pending" | "indexing" | "dead_letter"; reason?: string; lastSeenAtMs: number; eventCount: number }>();
 
   constructor(private readonly root: string) {}
 
@@ -214,11 +292,13 @@ class FakeEngine implements ContextEngine {
     return this.repoIndex(repoRoot, [...this.dirty.keys()].sort(), true);
   }
 
-  async refreshIndex(repoRoot: string | undefined): Promise<RepoIndex> {
+  async refreshIndex(repoRoot: string | undefined, options?: { affectedFiles?: string[] }): Promise<RepoIndex> {
     if (this.failRefresh) throw new Error("refresh failed");
     this.refreshCount += 1;
+    const affectedFiles = [...new Set(options?.affectedFiles ?? [])].sort();
+    this.affectedRefreshBatches.push(affectedFiles);
     const changedFiles = [...this.dirty.entries()]
-      .filter(([, state]) => state.status === "indexing")
+      .filter(([filePath, state]) => state.status === "indexing" && (affectedFiles.length === 0 || affectedFiles.includes(filePath)))
       .map(([filePath]) => filePath)
       .sort();
     for (const filePath of changedFiles) this.dirty.delete(filePath);
@@ -230,7 +310,7 @@ class FakeEngine implements ContextEngine {
       projectId: "project",
       filePath,
       status: state.status,
-      reason: state.status === "indexing" ? "background batch indexing" : "watcher file event",
+      reason: state.reason ?? (state.status === "indexing" ? "background batch indexing" : "watcher file event"),
       firstSeenAtMs: state.lastSeenAtMs,
       lastSeenAtMs: state.lastSeenAtMs,
       eventCount: state.eventCount
@@ -267,7 +347,9 @@ class FakeEngine implements ContextEngine {
   }
 
   async recordFileEvents(_repoRoot: string | undefined, filePaths: string[], _options?: WatcherEventOptions): Promise<WatcherState> {
-    if (this.failRecord) {
+    if (this.failRecord || this.failRecordCount > 0) {
+      if (this.failRecordCount > 0) this.failRecordCount -= 1;
+      this.recordFailures += 1;
       throw new Error("record failed");
     }
     const batch = [...new Set(filePaths)].sort();
@@ -291,6 +373,17 @@ class FakeEngine implements ContextEngine {
       const current = this.dirty.get(filePath);
       if (!current) continue;
       this.dirty.set(filePath, { ...current, status: "indexing", lastSeenAtMs: Date.now() });
+    }
+    return this.watcherState();
+  }
+
+  async markDirtyFilesDeadLetter(_repoRoot: string | undefined, filePaths: string[], reason: string): Promise<WatcherState> {
+    const batch = [...new Set(filePaths)].sort();
+    this.deadLetterBatches.push(batch);
+    for (const filePath of batch) {
+      const current = this.dirty.get(filePath);
+      if (!current) continue;
+      this.dirty.set(filePath, { ...current, status: "dead_letter", reason, lastSeenAtMs: Date.now() });
     }
     return this.watcherState();
   }
@@ -330,7 +423,7 @@ class FakeEngine implements ContextEngine {
       projectId: "project",
       filePath,
       status: state.status,
-      reason: state.status === "indexing" ? "background batch indexing" : "watcher file event",
+      reason: state.reason ?? (state.status === "indexing" ? "background batch indexing" : "watcher file event"),
       firstSeenAtMs: state.lastSeenAtMs,
       lastSeenAtMs: state.lastSeenAtMs,
       eventCount: state.eventCount

@@ -73,6 +73,37 @@ describe("incremental indexing", () => {
     expect(explained.chunks.some((chunk) => chunk.content.includes("new-unrelated-marker"))).toBe(true);
   });
 
+  it("scans only explicitly affected files during affected refreshes", async () => {
+    const engine = new RagCodeEngine();
+    await engine.indexRepo(tempRoot);
+    analyzerProbe.filePaths = [];
+
+    await writeRepoFile("src/unrelated.ts", [
+      "export function unrelatedMarker() {",
+      "  return 'affected-scan-marker';",
+      "}"
+    ].join("\n"));
+    const index = await engine.indexRepo(tempRoot, { affectedFiles: ["src/unrelated.ts"] });
+
+    expect(index.affectedFiles).toEqual(["src/unrelated.ts"]);
+    expect(index.scannedFiles).toEqual(["src/unrelated.ts"]);
+    expect(index.changedFiles).toEqual(["src/unrelated.ts"]);
+    expect(index.refreshedFiles).toEqual(["src/unrelated.ts"]);
+    expect(analyzerProbe.filePaths).toEqual(["src/unrelated.ts"]);
+    expect(index.files.map((file) => file.path).sort()).toEqual(["src/auth.ts", "src/profile.ts", "src/unrelated.ts"]);
+  });
+
+  it("ignores affected file hints on the first index so cold start remains complete", async () => {
+    const engine = new RagCodeEngine();
+
+    const index = await engine.indexRepo(tempRoot, { affectedFiles: ["src/unrelated.ts"] });
+
+    expect(index.fullReindex).toBe(true);
+    expect(index.affectedFiles).toBeUndefined();
+    expect(index.scannedFiles).toEqual(["src/auth.ts", "src/profile.ts", "src/unrelated.ts"]);
+    expect(index.files.map((file) => file.path).sort()).toEqual(["src/auth.ts", "src/profile.ts", "src/unrelated.ts"]);
+  });
+
   it("refreshes importers when a changed target file can alter resolved cross-file edges", async () => {
     const engine = new RagCodeEngine();
     await engine.indexRepo(tempRoot);
@@ -123,6 +154,98 @@ describe("incremental indexing", () => {
     expect(index.files.map((file) => file.path)).not.toContain("src/unrelated.ts");
     expect(index.chunks.some((chunk) => chunk.filePath === "src/unrelated.ts")).toBe(false);
     expect(index.symbols.some((symbol) => symbol.filePath === "src/unrelated.ts")).toBe(false);
+  });
+
+  it("refreshes only direct API clients when a Next.js route changes", async () => {
+    await writeRepoFile("src/app/checkout/CheckoutButton.tsx", [
+      "\"use client\";",
+      "",
+      "export function CheckoutButton() {",
+      "  async function onClick() {",
+      "    await fetch('/api/payments', { method: 'POST' });",
+      "  }",
+      "  return <button onClick={onClick}>Pay</button>;",
+      "}"
+    ].join("\n"));
+    await writeRepoFile("src/app/api/payments/route.ts", [
+      "export async function POST() {",
+      "  return Response.json({ ok: true });",
+      "}"
+    ].join("\n"));
+    await writeRepoFile("src/app/api/orders/route.ts", [
+      "export async function POST() {",
+      "  return Response.json({ order: true });",
+      "}"
+    ].join("\n"));
+    await writeRepoFile("src/app/orders/OrdersButton.tsx", [
+      "\"use client\";",
+      "",
+      "export function OrdersButton() {",
+      "  async function onClick() {",
+      "    await fetch('/api/orders', { method: 'POST' });",
+      "  }",
+      "  return <button onClick={onClick}>Order</button>;",
+      "}"
+    ].join("\n"));
+
+    const engine = new RagCodeEngine();
+    await engine.indexRepo(tempRoot);
+    analyzerProbe.filePaths = [];
+
+    await writeRepoFile("src/app/api/payments/route.ts", [
+      "export async function POST() {",
+      "  return Response.json({ ok: 'changed' });",
+      "}"
+    ].join("\n"));
+    const index = await engine.indexRepo(tempRoot);
+
+    expect(index.changedFiles).toEqual(["src/app/api/payments/route.ts"]);
+    expect(index.refreshedFiles).toEqual(["src/app/api/payments/route.ts", "src/app/checkout/CheckoutButton.tsx"]);
+    expect([...analyzerProbe.filePaths].sort()).toEqual(["src/app/api/payments/route.ts", "src/app/checkout/CheckoutButton.tsx"]);
+    expect(analyzerProbe.filePaths).not.toContain("src/app/api/orders/route.ts");
+    expect(analyzerProbe.filePaths).not.toContain("src/app/orders/OrdersButton.tsx");
+    expect(analyzerProbe.filePaths).not.toContain("src/unrelated.ts");
+  });
+
+  it("refreshes route files from middleware reverse edges without reanalyzing every TypeScript file", async () => {
+    await writeRepoFile("src/middleware.ts", [
+      "export function middleware() {",
+      "  return Response.next();",
+      "}"
+    ].join("\n"));
+    await writeRepoFile("src/app/api/payments/route.ts", [
+      "export async function POST() {",
+      "  return Response.json({ ok: true });",
+      "}"
+    ].join("\n"));
+    await writeRepoFile("src/app/api/orders/route.ts", [
+      "export async function POST() {",
+      "  return Response.json({ order: true });",
+      "}"
+    ].join("\n"));
+    await writeRepoFile("src/app/checkout/CheckoutButton.tsx", [
+      "\"use client\";",
+      "export function CheckoutButton() {",
+      "  return <button>Pay</button>;",
+      "}"
+    ].join("\n"));
+
+    const engine = new RagCodeEngine();
+    await engine.indexRepo(tempRoot);
+    analyzerProbe.filePaths = [];
+
+    await writeRepoFile("src/middleware.ts", [
+      "export function middleware() {",
+      "  return new Response('changed');",
+      "}"
+    ].join("\n"));
+    const index = await engine.indexRepo(tempRoot);
+
+    expect(index.changedFiles).toEqual(["src/middleware.ts"]);
+    expect(index.refreshedFiles).toEqual(["src/app/api/orders/route.ts", "src/app/api/payments/route.ts", "src/middleware.ts"]);
+    expect([...analyzerProbe.filePaths].sort()).toEqual(["src/app/api/orders/route.ts", "src/app/api/payments/route.ts", "src/middleware.ts"]);
+    expect(analyzerProbe.filePaths).not.toContain("src/app/checkout/CheckoutButton.tsx");
+    expect(analyzerProbe.filePaths).not.toContain("src/unrelated.ts");
   });
 });
 

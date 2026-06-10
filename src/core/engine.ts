@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { ContextEngine, EmbeddingProvider, GraphStore, SemanticStore } from "./contracts.js";
-import type { ContextPack, ContextRequest, DiffReview, FreshnessReport, GraphEdge, ImpactAnalysis, IndexStatus, OwnerCandidate, ProjectIdentity, RelatedTests, ReuseCandidateReport, ReuseCandidateRequest, RepoIndex, SearchHit, SearchQuery, SymbolNode, TopologyMap, TopologyMapRequest, TraceFlow, VerifiedCodeSubgraph, VerifiedSubgraphRequest, WatcherEventOptions, WatcherState, WorkspaceHint, WorkspaceSession } from "./types.js";
+import type { ContextPack, ContextRequest, DiffReview, FreshnessReport, GraphEdge, ImpactAnalysis, IndexRefreshOptions, IndexStatus, OwnerCandidate, ProjectIdentity, RelatedTests, ReuseCandidateReport, ReuseCandidateRequest, RepoIndex, SearchHit, SearchQuery, SymbolNode, TopologyMap, TopologyMapRequest, TraceFlow, VerifiedCodeSubgraph, VerifiedSubgraphRequest, WatcherEventOptions, WatcherState, WorkspaceHint, WorkspaceSession } from "./types.js";
 import { ContextBuilder } from "../context/context-builder.js";
 import { createGraphRuntimeFromEnv } from "../config/graph-runtime.js";
 import { createSemanticRuntimeFromEnv } from "../config/semantic-runtime.js";
@@ -60,7 +60,7 @@ export class RagCodeEngine implements ContextEngine {
     this.graphStore.close?.();
   }
 
-  async indexRepo(repoRoot: string): Promise<RepoIndex> {
+  async indexRepo(repoRoot: string, options?: IndexRefreshOptions): Promise<RepoIndex> {
     const project = await this.projectRegistry.register(repoRoot);
     this.workspaceResolver.setActive(project, "repoRoot");
     const absoluteRoot = path.resolve(repoRoot);
@@ -69,7 +69,7 @@ export class RagCodeEngine implements ContextEngine {
       graphStore: this.graphStore,
       semanticStore: this.semanticStore,
       embeddingProvider: this.embeddingProvider
-    }).indexRepo(absoluteRoot, project.projectId, project);
+    }).indexRepo(absoluteRoot, project.projectId, project, options);
     const indexedProject = this.projectRegistry.upsert({
       ...project,
       lastIndexedAtMs: index.indexedAtMs
@@ -82,9 +82,9 @@ export class RagCodeEngine implements ContextEngine {
     };
   }
 
-  async refreshIndex(repoRoot: string | undefined): Promise<RepoIndex> {
+  async refreshIndex(repoRoot: string | undefined, options?: IndexRefreshOptions): Promise<RepoIndex> {
     const scope = await this.resolveWorkspace({ repoRoot });
-    return this.indexRepo(scope.activeRepoRoot);
+    return this.indexRepo(scope.activeRepoRoot, options);
   }
 
   async indexStatus(repoRoot: string | undefined): Promise<IndexStatus> {
@@ -130,6 +130,14 @@ export class RagCodeEngine implements ContextEngine {
       throw new Error("Current graph store does not support watcher indexing state.");
     }
     return this.graphStore.markDirtyFilesIndexing(scope.activeRepoRoot, filePaths);
+  }
+
+  async markDirtyFilesDeadLetter(repoRoot: string | undefined, filePaths: string[], reason: string): Promise<WatcherState> {
+    const scope = await this.resolveWorkspace({ repoRoot });
+    if (!this.graphStore.markDirtyFilesDeadLetter) {
+      throw new Error("Current graph store does not support watcher dead-letter state.");
+    }
+    return this.graphStore.markDirtyFilesDeadLetter(scope.activeRepoRoot, filePaths, reason);
   }
 
   async searchCode(query: SearchQuery): Promise<SearchHit[]> {

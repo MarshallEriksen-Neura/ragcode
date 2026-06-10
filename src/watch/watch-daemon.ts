@@ -11,6 +11,9 @@ export interface FileWatchDaemonOptions extends Omit<WatchIndexSchedulerOptions,
   pollIntervalMs?: number;
   usePolling?: boolean;
   flushEventsMs?: number;
+  maxBufferedEvents?: number;
+  maxFlushWaitMs?: number;
+  flushRetryMaxDelayMs?: number;
   maxFileBytes?: number;
   indexOnStart?: boolean;
   journal?: FileEventJournal;
@@ -29,6 +32,9 @@ export interface WatchDaemonStatus {
 const DEFAULT_EVENT_FLUSH_MS = 250;
 const DEFAULT_AWAIT_WRITE_FINISH_MS = 500;
 const DEFAULT_MAX_FILE_BYTES = 1_000_000;
+const DEFAULT_MAX_BUFFERED_EVENTS = 1_000;
+const DEFAULT_MAX_FLUSH_WAIT_MS = 5_000;
+const DEFAULT_FLUSH_RETRY_MAX_DELAY_MS = 30_000;
 
 export class FileWatchDaemon {
   private watcher: FSWatcher | undefined;
@@ -37,7 +43,12 @@ export class FileWatchDaemon {
   private readonly repoRoot: string;
   private readonly bufferedPaths = new Set<string>();
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
+  private maxFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  private flushRetryTimer: ReturnType<typeof setTimeout> | undefined;
   private journalQueue: Promise<void> = Promise.resolve();
+  private pendingJournalEntries: WatchEventJournalEntry[] = [];
+  private firstBufferedAtMs: number | undefined;
+  private flushFailureCount = 0;
   private lastError: string | undefined;
   private running = false;
   private ready = false;
@@ -116,7 +127,11 @@ export class FileWatchDaemon {
   async stop(): Promise<void> {
     this.running = false;
     if (this.flushTimer) clearTimeout(this.flushTimer);
+    if (this.maxFlushTimer) clearTimeout(this.maxFlushTimer);
+    if (this.flushRetryTimer) clearTimeout(this.flushRetryTimer);
     this.flushTimer = undefined;
+    this.maxFlushTimer = undefined;
+    this.flushRetryTimer = undefined;
     await this.watcher?.close();
     this.watcher = undefined;
     try {
@@ -171,22 +186,48 @@ export class FileWatchDaemon {
     if (!filePath) return;
     const entry = { event, filePath, observedAtMs: Date.now() };
     await this.enqueueJournalOperation(async () => {
-      await this.journal.append(entry);
+      this.pendingJournalEntries.push(entry);
+      await this.flushJournalEntriesLocked();
       this.options.onEvent?.(entry);
       this.bufferedPaths.add(filePath);
+      this.firstBufferedAtMs ??= entry.observedAtMs;
       this.scheduleEventFlush();
     });
   }
 
   private scheduleEventFlush(): void {
+    if (this.bufferedPaths.size >= (this.options.maxBufferedEvents ?? DEFAULT_MAX_BUFFERED_EVENTS)) {
+      if (this.flushTimer) clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+      void this.flushBufferedEvents().catch((error: unknown) => {
+        this.setLastError(error);
+        this.scheduleFlushRetry();
+        void this.emitStatus();
+      });
+      return;
+    }
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = setTimeout(() => {
       this.flushTimer = undefined;
       void this.flushBufferedEvents().catch((error: unknown) => {
         this.setLastError(error);
+        this.scheduleFlushRetry();
         void this.emitStatus();
       });
     }, this.options.flushEventsMs ?? DEFAULT_EVENT_FLUSH_MS);
+    if (!this.maxFlushTimer) {
+      const elapsed = this.firstBufferedAtMs ? Date.now() - this.firstBufferedAtMs : 0;
+      this.maxFlushTimer = setTimeout(() => {
+        this.maxFlushTimer = undefined;
+        if (this.flushTimer) clearTimeout(this.flushTimer);
+        this.flushTimer = undefined;
+        void this.flushBufferedEvents().catch((error: unknown) => {
+          this.setLastError(error);
+          this.scheduleFlushRetry();
+          void this.emitStatus();
+        });
+      }, Math.max(0, (this.options.maxFlushWaitMs ?? DEFAULT_MAX_FLUSH_WAIT_MS) - elapsed));
+    }
   }
 
   private async flushBufferedEvents(): Promise<void> {
@@ -194,14 +235,47 @@ export class FileWatchDaemon {
   }
 
   private async flushBufferedEventsLocked(): Promise<void> {
+    await this.flushJournalEntriesLocked();
     if (this.bufferedPaths.size === 0) return;
     const paths = [...this.bufferedPaths].sort();
     await this.engine.recordFileEvents(this.repoRoot, paths, this.options);
     this.bufferedPaths.clear();
+    this.firstBufferedAtMs = undefined;
+    this.flushFailureCount = 0;
+    if (this.maxFlushTimer) clearTimeout(this.maxFlushTimer);
+    if (this.flushRetryTimer) clearTimeout(this.flushRetryTimer);
+    this.maxFlushTimer = undefined;
+    this.flushRetryTimer = undefined;
     await this.journal.truncate();
     this.lastError = undefined;
     this.scheduler.schedule();
     await this.emitStatus();
+  }
+
+  private async flushJournalEntriesLocked(): Promise<void> {
+    if (this.pendingJournalEntries.length === 0) return;
+    const entries = this.pendingJournalEntries.splice(0);
+    try {
+      await this.journal.appendBatch(entries);
+    } catch (error) {
+      this.pendingJournalEntries.unshift(...entries);
+      throw error;
+    }
+  }
+
+  private scheduleFlushRetry(): void {
+    if (!this.running || this.flushRetryTimer) return;
+    this.flushFailureCount += 1;
+    const baseDelay = this.options.flushEventsMs ?? DEFAULT_EVENT_FLUSH_MS;
+    const delay = Math.min(baseDelay * 2 ** Math.max(0, this.flushFailureCount - 1), this.options.flushRetryMaxDelayMs ?? DEFAULT_FLUSH_RETRY_MAX_DELAY_MS);
+    this.flushRetryTimer = setTimeout(() => {
+      this.flushRetryTimer = undefined;
+      void this.flushBufferedEvents().catch((error: unknown) => {
+        this.setLastError(error);
+        this.scheduleFlushRetry();
+        void this.emitStatus();
+      });
+    }, delay);
   }
 
   private isIgnored(candidate: string, stats?: { isDirectory(): boolean; isFile(): boolean; size: number }): boolean {

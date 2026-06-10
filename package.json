@@ -46,6 +46,7 @@
     "benchmark:all": "tsx scripts/benchmark.ts --all",
     "benchmark:observation": "tsx scripts/benchmark.ts --suite observation",
     "benchmark:perf-smoke": "tsx scripts/benchmark-perf-smoke.ts",
+    "benchmark:incremental-stress": "tsx scripts/benchmark-incremental-stress.ts",
     "setup-mcp": "tsx scripts/setup-mcp.ts",
     "init-config": "tsx scripts/init-config.ts"
   },

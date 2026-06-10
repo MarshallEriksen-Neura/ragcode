@@ -114,6 +114,26 @@ export class SQLiteGraphStore implements GraphStore {
     return this.watcherStateForProject(projectId);
   }
 
+  async markDirtyFilesDeadLetter(repoRoot: string, filePaths: string[], reason: string): Promise<WatcherState> {
+    const projectId = this.requireProjectId(repoRoot);
+    const now = Date.now();
+    this.transaction(() => {
+      for (const filePath of filePaths) {
+        this.db.prepare(`
+          UPDATE dirty_files
+          SET status = 'dead_letter', reason = ?, last_seen_at_ms = ?
+          WHERE project_id = ? AND file_path = ?
+        `).run(reason, now, projectId, filePath);
+      }
+      this.db.prepare(`
+        INSERT INTO watcher_state(project_id, burst_mode, dropped_events, last_event_at_ms, updated_at_ms)
+        VALUES (?, 0, 0, ?, ?)
+        ON CONFLICT(project_id) DO UPDATE SET updated_at_ms = excluded.updated_at_ms
+      `).run(projectId, now, now);
+    });
+    return this.watcherStateForProject(projectId);
+  }
+
   async clearDirtyFiles(repoRoot: string, filePaths?: string[]): Promise<void> {
     const projectId = this.requireProjectId(repoRoot);
     this.transaction(() => this.clearDirtyRows(projectId, filePaths));
@@ -177,7 +197,7 @@ export class SQLiteGraphStore implements GraphStore {
       for (const skipped of index.skippedFiles) {
         this.sql.insertSkippedFile.run(index.projectId, skipped.filePath, skipped.reason);
       }
-      this.clearDirtyRows(index.projectId);
+      this.clearDirtyRows(index.projectId, index.affectedFiles);
     });
   }
 

@@ -8,6 +8,7 @@ import type {
   GraphEdge,
   ImpactAnalysis,
   IndexStatus,
+  IndexRefreshOptions,
   OwnerCandidate,
   RelatedTests,
   ReuseCandidateReport,
@@ -40,6 +41,7 @@ export interface GraphStore {
   recordFileEvents?(repoRoot: string, filePaths: string[], options?: WatcherEventOptions): Promise<WatcherState>;
   getWatcherState?(repoRoot: string): Promise<WatcherState>;
   markDirtyFilesIndexing?(repoRoot: string, filePaths: string[]): Promise<WatcherState>;
+  markDirtyFilesDeadLetter?(repoRoot: string, filePaths: string[], reason: string): Promise<WatcherState>;
   clearDirtyFiles?(repoRoot: string, filePaths?: string[]): Promise<void>;
   needsRebuild?(repoRoot: string, projectId: string): Promise<boolean>;
   resetRepo(repoRoot: string): Promise<void>;
@@ -68,15 +70,16 @@ export interface SemanticStore {
 }
 
 export interface Indexer {
-  indexRepo(repoRoot: string, projectId: string, project?: ProjectIdentity): Promise<RepoIndex>;
+  indexRepo(repoRoot: string, projectId: string, project?: ProjectIdentity, options?: IndexRefreshOptions): Promise<RepoIndex>;
 }
 
 export interface ContextEngine {
   indexRepo(repoRoot: string): Promise<RepoIndex>;
-  refreshIndex(repoRoot: string | undefined): Promise<RepoIndex>;
+  refreshIndex(repoRoot: string | undefined, options?: IndexRefreshOptions): Promise<RepoIndex>;
   indexStatus(repoRoot: string | undefined): Promise<IndexStatus>;
   recordFileEvents(repoRoot: string | undefined, filePaths: string[], options?: WatcherEventOptions): Promise<WatcherState>;
   markDirtyFilesIndexing(repoRoot: string | undefined, filePaths: string[]): Promise<WatcherState>;
+  markDirtyFilesDeadLetter(repoRoot: string | undefined, filePaths: string[], reason: string): Promise<WatcherState>;
   searchCode(query: SearchQuery): Promise<SearchHit[]>;
   getContext(request: ContextRequest): Promise<ContextPack>;
   verifiedSubgraph(request: VerifiedSubgraphRequest): Promise<VerifiedCodeSubgraph>;

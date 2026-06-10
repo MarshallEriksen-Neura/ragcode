@@ -16,8 +16,13 @@ export class FileEventJournal {
   }
 
   async append(entry: WatchEventJournalEntry): Promise<void> {
+    await this.appendBatch([entry]);
+  }
+
+  async appendBatch(entries: WatchEventJournalEntry[]): Promise<void> {
+    if (entries.length === 0) return;
     await fs.mkdir(path.dirname(this.journalPath), { recursive: true });
-    await fs.appendFile(this.journalPath, `${JSON.stringify(entry)}\n`, "utf8");
+    await fs.appendFile(this.journalPath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
   }
 
   async replay(): Promise<WatchEventJournalEntry[]> {

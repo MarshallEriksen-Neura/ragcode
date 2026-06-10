@@ -7,6 +7,14 @@ import { renderChunkForEmbedding } from "./in-memory-semantic-store.js";
 export interface LanceTable {
   add(rows: LanceChunkRecord[]): Promise<unknown>;
   delete(predicate: string): Promise<unknown>;
+  schema?(): Promise<LanceTableSchema> | LanceTableSchema;
+  query?(): {
+    where(predicate: string): {
+      limit(limit: number): {
+        toArray(): Promise<LanceChunkRecord[]>;
+      };
+    };
+  };
   search(vector: number[]): {
     where(predicate: string): {
       limit(limit: number): {
@@ -20,6 +28,7 @@ export interface LanceConnection {
   tableNames(): Promise<string[]>;
   openTable(name: string): Promise<LanceTable>;
   createTable(name: string, rows: LanceChunkRecord[]): Promise<LanceTable>;
+  dropTable?(name: string): Promise<unknown>;
 }
 
 export interface LanceModule {
@@ -42,6 +51,17 @@ export interface LanceChunkRecord {
   vector: number[];
 }
 
+export interface LanceTableSchema {
+  fields?: LanceSchemaField[];
+}
+
+export interface LanceSchemaField {
+  name?: string;
+  type?: unknown;
+  dataType?: unknown;
+  vectorDimensions?: number;
+}
+
 export interface LanceSemanticStoreOptions {
   tableName?: string;
   connection?: LanceConnection;
@@ -51,6 +71,9 @@ export interface LanceSemanticStoreOptions {
   profileStore?: LanceProfileStore;
   embeddingBatchSize?: number;
   embeddingConcurrency?: number;
+  embeddingRetryAttempts?: number;
+  embeddingRetryBaseDelayMs?: number;
+  repairOnMismatch?: boolean;
   maxChunks?: number;
   onProgress?: (progress: LanceEmbeddingProgress) => void;
 }
@@ -94,6 +117,9 @@ export class LanceSemanticStore implements SemanticStore {
   private readonly profileStore: LanceProfileStore;
   private readonly embeddingBatchSize: number;
   private readonly embeddingConcurrency: number;
+  private readonly embeddingRetryAttempts: number;
+  private readonly embeddingRetryBaseDelayMs: number;
+  private readonly repairOnMismatch: boolean;
   private readonly maxChunks?: number;
   private readonly onProgress?: (progress: LanceEmbeddingProgress) => void;
 
@@ -104,6 +130,9 @@ export class LanceSemanticStore implements SemanticStore {
       this.profileStore = defaultProfileStore(uri, this.tableName);
       this.embeddingBatchSize = 64;
       this.embeddingConcurrency = 1;
+      this.embeddingRetryAttempts = 3;
+      this.embeddingRetryBaseDelayMs = 100;
+      this.repairOnMismatch = true;
       return;
     }
     this.tableName = tableNameOrOptions.tableName ?? "code_chunks";
@@ -114,32 +143,58 @@ export class LanceSemanticStore implements SemanticStore {
     this.profileStore = tableNameOrOptions.profileStore ?? defaultProfileStore(uri, this.tableName);
     this.embeddingBatchSize = positiveInteger(tableNameOrOptions.embeddingBatchSize, 64);
     this.embeddingConcurrency = positiveInteger(tableNameOrOptions.embeddingConcurrency, 1);
+    this.embeddingRetryAttempts = positiveInteger(tableNameOrOptions.embeddingRetryAttempts, 3);
+    this.embeddingRetryBaseDelayMs = positiveInteger(tableNameOrOptions.embeddingRetryBaseDelayMs, 100);
+    this.repairOnMismatch = tableNameOrOptions.repairOnMismatch ?? true;
     this.maxChunks = tableNameOrOptions.maxChunks;
     this.onProgress = tableNameOrOptions.onProgress;
   }
 
   async needsRebuild(_repoRoot: string, _projectId: string): Promise<boolean> {
-    return !(await this.profileStore.read());
+    const profile = await this.profileStore.read();
+    if (!profile) return true;
+    const table = await this.getExistingTable(profile.dimensions, { repair: false }).catch(() => undefined);
+    return !table;
   }
 
 
   async resetRepo(repoRoot: string): Promise<void> {
-    const table = await this.getTable();
-    await table.delete(`repoRoot = '${escapeSqlLiteral(repoRoot)}'`);
+    const table = await this.getExistingTable();
+    if (!table) return;
+    await table.delete(equalsPredicate("repoRoot", repoRoot));
   }
 
   async deleteFile(_repoRoot: string, projectId: string, filePath: string): Promise<void> {
-    const table = await this.getTable();
-    await table.delete(`projectId = '${escapeSqlLiteral(projectId)}' AND filePath = '${escapeSqlLiteral(filePath)}'`);
+    const table = await this.getExistingTable();
+    if (!table) return;
+    await table.delete(andPredicate(equalsPredicate("projectId", projectId), equalsPredicate("filePath", filePath)));
   }
 
   async upsertChunks(chunks: CodeChunk[], provider: EmbeddingProvider, generation = 1): Promise<void> {
     if (chunks.length === 0) return;
 
-    const embeddingChunks = selectChunksForEmbedding(chunks, this.maxChunks);
-    const batches = chunkArray(embeddingChunks, this.embeddingBatchSize);
+    const selectedChunks = selectChunksForEmbedding(chunks, this.maxChunks);
+    const knownDimensions = provider.dimensions ?? this.vectorDimensions;
+    const repairedBeforeReuse = knownDimensions ? await this.ensureCompatibleProfile(knownDimensions) : false;
+    let table = repairedBeforeReuse ? undefined : await this.getExistingTable(knownDimensions);
+    let { chunksToEmbed, reusedRows } = table
+      ? await this.planChunkEmbeddings(table, selectedChunks, generation)
+      : { chunksToEmbed: selectedChunks, reusedRows: [] };
+    if (table) await this.deleteFileScopesForChunks(table, chunks);
+    const reusedVectorDimensions = reusedRows[0]?.vector.length;
+    if (reusedVectorDimensions) {
+      const repaired = await this.ensureCompatibleProfile(reusedVectorDimensions);
+      if (repaired) {
+        table = undefined;
+        chunksToEmbed = selectedChunks;
+        reusedRows = [];
+      } else {
+        table = await this.addRows(table, reusedRows);
+      }
+    }
+    if (chunksToEmbed.length === 0) return;
+    const batches = chunkArray(chunksToEmbed, this.embeddingBatchSize);
     let completedChunks = 0;
-    let tablePromise: Promise<LanceTable> | undefined;
     const startedAt = Date.now();
 
     for (let start = 0; start < batches.length; start += this.embeddingConcurrency) {
@@ -151,14 +206,13 @@ export class LanceSemanticStore implements SemanticStore {
         const vectorDimensions = rows[0]?.vector.length;
         if (!vectorDimensions) continue;
 
-        await this.ensureCompatibleProfile(vectorDimensions);
-        tablePromise ??= this.prepareTableForUpsert(chunks, vectorDimensions);
-        const table = await tablePromise;
-        await table.add(rows);
+        const repaired = await this.ensureCompatibleProfile(vectorDimensions);
+        if (repaired) table = undefined;
+        table = await this.addRows(table, rows);
 
         completedChunks += rows.length;
         this.onProgress?.({
-          totalChunks: embeddingChunks.length,
+          totalChunks: chunksToEmbed.length,
           completedChunks,
           batchChunks: rows.length,
           batchIndex: start + offset + 1,
@@ -171,7 +225,10 @@ export class LanceSemanticStore implements SemanticStore {
 
   private async embedChunkBatch(chunks: CodeChunk[], provider: EmbeddingProvider, generation: number): Promise<LanceChunkRecord[]> {
     const texts = chunks.map((chunk) => renderChunkForEmbedding(chunk));
-    const vectors = provider.embedBatch ? await provider.embedBatch(texts) : await Promise.all(texts.map((text) => provider.embed(text)));
+    const vectors = await retryEmbedding(() => provider.embedBatch ? provider.embedBatch(texts) : Promise.all(texts.map((text) => provider.embed(text))), {
+      attempts: this.embeddingRetryAttempts,
+      baseDelayMs: this.embeddingRetryBaseDelayMs
+    });
     if (vectors.length !== chunks.length) {
       throw new Error(`Embedding provider returned ${vectors.length} vector(s), expected ${chunks.length}.`);
     }
@@ -192,19 +249,41 @@ export class LanceSemanticStore implements SemanticStore {
     }));
   }
 
-  private async prepareTableForUpsert(chunks: CodeChunk[], vectorDimensions: number): Promise<LanceTable> {
-    const table = await this.getTable(vectorDimensions);
+  private async deleteFileScopesForChunks(table: LanceTable, chunks: CodeChunk[]): Promise<void> {
     const fileScopes = new Set(chunks.map((chunk) => JSON.stringify([chunk.projectId, chunk.filePath])));
     for (const fileScope of fileScopes) {
       const [projectId, filePath] = JSON.parse(fileScope) as [string, string];
-      await table.delete(`projectId = '${escapeSqlLiteral(projectId)}' AND filePath = '${escapeSqlLiteral(filePath)}'`);
+      await table.delete(andPredicate(equalsPredicate("projectId", projectId), equalsPredicate("filePath", filePath)));
     }
-    return table;
+  }
+
+  private async planChunkEmbeddings(table: LanceTable, chunks: CodeChunk[], generation: number): Promise<{ chunksToEmbed: CodeChunk[]; reusedRows: LanceChunkRecord[] }> {
+    if (!table.query) return { chunksToEmbed: chunks, reusedRows: [] };
+    const chunksToEmbed: CodeChunk[] = [];
+    const reusedRows: LanceChunkRecord[] = [];
+    for (const chunk of chunks) {
+      const rows = await table.query()
+        .where(andPredicate(equalsPredicate("projectId", chunk.projectId), equalsPredicate("contentHash", chunk.contentHash)))
+        .limit(1)
+        .toArray();
+      const reusable = rows[0];
+      if (!reusable) {
+        chunksToEmbed.push(chunk);
+        continue;
+      }
+      reusedRows.push(rowForChunk(chunk, reusable.vector, generation));
+    }
+    return { chunksToEmbed, reusedRows };
   }
   async search(query: SearchQuery, provider: EmbeddingProvider): Promise<SearchHit[]> {
-    const vector = await provider.embed(query.query);
-    await this.ensureCompatibleProfile(vector.length);
-    const table = await this.getTable(vector.length);
+    const vector = await retryEmbedding(() => provider.embed(query.query), {
+      attempts: this.embeddingRetryAttempts,
+      baseDelayMs: this.embeddingRetryBaseDelayMs
+    });
+    const repaired = await this.ensureCompatibleProfile(vector.length);
+    if (repaired) return [];
+    const table = await this.getExistingTable(vector.length);
+    if (!table) return [];
     const predicate = searchPredicate(query);
     const rows = await table
       .search(vector)
@@ -232,33 +311,86 @@ export class LanceSemanticStore implements SemanticStore {
     }));
   }
 
-  private async getTable(vectorDimensions?: number): Promise<LanceTable> {
+  private async getTable(vectorDimensions: number, seedRows?: LanceChunkRecord[]): Promise<LanceTable> {
     if (!this.tablePromise) {
-      this.tablePromise = this.openTable(vectorDimensions);
+      this.tablePromise = this.openOrCreateTable(vectorDimensions, seedRows);
     }
     return this.tablePromise;
   }
 
-  private async openTable(vectorDimensions?: number): Promise<LanceTable> {
-    const db = this.connection ?? await (this.module ?? await loadLanceDb()).connect(this.uri);
+  private async getExistingTable(vectorDimensions?: number, options: { repair?: boolean } = {}): Promise<LanceTable | undefined> {
+    const db = await this.getConnection();
     const names = await db.tableNames();
-    if (names.includes(this.tableName)) {
-      return db.openTable(this.tableName);
-    }
-    return db.createTable(this.tableName, [emptySeedRecord(vectorDimensions ?? this.vectorDimensions ?? 64)]);
+    if (!names.includes(this.tableName)) return undefined;
+
+    if (!this.tablePromise) this.tablePromise = db.openTable(this.tableName);
+    const table = await this.tablePromise;
+    const problems = await tableSchemaProblems(table, vectorDimensions);
+    if (problems.length === 0) return table;
+
+    const repair = options.repair ?? this.repairOnMismatch;
+    if (!repair) throw new Error(`LanceDB table "${this.tableName}" schema mismatch: ${problems.join("; ")}.`);
+    await this.dropTableForRepair(db, problems);
+    return undefined;
   }
 
-  private async ensureCompatibleProfile(dimensions: number): Promise<void> {
+  private async addRows(table: LanceTable | undefined, rows: LanceChunkRecord[]): Promise<LanceTable> {
+    const vectorDimensions = rows[0]?.vector.length;
+    if (!vectorDimensions) throw new Error("Cannot write LanceDB rows without vector dimensions.");
+    if (!table) return this.getTable(vectorDimensions, rows);
+    await deleteSeedRecord(table);
+    await table.add(rows);
+    return table;
+  }
+
+  private async openOrCreateTable(vectorDimensions: number, seedRows?: LanceChunkRecord[]): Promise<LanceTable> {
+    const db = await this.getConnection();
+    const names = await db.tableNames();
+    if (names.includes(this.tableName)) {
+      const table = await db.openTable(this.tableName);
+      const problems = await tableSchemaProblems(table, vectorDimensions);
+      if (problems.length > 0) {
+        await this.dropTableForRepair(db, problems);
+        return db.createTable(this.tableName, seedRows?.length ? seedRows : [emptySeedRecord(vectorDimensions)]);
+      }
+      if (seedRows?.length) {
+        await deleteSeedRecord(table);
+        await table.add(seedRows);
+      }
+      return table;
+    }
+    return db.createTable(this.tableName, seedRows?.length ? seedRows : [emptySeedRecord(vectorDimensions)]);
+  }
+
+  private async getConnection(): Promise<LanceConnection> {
+    return this.connection ?? await (this.module ?? await loadLanceDb()).connect(this.uri);
+  }
+
+  private async ensureCompatibleProfile(dimensions: number): Promise<boolean> {
     const expected = this.expectedProfile(dimensions);
     const existing = await this.profileStore.read();
     if (!existing) {
       await this.profileStore.write(expected);
-      return;
+      return false;
     }
     const mismatches = profileMismatches(existing, expected);
     if (mismatches.length > 0) {
-      throw new Error(`LanceDB embedding profile mismatch for table "${this.tableName}": ${mismatches.join("; ")}. Re-index into a new LanceDB URI/table or clear the existing semantic table/profile.`);
+      if (!this.repairOnMismatch) {
+        throw new Error(`LanceDB embedding profile mismatch for table "${this.tableName}": ${mismatches.join("; ")}. Re-index into a new LanceDB URI/table or clear the existing semantic table/profile.`);
+      }
+      await this.dropTableForRepair(await this.getConnection(), mismatches);
+      await this.profileStore.write(expected);
+      return true;
     }
+    return false;
+  }
+
+  private async dropTableForRepair(db: LanceConnection, reasons: string[]): Promise<void> {
+    if (!db.dropTable) {
+      throw new Error(`LanceDB table "${this.tableName}" requires repair but the current connection cannot drop/recreate tables: ${reasons.join("; ")}.`);
+    }
+    this.tablePromise = undefined;
+    await db.dropTable(this.tableName);
   }
 
   private expectedProfile(dimensions: number): LanceEmbeddingProfile {
@@ -275,6 +407,50 @@ export class LanceSemanticStore implements SemanticStore {
       updatedAtMs: now
     };
   }
+}
+
+function rowForChunk(chunk: CodeChunk, vector: number[], generation: number): LanceChunkRecord {
+  return {
+    id: chunk.id,
+    projectId: chunk.projectId,
+    repoRoot: chunk.repoRoot,
+    filePath: chunk.filePath,
+    language: chunk.language,
+    kind: chunk.kind,
+    symbolName: chunk.symbolName ?? "",
+    startLine: chunk.startLine,
+    endLine: chunk.endLine,
+    content: chunk.content,
+    contentHash: chunk.contentHash,
+    generation,
+    vector
+  };
+}
+
+async function retryEmbedding<T>(operation: () => Promise<T>, options: { attempts: number; baseDelayMs: number }): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= options.attempts || !isRetryableEmbeddingError(error)) break;
+      await sleep(options.baseDelayMs * 2 ** (attempt - 1));
+    }
+  }
+  throw lastError;
+}
+
+function isRetryableEmbeddingError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { status?: number; code?: string; message?: string };
+  if (candidate.status === 429 || candidate.status === 408 || (candidate.status !== undefined && candidate.status >= 500)) return true;
+  const text = `${candidate.code ?? ""} ${candidate.message ?? ""}`.toLowerCase();
+  return /rate|timeout|temporar|econnreset|etimedout|429|5\d\d/.test(text);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function selectChunksForEmbedding(chunks: CodeChunk[], maxChunks: number | undefined): CodeChunk[] {
@@ -404,13 +580,87 @@ function emptySeedRecord(vectorDimensions: number): LanceChunkRecord {
   };
 }
 
+async function tableSchemaProblems(table: LanceTable, vectorDimensions: number | undefined): Promise<string[]> {
+  const problems: string[] = [];
+  if (!table.schema) return problems;
+  const schema = await table.schema();
+  const fields = schema.fields ?? [];
+  const fieldNames = new Set(fields.map((field) => field.name).filter((name): name is string => typeof name === "string"));
+  for (const fieldName of requiredLanceFields) {
+    if (!fieldNames.has(fieldName)) problems.push(`missing column ${fieldName}`);
+  }
+  const vectorField = fields.find((field) => field.name === "vector");
+  const actualDimensions = vectorDimensionsFromField(vectorField);
+  if (vectorDimensions !== undefined && actualDimensions !== undefined && actualDimensions !== vectorDimensions) {
+    problems.push(`vector dimensions ${actualDimensions} != ${vectorDimensions}`);
+  }
+  return problems;
+}
+
+const requiredLanceFields = [
+  "id",
+  "projectId",
+  "repoRoot",
+  "filePath",
+  "language",
+  "kind",
+  "symbolName",
+  "startLine",
+  "endLine",
+  "content",
+  "contentHash",
+  "generation",
+  "vector"
+];
+
+function vectorDimensionsFromField(field: LanceSchemaField | undefined): number | undefined {
+  if (!field || typeof field !== "object") return undefined;
+  const direct = (field as { vectorDimensions?: unknown }).vectorDimensions;
+  if (typeof direct === "number") return direct;
+  const type = (field as { type?: unknown; dataType?: unknown }).type ?? (field as { dataType?: unknown }).dataType;
+  return vectorDimensionsFromType(type);
+}
+
+function vectorDimensionsFromType(type: unknown): number | undefined {
+  if (!type) return undefined;
+  if (typeof type === "object") {
+    const candidate = type as Record<string, unknown>;
+    for (const key of ["listSize", "fixedSize", "dimension", "dimensions", "length"]) {
+      if (typeof candidate[key] === "number") return candidate[key] as number;
+    }
+    if (typeof candidate.toString === "function") return vectorDimensionsFromType(candidate.toString());
+  }
+  if (typeof type === "string") {
+    const match = /(?:fixed_size_list|vector|float32|float64)[^0-9]*(\d+)/i.exec(type);
+    if (match) return Number(match[1]);
+  }
+  return undefined;
+}
+
+async function deleteSeedRecord(table: LanceTable): Promise<void> {
+  await table.delete(equalsPredicate("id", "__seed__"));
+}
+
+function andPredicate(...predicates: string[]): string {
+  return predicates.join(" AND ");
+}
+
+function equalsPredicate(column: string, value: string): string {
+  return `${identifier(column)} = '${escapeSqlLiteral(value)}'`;
+}
+
+function identifier(value: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) throw new Error(`Invalid LanceDB predicate identifier: ${value}`);
+  return value;
+}
+
 function escapeSqlLiteral(value: string): string {
-  return value.replaceAll("'", "''");
+  return value.replaceAll("\\", "\\\\").replaceAll("'", "''");
 }
 
 function searchPredicate(query: SearchQuery): string {
-  if (query.projectId) return `projectId = '${escapeSqlLiteral(query.projectId)}'`;
-  if (query.repoRoot) return `repoRoot = '${escapeSqlLiteral(query.repoRoot)}'`;
+  if (query.projectId) return equalsPredicate("projectId", query.projectId);
+  if (query.repoRoot) return equalsPredicate("repoRoot", query.repoRoot);
   throw new Error("Internal error: LanceDB semantic search requires a resolved projectId or repoRoot.");
 }
 

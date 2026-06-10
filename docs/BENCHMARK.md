@@ -44,7 +44,7 @@ The config pins the commit observed when the sample repos were cloned. Refreshin
 
 ## Current Warmed Baseline
 
-Checked on 2026-06-09 after the `vite-owner-quality` graph expansion pass.
+Checked on 2026-06-09 after the `core-owner-quality` pass.
 
 The fast smoke gate is green:
 
@@ -68,7 +68,7 @@ The focused Vite gate is green:
 bun run benchmark -- --repo-name vite --case vite-plugin-config --reuse-index --assert
 ```
 
-Latest passing owner ranks:
+Earlier passing owner ranks:
 
 | Expected owner | Rank |
 | --- | --- |
@@ -76,40 +76,46 @@ Latest passing owner ranks:
 | `packages/vite/src/node/server/pluginContainer.ts` | 4 |
 | `packages/plugin-legacy/src/index.ts` | 5 |
 
-Full warmed core is not green yet:
+Full warmed core is green:
 
 ```powershell
 bun run benchmark -- --suite core --reuse-index --assert
 ```
 
-Current blocker:
+Latest passing full-core evidence:
 
-- `payload` has a local sample checkout but no persisted index, so `--reuse-index` fails with `Workspace is not indexed`.
+- repos: `5`
+- cases: `10`
+- gatedCases: `9`
+- failedCases: `0`
+- failedGatedCases: `0`
+- gatePassed: `true`
+- semanticFailedCases: `0`
+- totalTopologyDuplicates: `0`
+- totalOwnerSymbols: `69`
+- maxSearchElapsedMs: `10831ms`
+- maxContextElapsedMs: `10530ms`
 
-Current indexed-core quality failures:
+Former owner-quality failures are now green:
 
-| Repo | Case | Failure |
+| Repo | Case | Latest result |
 | --- | --- | --- |
-| `hono` | `hono-context-request` | `src/request.ts` missing; `src/context.ts` rank 1 passes. |
-| `tanstack-query` | `tanstack-react-use-query` | `packages/query-core/src/queryObserver.ts` rank 7, gate requires <= 6. |
-| `tanstack-query` | `tanstack-query-cache-notify` | `packages/query-core/src/notifyManager.ts` missing; `queryCache.ts` rank 3 passes. |
-| `shadcn-ui` | `shadcn-add-registry-resolver` | `packages/shadcn/src/commands/add.ts` missing; `registry/resolver.ts` rank 2 passes. |
-
-Diagnostic but non-gated failure:
-
-| Repo | Case | Failure |
-| --- | --- | --- |
-| `vite` | `vite-resolve-plugins` | `packages/vite/src/node/plugins/index.ts` and `packages/vite/src/node/build.ts` missing from the expected top 4. |
+| `hono` | `hono-context-request` | `src/context.ts` rank 3 and `src/request.ts` rank 5, both <= 6. |
+| `tanstack-query` | `tanstack-react-use-query` | `packages/query-core/src/queryObserver.ts` is inside the required top 6. |
+| `tanstack-query` | `tanstack-query-cache-notify` | `packages/query-core/src/notifyManager.ts` is present. |
+| `shadcn-ui` | `shadcn-add-registry-resolver` | `packages/shadcn/src/commands/add.ts` is present with `registry/resolver.ts`. |
+| `payload` | warmed core participation | Persisted index is available and full core reuses it. |
+| `vite` | `vite-resolve-plugins` | Diagnostic case passes with `plugins/index.ts` and `build.ts` inside top 4. |
 
 ## Benchmark-Driven Optimization Queue
 
-Use this queue before expanding the benchmark gate or adding deeper relation features.
+The first `core-owner-quality` queue is complete. Use the next queue to protect that gain before adding deeper relation features.
 
-1. Fix `hono-context-request` by improving request/context owner pairing. The expected behavior is that `src/request.ts` appears with `src/context.ts` for `context request response helpers`.
-2. Fix `tanstack-query` package-scope/core-owner ranking. Adapter files and examples should not displace `packages/query-core/src/queryObserver.ts` or `packages/query-core/src/notifyManager.ts` when the query points at core observer/cache/notify behavior.
-3. Fix `shadcn-ui` CLI command ownership. `packages/shadcn/src/commands/add.ts` should be promoted for `add component command registry resolver` instead of app/create semantic matches.
-4. Build or repair the `payload` persisted index so full warmed core can run without implicit reindexing.
-5. Re-run `bun run benchmark -- --suite core --reuse-index --assert`; only then decide whether to promote additional cases to `gate: true`.
+1. Add negative owner-quality cases: same-name false positives, adapter/package noise, command/docs/example collisions, generic owner terms, and unrelated `index.ts` owners.
+2. Add or promote observation-language gates only after baseline indexes are stable for Python/Go/Rust/Java repos.
+3. Stress full warmed core with repeated `--reuse-index` runs and record variance for max search/context elapsed time.
+4. Keep `scoreOwnerIntent` bounded by benchmark evidence; do not add more repo-specific boosts without matching negative cases.
+5. After negative owner-quality is stable, choose the next product lane: watcher hardening, `coverageSummary`, `why_these_files`, `reuse_guard`, normalized duplicate detection, or weighted path search.
 
 ## Commands
 

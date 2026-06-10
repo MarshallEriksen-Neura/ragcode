@@ -83,6 +83,8 @@ export interface RepoIndex {
   indexGeneration: number;
   changedFiles: string[];
   deletedFiles: string[];
+  affectedFiles?: string[];
+  scannedFiles?: string[];
   refreshedFiles?: string[];
   fullReindex: boolean;
   files: CodeFile[];
@@ -92,7 +94,12 @@ export interface RepoIndex {
   skippedFiles: Array<{ filePath: string; reason: string }>;
 }
 
-export type DirtyFileStatus = "pending" | "indexing";
+export interface IndexRefreshOptions {
+  affectedFiles?: string[];
+  reconcile?: boolean;
+}
+
+export type DirtyFileStatus = "pending" | "indexing" | "dead_letter";
 
 export interface DirtyFile {
   projectId: string;

@@ -118,10 +118,65 @@ function dedupeEdges(edges: GraphEdge[]): GraphEdge[] {
   const seen = new Set<string>();
   const unique: GraphEdge[] = [];
   for (const edge of edges) {
-    const key = JSON.stringify([edge.projectId, edge.sourceId, edge.targetId, edge.kind, edge.metadata ?? {}]);
+    const key = edgeDedupeKey(edge);
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(edge);
   }
   return unique;
+}
+
+function edgeDedupeKey(edge: GraphEdge): string {
+  const metadata = edge.metadata;
+  return [
+    edge.projectId,
+    edge.sourceId,
+    edge.targetId,
+    edge.kind,
+    scalarMetadata(metadata, "sourceFile"),
+    scalarMetadata(metadata, "targetFile"),
+    scalarMetadata(metadata, "targetName"),
+    scalarMetadata(metadata, "source"),
+    scalarMetadata(metadata, "name"),
+    scalarMetadata(metadata, "line"),
+    scalarMetadata(metadata, "position"),
+    scalarMetadata(metadata, "resolution"),
+    scalarMetadata(metadata, "importedName"),
+    scalarMetadata(metadata, "localName"),
+    scalarMetadata(metadata, "route"),
+    scalarMetadata(metadata, "requestPath"),
+    scalarMetadata(metadata, "framework"),
+    scalarMetadata(metadata, "resource"),
+    scalarMetadata(metadata, "operation"),
+    scalarMetadata(metadata, "event"),
+    scalarMetadata(metadata, "handler"),
+    scalarMetadata(metadata, "testFile"),
+    scalarMetadata(metadata, "colocated"),
+    bindingsMetadata(metadata)
+  ].map(escapeKeyPart).join("\u001f");
+}
+
+function scalarMetadata(metadata: GraphEdge["metadata"], key: string): string {
+  const value = metadata?.[key];
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function bindingsMetadata(metadata: GraphEdge["metadata"]): string {
+  const value = metadata?.bindings;
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return "";
+      const binding = entry as Record<string, unknown>;
+      const imported = typeof binding.imported === "string" ? binding.imported : "";
+      const local = typeof binding.local === "string" ? binding.local : "";
+      return `${imported}->${local}`;
+    })
+    .sort()
+    .join("|");
+}
+
+function escapeKeyPart(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("\u001f", "\\u001f");
 }

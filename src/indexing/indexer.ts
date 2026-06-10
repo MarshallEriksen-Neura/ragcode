@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { GraphStore, Indexer, SemanticStore, EmbeddingProvider } from "../core/contracts.js";
-import type { CodeFile, GraphEdge, ProjectIdentity, RepoIndex } from "../core/types.js";
+import type { CodeFile, GraphEdge, IndexRefreshOptions, ProjectIdentity, RepoIndex } from "../core/types.js";
 import { resolveImportPath } from "../topology/import-resolver.js";
 import { chunkFiles, chunkFilesIncremental } from "./chunker.js";
 import { scanRepo } from "./scanner.js";
@@ -14,15 +14,26 @@ export interface RepoIndexerOptions {
 export class RepoIndexer implements Indexer {
   constructor(private readonly options: RepoIndexerOptions) {}
 
-  async indexRepo(repoRoot: string, projectId: string, project?: ProjectIdentity): Promise<RepoIndex> {
+  async indexRepo(repoRoot: string, projectId: string, project?: ProjectIdentity, options: IndexRefreshOptions = {}): Promise<RepoIndex> {
     const absoluteRoot = path.resolve(repoRoot);
     const existingFiles = await this.options.graphStore.getFiles(absoluteRoot).catch(() => []);
-    const { files, skippedFiles } = await scanRepo(absoluteRoot, projectId);
+    const fullReindex = existingFiles.length === 0;
+    const affectedPaths = fullReindex ? undefined : normalizedAffectedFiles(options.affectedFiles);
+    const scan = await scanRepo(absoluteRoot, projectId, affectedPaths ? { filePaths: [...affectedPaths] } : {});
+    const files = affectedPaths ? mergeAffectedScan(existingFiles, scan.files, affectedPaths) : scan.files;
+    const skippedFiles = affectedPaths
+      ? mergeSkippedFiles(await this.options.graphStore.getSkippedFiles(absoluteRoot).catch(() => []), scan.skippedFiles, affectedPaths)
+      : scan.skippedFiles;
     const existingByPath = new Map(existingFiles.map((file) => [file.path, file]));
     const currentPaths = new Set(files.map((file) => file.path));
-    const changedFiles = files.filter((file) => existingByPath.get(file.path)?.contentHash !== file.contentHash);
-    const deletedFiles = existingFiles.filter((file) => !currentPaths.has(file.path)).map((file) => file.path).sort();
-    const fullReindex = existingFiles.length === 0;
+    const changedFiles = files.filter((file) => {
+      if (affectedPaths && !affectedPaths.has(file.path)) return false;
+      return existingByPath.get(file.path)?.contentHash !== file.contentHash;
+    });
+    const deletedFiles = existingFiles
+      .filter((file) => (!affectedPaths || affectedPaths.has(file.path)) && !currentPaths.has(file.path))
+      .map((file) => file.path)
+      .sort();
     const currentGeneration = this.options.graphStore.getIndexGeneration
       ? await this.options.graphStore.getIndexGeneration(absoluteRoot).catch(() => 0)
       : 0;
@@ -51,6 +62,8 @@ export class RepoIndexer implements Indexer {
       indexGeneration,
       changedFiles: changedFilePaths,
       deletedFiles,
+      affectedFiles: affectedPaths ? [...affectedPaths].sort() : undefined,
+      scannedFiles: scan.files.map((file) => file.path).sort(),
       refreshedFiles,
       fullReindex,
       files,
@@ -89,6 +102,33 @@ export class RepoIndexer implements Indexer {
   }
 }
 
+function normalizedAffectedFiles(filePaths: string[] | undefined): Set<string> | undefined {
+  if (!filePaths?.length) return undefined;
+  return new Set(filePaths.map((filePath) => filePath.replaceAll("\\", "/")).filter(Boolean));
+}
+
+function mergeAffectedScan(existingFiles: CodeFile[], scannedFiles: CodeFile[], affectedPaths: Set<string>): CodeFile[] {
+  const merged = new Map<string, CodeFile>();
+  for (const file of existingFiles) {
+    if (!affectedPaths.has(file.path)) merged.set(file.path, file);
+  }
+  for (const file of scannedFiles) merged.set(file.path, file);
+  return [...merged.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function mergeSkippedFiles(
+  existingSkippedFiles: Array<{ filePath: string; reason: string }>,
+  scannedSkippedFiles: Array<{ filePath: string; reason: string }>,
+  affectedPaths: Set<string>
+): Array<{ filePath: string; reason: string }> {
+  const merged = new Map<string, { filePath: string; reason: string }>();
+  for (const skipped of existingSkippedFiles) {
+    if (!affectedPaths.has(skipped.filePath)) merged.set(skipped.filePath, skipped);
+  }
+  for (const skipped of scannedSkippedFiles) merged.set(skipped.filePath, skipped);
+  return [...merged.values()].sort((a, b) => a.filePath.localeCompare(b.filePath));
+}
+
 function refreshedFilePaths(files: CodeFile[], previousEdges: GraphEdge[], changedFiles: string[], deletedFiles: string[]): string[] {
   const currentPaths = new Set(files.map((file) => file.path));
   const touchedPaths = new Set([...changedFiles, ...deletedFiles]);
@@ -109,35 +149,26 @@ function refreshedFilePaths(files: CodeFile[], previousEdges: GraphEdge[], chang
     if (nextTargetFile && touchedPaths.has(nextTargetFile)) refreshed.add(sourceFile);
   }
 
-  if ([...touchedPaths].some(isMiddlewareFile)) {
-    for (const file of files) {
-      if (isRouteFile(file.path)) refreshed.add(file.path);
-    }
-  }
-
-  if ([...touchedPaths].some(isRouteFile)) {
-    for (const file of files) {
-      if (isTypeScriptLike(file)) refreshed.add(file.path);
-    }
-  }
+  refreshFrameworkReverseRelations(previousEdges, touchedPaths, currentPaths, refreshed);
 
   return [...refreshed].sort();
+}
+
+function refreshFrameworkReverseRelations(previousEdges: GraphEdge[], touchedPaths: Set<string>, currentPaths: Set<string>, refreshed: Set<string>): void {
+  for (const edge of previousEdges) {
+    const sourceFile = stringMetadata(edge, "sourceFile");
+    if (!sourceFile || !currentPaths.has(sourceFile)) continue;
+
+    const targetFile = stringMetadata(edge, "targetFile");
+    if (!targetFile || !touchedPaths.has(targetFile)) continue;
+
+    if (edge.kind === "calls_api" || edge.kind === "routes_to" || edge.kind === "uses_middleware") {
+      refreshed.add(sourceFile);
+    }
+  }
 }
 
 function stringMetadata(edge: GraphEdge, key: string): string | undefined {
   const value = edge.metadata?.[key];
   return typeof value === "string" ? value : undefined;
 }
-
-function isMiddlewareFile(filePath: string): boolean {
-  return /^(src\/)?middleware\.[jt]s$/.test(filePath);
-}
-
-function isRouteFile(filePath: string): boolean {
-  return /(^|\/)(app\/.+\/route|pages\/api\/.+)\.[jt]sx?$/.test(filePath);
-}
-
-function isTypeScriptLike(file: CodeFile): boolean {
-  return file.language === "typescript" || file.language === "javascript";
-}
-

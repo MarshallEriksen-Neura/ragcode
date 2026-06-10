@@ -8,6 +8,7 @@ import { shouldIgnoreDirectory, shouldIgnoreFile } from "./ignore-policy.js";
 
 export interface ScanOptions {
   maxFileBytes?: number;
+  filePaths?: string[];
 }
 
 export interface ScanResult {
@@ -20,6 +21,16 @@ export async function scanRepo(repoRoot: string, projectId: string, options: Sca
   const maxFileBytes = options.maxFileBytes ?? 512_000;
   const files: CodeFile[] = [];
   const skippedFiles: Array<{ filePath: string; reason: string }> = [];
+
+  if (options.filePaths?.length) {
+    for (const filePath of [...new Set(options.filePaths.map((candidate) => candidate.replaceAll("\\", "/")))].sort()) {
+      await scanOne(filePath);
+    }
+    return {
+      files: files.sort((a, b) => a.path.localeCompare(b.path)),
+      skippedFiles: skippedFiles.sort((a, b) => a.filePath.localeCompare(b.filePath))
+    };
+  }
 
   async function walk(dir: string): Promise<void> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -37,26 +48,7 @@ export async function scanRepo(repoRoot: string, projectId: string, options: Sca
       if (!entry.isFile()) continue;
 
       const relativePath = normalizeRepoPath(absoluteRoot, absolutePath);
-      const stat = await fs.stat(absolutePath);
-      const fileDecision = shouldIgnoreFile(relativePath, maxFileBytes, stat.size);
-      if (fileDecision.ignored) {
-        skippedFiles.push({ filePath: relativePath, reason: fileDecision.reason ?? "ignored file" });
-        continue;
-      }
-
-      const language = detectLanguage(entry.name);
-      if (!isIndexableLanguage(language)) continue;
-
-      const content = await fs.readFile(absolutePath, "utf8");
-      files.push({
-        projectId,
-        path: relativePath,
-        absolutePath,
-        language,
-        sizeBytes: stat.size,
-        contentHash: sha256(content),
-        modifiedAtMs: stat.mtimeMs
-      });
+      await scanFile(absolutePath, relativePath);
     }
   }
 
@@ -65,4 +57,47 @@ export async function scanRepo(repoRoot: string, projectId: string, options: Sca
     files: files.sort((a, b) => a.path.localeCompare(b.path)),
     skippedFiles: skippedFiles.sort((a, b) => a.filePath.localeCompare(b.filePath))
   };
+
+  async function scanOne(relativePath: string): Promise<void> {
+    if (!relativePath || relativePath === "." || relativePath.startsWith("..") || path.isAbsolute(relativePath)) return;
+    const parts = relativePath.split("/");
+    const ignoredDirectory = parts.find((part) => shouldIgnoreDirectory(part).ignored);
+    if (ignoredDirectory) {
+      skippedFiles.push({ filePath: relativePath, reason: shouldIgnoreDirectory(ignoredDirectory).reason ?? "ignored directory" });
+      return;
+    }
+    await scanFile(path.join(absoluteRoot, relativePath), relativePath);
+  }
+
+  async function scanFile(absolutePath: string, relativePath: string): Promise<void> {
+    const stat = await fs.stat(absolutePath).catch((error: unknown) => {
+      if (isNotFound(error)) return undefined;
+      throw error;
+    });
+    if (!stat?.isFile()) return;
+
+    const fileDecision = shouldIgnoreFile(relativePath, maxFileBytes, stat.size);
+    if (fileDecision.ignored) {
+      skippedFiles.push({ filePath: relativePath, reason: fileDecision.reason ?? "ignored file" });
+      return;
+    }
+
+    const language = detectLanguage(path.basename(relativePath));
+    if (!isIndexableLanguage(language)) return;
+
+    const content = await fs.readFile(absolutePath, "utf8");
+    files.push({
+      projectId,
+      path: relativePath,
+      absolutePath,
+      language,
+      sizeBytes: stat.size,
+      contentHash: sha256(content),
+      modifiedAtMs: stat.mtimeMs
+    });
+  }
+}
+
+function isNotFound(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "ENOENT");
 }

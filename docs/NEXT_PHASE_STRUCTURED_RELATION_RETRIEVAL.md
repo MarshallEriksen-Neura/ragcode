@@ -57,12 +57,13 @@ Completion evidence:
   - `benchmark-reuse-index`: warmed benchmark smoke can reuse persisted indexes.
   - `incremental-index-analysis`: changed/deleted-file incremental persistence behavior is covered by tests and typecheck.
   - `vite-owner-quality`: Vite `plugin config` warmed retrieval now includes `build.ts`, `pluginContainer.ts`, and `plugin-legacy`.
+  - `core-owner-quality`: warmed core benchmark gate passes across Vite, Hono, TanStack Query, shadcn-ui, and Payload.
 
 Current boundary:
 
 - Do not keep treating this phase as unfinished foundation work.
 - Do treat the deferred sections below as hardening work driven by benchmark and dogfooding evidence.
-- The next optimization stream should be `core-owner-quality`: make real multi-repo owner recall stable before adding deeper framework/dataflow claims.
+- `core-owner-quality` is now green. The next stream should be chosen from negative benchmark coverage, production hardening, or deeper semantic contracts rather than more foundation completion work.
 
 ## Implementation Self-Audit
 
@@ -124,30 +125,39 @@ The practical split is:
 
 ## Benchmark-Driven Optimization Items
 
-Checked on 2026-06-09 with warmed local sample repositories.
+Checked on 2026-06-09 after the `core-owner-quality` pass.
 
-The audit gate proves the base slice. The real repository benchmark matrix shows where the next quality work should go.
+The audit gate proves the base slice. The warmed core benchmark now proves the first real multi-repo owner-quality pass.
 
 Current warmed benchmark observations:
 
-- `bun run benchmark -- --suite core --reuse-index --assert` currently cannot complete because `payload` has no persisted index yet. This is a benchmark-readiness item, not a retrieval-quality result.
-- `vite` gated case passes. Diagnostic `vite-resolve-plugins` still misses `packages/vite/src/node/plugins/index.ts` and `packages/vite/src/node/build.ts`.
-- `hono-compose-middleware` passes. `hono-context-request` still misses `src/request.ts`.
-- `tanstack-query` has two gated failures:
-  - `tanstack-react-use-query`: `packages/query-core/src/queryObserver.ts` appears at rank 7, but the gate requires rank <= 6.
-  - `tanstack-query-cache-notify`: `packages/query-core/src/notifyManager.ts` is missing.
-- `shadcn-ui` has one gated failure:
-  - `shadcn-add-registry-resolver`: `packages/shadcn/src/commands/add.ts` is missing while `packages/shadcn/src/registry/resolver.ts` is present.
+- `bun run benchmark -- --suite core --reuse-index --assert` passes.
+- Latest core summary: 5 repos, 10 cases, 9 gated cases, 0 failed cases, 0 failed gated cases, `gatePassed=true`.
+- Previously failing owner-quality cases now pass:
+  - `hono-context-request`: `src/context.ts` and `src/request.ts` are both inside the required top 6.
+  - `tanstack-react-use-query`: `packages/query-core/src/queryObserver.ts` is inside the required top 6.
+  - `tanstack-query-cache-notify`: `packages/query-core/src/notifyManager.ts` is present.
+  - `shadcn-add-registry-resolver`: `packages/shadcn/src/commands/add.ts` is present with the registry resolver.
+  - `payload` participates in warmed core with a persisted index.
+- The former diagnostic `vite-resolve-plugins` case now passes with `plugins/index.ts` and `build.ts` inside the expected top 4.
 
-Next optimization queue:
+Completed optimization queue:
 
-1. `hono-context-request`: improve request/context relationship retrieval so `src/request.ts` is paired with `src/context.ts` instead of being displaced by helper/middleware/adapter matches.
-2. `tanstack-query`: add package/core ownership signals so core files such as `queryObserver.ts` and `notifyManager.ts` are not displaced by adapter packages or examples.
-3. `shadcn-ui`: add command-owner and package-scope signals so CLI command files outrank app/example semantic noise when the query asks for a command.
-4. `payload`: build or repair the persisted benchmark index so it participates in warmed core gates.
-5. Re-run warmed core matrix and promote the gate only after all indexed core repositories pass.
+1. `hono-context-request`: request/context owner pairing is green.
+2. `tanstack-query`: package/core owner ranking is green for observer/cache/notify behavior.
+3. `shadcn-ui`: CLI command ownership is green for `add component command registry resolver`.
+4. `payload`: persisted index is available and participates in warmed core gates.
+5. Full warmed core matrix was re-run and passes.
 
-Do not start deeper dynamic dataflow or framework-specific expansion until this owner-quality queue is green. Otherwise new graph depth will amplify the same ranking failures.
+Review watch:
+
+- `scoreOwnerIntent` is now a useful owner-quality scoring layer, but it contains case-aware signals. Keep it bounded by benchmark evidence and add negative cases before adding more repo-specific rules.
+
+Next optimization choices:
+
+1. Add negative owner-quality benchmarks for same-name false positives, adapter/package noise, command/doc/example collisions, and generic owner terms.
+2. Start production hardening for watcher/background indexing: supervision, retry/backoff, dropped-event reconciliation, embedding-rate limits, and large-repo stress coverage.
+3. Start semantic-contract hardening: `coverageSummary`, `why_these_files`, `reuse_guard`, normalized duplicate detection, or weighted path search.
 
 ### Runtime And Indexing
 

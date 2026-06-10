@@ -86,7 +86,7 @@ export class InMemoryGraphStore implements GraphStore {
     for (const chunk of chunksToWrite) state.chunks.set(chunk.id, chunk);
     for (const symbol of symbolsToWrite) state.symbols.set(symbol.id, symbol);
     state.edges.push(...edgesToWrite);
-    this.clearDirtyRows(state);
+    this.clearDirtyRows(state, index.affectedFiles);
     this.repos.set(index.repoRoot, state);
   }
 
@@ -133,6 +133,23 @@ export class InMemoryGraphStore implements GraphStore {
         ...existing,
         status: "indexing",
         reason: "background batch indexing",
+        lastSeenAtMs: now
+      });
+    }
+    state.watcherUpdatedAtMs = now;
+    return watcherStateFromMemory(state.projectId ?? "__unindexed__", state);
+  }
+
+  async markDirtyFilesDeadLetter(repoRoot: string, filePaths: string[], reason: string): Promise<WatcherState> {
+    const state = this.ensureRepo(repoRoot);
+    const now = Date.now();
+    for (const filePath of filePaths) {
+      const existing = state.dirtyFiles.get(filePath);
+      if (!existing) continue;
+      state.dirtyFiles.set(filePath, {
+        ...existing,
+        status: "dead_letter",
+        reason,
         lastSeenAtMs: now
       });
     }
