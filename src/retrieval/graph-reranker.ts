@@ -447,6 +447,15 @@ function ownerIntentRerankAdjustment(
   return Math.min(3.4, intentScore * 4.2);
 }
 
+// Owner-intent scoring. The generic signals up top (exact / complete / single base-name and
+// entry-point matches against the query) are the backbone. The domain-specific clauses below
+// them (`compose`/`build`/`schema`/`base`, `commands`, `-core`, packages/*-query adapter
+// packages) are heuristics tuned against real library layouts (Hono, shadcn, TanStack Query,
+// Payload) and are locked by tests/graph-reranking.test.ts. They are deliberately overfit with
+// limited generality: they stay dormant on repos that don't match those layouts (so they tend
+// to add lift without harm), but a repo that happens to reuse these names could get skewed.
+// Treat them as a known bias — any change here must be re-validated against the reranking eval,
+// not edited freely. See todo.md section D / M8.
 function scoreOwnerIntent(filePath: string, queryTerms: string[], queryTermVariants: string[], query: string): number {
   const rawSegments = filePath.replaceAll("\\", "/").split("/");
   const segments = rawSegments.map((segment) => segment.toLowerCase());

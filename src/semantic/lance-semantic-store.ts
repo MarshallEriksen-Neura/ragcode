@@ -267,21 +267,44 @@ export class LanceSemanticStore implements SemanticStore {
 
   private async planChunkEmbeddings(table: LanceTable, chunks: CodeChunk[], generation: number): Promise<{ chunksToEmbed: CodeChunk[]; reusedRows: LanceChunkRecord[] }> {
     if (!table.query) return { chunksToEmbed: chunks, reusedRows: [] };
+    const reusableVectors = await this.loadReusableVectors(table, chunks);
     const chunksToEmbed: CodeChunk[] = [];
     const reusedRows: LanceChunkRecord[] = [];
     for (const chunk of chunks) {
-      const rows = await table.query()
-        .where(andPredicate(equalsPredicate("projectId", chunk.projectId), equalsPredicate("contentHash", chunk.contentHash)))
-        .limit(1)
-        .toArray();
-      const reusable = rows[0];
-      if (!reusable) {
-        chunksToEmbed.push(chunk);
-        continue;
-      }
-      reusedRows.push(rowForChunk(chunk, reusable.vector, generation));
+      const vector = reusableVectors.get(reuseVectorKey(chunk.projectId, chunk.contentHash));
+      if (vector) reusedRows.push(rowForChunk(chunk, vector, generation));
+      else chunksToEmbed.push(chunk);
     }
     return { chunksToEmbed, reusedRows };
+  }
+
+  private async loadReusableVectors(table: LanceTable, chunks: CodeChunk[]): Promise<Map<string, number[]>> {
+    const vectors = new Map<string, number[]>();
+    if (!table.query) return vectors;
+
+    const hashesByProject = new Map<string, Set<string>>();
+    for (const chunk of chunks) {
+      const existing = hashesByProject.get(chunk.projectId);
+      if (existing) existing.add(chunk.contentHash);
+      else hashesByProject.set(chunk.projectId, new Set([chunk.contentHash]));
+    }
+
+    for (const [projectId, hashSet] of hashesByProject) {
+      // One batched IN-query per project (chunked to keep predicates bounded) replaces the
+      // former one-round-trip-per-chunk lookup. A truncated batch only lowers the reuse hit
+      // rate (those chunks get re-embedded) and never reuses a stale vector.
+      for (const batch of chunkArray([...hashSet], REUSE_LOOKUP_BATCH)) {
+        const rows = await table.query()
+          .where(andPredicate(equalsPredicate("projectId", projectId), inPredicate("contentHash", batch)))
+          .limit(batch.length * REUSE_LOOKUP_ROW_MULTIPLIER)
+          .toArray();
+        for (const reusable of rows) {
+          const key = reuseVectorKey(projectId, reusable.contentHash);
+          if (!vectors.has(key)) vectors.set(key, reusable.vector);
+        }
+      }
+    }
+    return vectors;
   }
   async search(query: SearchQuery, provider: EmbeddingProvider): Promise<SearchHit[]> {
     const vector = await retryEmbedding(() => provider.embed(query.query), {
@@ -460,9 +483,10 @@ async function retryEmbedding<T>(operation: () => Promise<T>, options: { attempt
 
 function isRetryableEmbeddingError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  const candidate = error as { status?: number; code?: string; message?: string };
+  const candidate = error as { status?: number; code?: string; message?: string; cause?: { code?: string } };
   if (candidate.status === 429 || candidate.status === 408 || (candidate.status !== undefined && candidate.status >= 500)) return true;
-  const text = `${candidate.code ?? ""} ${candidate.message ?? ""}`.toLowerCase();
+  // Node/undici network failures surface the code on error.cause, not the top-level error.
+  const text = `${candidate.code ?? ""} ${candidate.cause?.code ?? ""} ${candidate.message ?? ""}`.toLowerCase();
   return /rate|timeout|temporar|econnreset|etimedout|429|5\d\d/.test(text);
 }
 
@@ -660,6 +684,19 @@ async function deleteSeedRecord(table: LanceTable): Promise<void> {
 
 function andPredicate(...predicates: string[]): string {
   return predicates.join(" AND ");
+}
+
+const REUSE_LOOKUP_BATCH = 512;
+const REUSE_LOOKUP_ROW_MULTIPLIER = 4;
+
+function inPredicate(column: string, values: string[]): string {
+  if (values.length === 0) return "1 = 0";
+  const list = values.map((value) => `'${escapeSqlLiteral(value)}'`).join(", ");
+  return `${identifier(column)} IN (${list})`;
+}
+
+function reuseVectorKey(projectId: string, contentHash: string): string {
+  return `${projectId} ${contentHash}`;
 }
 
 function equalsPredicate(column: string, value: string): string {

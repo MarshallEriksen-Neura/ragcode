@@ -375,9 +375,28 @@ function expandStructuralDuplicates(drafts: Map<string, CandidateDraft>, structu
 function buildStructureIndex(symbols: SymbolNode[], edges: GraphEdge[], chunks: CodeChunk[], symbolsById: Map<string, SymbolNode>): StructureIndex {
   const bySymbolId = new Map<string, SymbolStructure>();
   const byFingerprint = new Map<string, SymbolStructure[]>();
+
+  // Pre-group chunks/edges once so each symbol's structure lookup scans only its own
+  // file slice instead of the full arrays. Turns the former O(symbols × (chunks + edges))
+  // into O(chunks + edges + symbols), which matters on large repos.
+  const chunksByFile = groupBy(chunks, (chunk) => chunk.filePath);
+  const importEdgesByFile = new Map<string, GraphEdge[]>();
+  const callEdgesByFile = new Map<string, GraphEdge[]>();
+  const callEdgesBySourceId = new Map<string, GraphEdge[]>();
+  for (const edge of edges) {
+    if (edge.kind === "imports") {
+      const sourceFile = stringMetadata(edge, "sourceFile");
+      if (sourceFile) pushToGroup(importEdgesByFile, sourceFile, edge);
+    } else if (edge.kind === "calls") {
+      const sourceFile = stringMetadata(edge, "sourceFile");
+      if (sourceFile) pushToGroup(callEdgesByFile, sourceFile, edge);
+      pushToGroup(callEdgesBySourceId, edge.sourceId, edge);
+    }
+  }
+
   for (const symbol of symbols) {
     if (symbol.kind === "file") continue;
-    const chunk = chunkForSymbol(symbol, chunks);
+    const chunk = chunkForSymbol(symbol, chunksByFile.get(symbol.filePath) ?? []);
     const bodyFingerprint = chunk ? normalizedBodyFingerprint(chunk) : undefined;
     const structure: SymbolStructure = {
       symbol,
@@ -385,8 +404,8 @@ function buildStructureIndex(symbols: SymbolNode[], edges: GraphEdge[], chunks: 
       bodyFingerprint,
       duplicateCount: 0,
       signatureTokens: normalizedSignatureTokens(symbol.signature ?? ""),
-      imports: importsForSymbol(symbol, edges),
-      callees: calleesForSymbol(symbol, edges, symbolsById),
+      imports: importsForSymbol(importEdgesByFile.get(symbol.filePath) ?? []),
+      callees: calleesForSymbol(symbol, callEdgesByFile.get(symbol.filePath) ?? [], callEdgesBySourceId.get(symbol.id) ?? [], symbolsById),
       signatureSimilarity: 0,
       importOverlap: 0,
       calleeOverlap: 0
@@ -403,7 +422,12 @@ function buildStructureIndex(symbols: SymbolNode[], edges: GraphEdge[], chunks: 
     if (group.length < 2) continue;
     for (const structure of group) {
       const others = group.filter((candidate) => candidate.symbol.id !== structure.symbol.id);
-      structure.duplicateCount = others.length;
+      // A shared body fingerprint over-matches on its own: identifiers and literals are
+      // normalized away, so e.g. `enable(id)` and `remove(id)` collapse to one shape.
+      // Require callee overlap (Jaccard >= 0.5) so only behavioral copies — not every
+      // same-shaped function — count as duplicates and can trip reuseGuard.
+      const confirmedDuplicates = others.filter((candidate) => jaccard(structure.callees, candidate.callees) >= 0.5);
+      structure.duplicateCount = confirmedDuplicates.length;
       structure.signatureSimilarity = maxSimilarity(structure.signatureTokens, others.map((candidate) => candidate.signatureTokens));
       structure.importOverlap = maxSimilarity(structure.imports, others.map((candidate) => candidate.imports));
       structure.calleeOverlap = maxSimilarity(structure.callees, others.map((candidate) => candidate.callees));
@@ -413,15 +437,26 @@ function buildStructureIndex(symbols: SymbolNode[], edges: GraphEdge[], chunks: 
   return { bySymbolId, byFingerprint };
 }
 
-function chunkForSymbol(symbol: SymbolNode, chunks: CodeChunk[]): CodeChunk | undefined {
-  return chunks.find((chunk) => chunk.filePath === symbol.filePath && chunk.symbolName === symbol.name)
-    ?? chunks.find((chunk) => chunk.filePath === symbol.filePath && chunk.startLine <= symbol.startLine && chunk.endLine >= symbol.endLine);
+function groupBy<T>(items: T[], keyOf: (item: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) pushToGroup(groups, keyOf(item), item);
+  return groups;
 }
 
-function importsForSymbol(symbol: SymbolNode, edges: GraphEdge[]): Set<string> {
+function pushToGroup<T>(groups: Map<string, T[]>, key: string, item: T): void {
+  const group = groups.get(key);
+  if (group) group.push(item);
+  else groups.set(key, [item]);
+}
+
+function chunkForSymbol(symbol: SymbolNode, fileChunks: CodeChunk[]): CodeChunk | undefined {
+  return fileChunks.find((chunk) => chunk.symbolName === symbol.name)
+    ?? fileChunks.find((chunk) => chunk.startLine <= symbol.startLine && chunk.endLine >= symbol.endLine);
+}
+
+function importsForSymbol(fileImportEdges: GraphEdge[]): Set<string> {
   const imports = new Set<string>();
-  for (const edge of edges) {
-    if (edge.kind !== "imports" || stringMetadata(edge, "sourceFile") !== symbol.filePath) continue;
+  for (const edge of fileImportEdges) {
     const source = stringMetadata(edge, "source");
     if (source) imports.add(source);
     const bindings = edge.metadata?.bindings;
@@ -437,17 +472,18 @@ function importsForSymbol(symbol: SymbolNode, edges: GraphEdge[]): Set<string> {
   return imports;
 }
 
-function calleesForSymbol(symbol: SymbolNode, edges: GraphEdge[], symbolsById: Map<string, SymbolNode>): Set<string> {
+function calleesForSymbol(symbol: SymbolNode, fileCallEdges: GraphEdge[], sourceIdCallEdges: GraphEdge[], symbolsById: Map<string, SymbolNode>): Set<string> {
   const callees = new Set<string>();
-  for (const edge of edges) {
-    if (edge.kind !== "calls") continue;
-    const sourceFile = stringMetadata(edge, "sourceFile");
-    const line = numberMetadata(edge, "line");
-    const sourceMatches = edge.sourceId === symbol.id
-      || (sourceFile === symbol.filePath && line !== undefined && line >= symbol.startLine && line <= symbol.endLine);
-    if (!sourceMatches) continue;
+  const addCallee = (edge: GraphEdge): void => {
     const targetName = stringMetadata(edge, "targetName") ?? symbolsById.get(edge.targetId)?.name;
     if (targetName) callees.add(targetName);
+  };
+  // sourceId match: the edge's source IS this symbol, regardless of line metadata.
+  for (const edge of sourceIdCallEdges) addCallee(edge);
+  // file + line-range match: unresolved calls located only by file/line.
+  for (const edge of fileCallEdges) {
+    const line = numberMetadata(edge, "line");
+    if (line !== undefined && line >= symbol.startLine && line <= symbol.endLine) addCallee(edge);
   }
   return callees;
 }

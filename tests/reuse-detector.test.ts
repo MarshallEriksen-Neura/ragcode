@@ -175,4 +175,41 @@ describe("reuse candidate detection", () => {
       expect.objectContaining({ symbolName: "unrelatedCounter" })
     ]));
   });
+
+  it("does not flag same-shaped functions with different callees as body duplicates", async () => {
+    await fs.writeFile(
+      path.join(tempRoot, "src", "lib", "user-actions.ts"),
+      [
+        "export function activateUser(id: string) {",
+        "  return registry.enable(id);",
+        "}",
+        "",
+        "export function archiveUser(id: string) {",
+        "  return registry.remove(id);",
+        "}"
+      ].join("\n")
+    );
+
+    const engine = new RagCodeEngine();
+    await engine.indexRepo(tempRoot);
+
+    const report = await engine.findReuseCandidates({
+      repoRoot: tempRoot,
+      query: "activate archive user account",
+      limit: 8,
+      reuseGuard: true
+    });
+    const activate = report.candidates.find((candidate) => candidate.symbolName === "activateUser");
+    const archive = report.candidates.find((candidate) => candidate.symbolName === "archiveUser");
+
+    // Same AST shape, different callees (enable vs remove): a shared fingerprint alone must
+    // not raise duplicate risk, or reuseGuard would wrongly block legitimate new code.
+    expect(activate).toBeDefined();
+    expect(archive).toBeDefined();
+    expect(activate?.structuralSignals.bodyDuplicateCount).toBe(0);
+    expect(archive?.structuralSignals.bodyDuplicateCount).toBe(0);
+    expect(report.reuseGuard.candidates).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ symbolName: "activateUser" })
+    ]));
+  });
 });

@@ -80,10 +80,17 @@ export class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
       },
       body: JSON.stringify(body)
     });
-    const payload = await response.json() as EmbeddingResponse;
     if (!response.ok) {
-      throw new Error(payload.error?.message ?? `Embedding request failed with HTTP ${response.status}.`);
+      let message = `Embedding request failed with HTTP ${response.status}.`;
+      try {
+        const errorPayload = await response.json() as EmbeddingResponse;
+        if (errorPayload.error?.message) message = errorPayload.error.message;
+      } catch {
+        // Non-JSON error body (e.g. a proxy HTML page); keep the HTTP status message.
+      }
+      // Attach the status so retry classification can see 429/5xx instead of guessing from text.
+      throw Object.assign(new Error(message), { status: response.status });
     }
-    return payload;
+    return await response.json() as EmbeddingResponse;
   }
 }

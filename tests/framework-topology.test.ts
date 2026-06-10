@@ -284,6 +284,40 @@ describe("framework topology detection", () => {
     ]));
   });
 
+  it("does not cross-wire same-named constants bound to different values across scopes", async () => {
+    // `endpoint` is bound to two different URLs in two sibling scopes. Bounded dataflow
+    // cannot know which binding a reference resolves to, so it must degrade to unresolved
+    // rather than emit a confident framework_dataflow link to the wrong route.
+    await fs.writeFile(
+      path.join(tempRoot, "src", "app", "checkout", "CheckoutButton.tsx"),
+      [
+        "\"use client\";",
+        "",
+        "export function CheckoutButton() {",
+        "  async function payOrders() {",
+        "    const endpoint = '/api/orders';",
+        "    await fetch(endpoint, { method: 'POST' });",
+        "  }",
+        "  async function payFast() {",
+        "    const endpoint = '/api/fast-orders';",
+        "    await fetch(endpoint);",
+        "  }",
+        "  return <button onClick={payOrders}>Pay</button>;",
+        "}"
+      ].join("\n")
+    );
+
+    const engine = new RagCodeEngine();
+    const index = await engine.indexRepo(tempRoot);
+
+    const dataflowEdges = index.edges.filter((edge) =>
+      edge.kind === "calls_api"
+      && edge.metadata?.sourceFile === "src/app/checkout/CheckoutButton.tsx"
+      && edge.metadata?.resolution === "framework_dataflow"
+    );
+    expect(dataflowEdges).toEqual([]);
+  });
+
   it("preserves Express/Fastify route catalogs during incremental client refreshes", async () => {
     const engine = new RagCodeEngine();
     await engine.indexRepo(tempRoot);

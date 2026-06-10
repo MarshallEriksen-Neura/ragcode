@@ -275,11 +275,28 @@ function chunk(overrides: Partial<CodeChunk> = {}): CodeChunk {
 function matchesPredicate(record: LanceChunkRecord, predicate: string): boolean {
   const clauses = predicate.split(/\s+AND\s+/i);
   return clauses.every((clause) => {
-    const match = /^\s*(id|projectId|repoRoot|filePath|contentHash)\s*=\s*'((?:''|\\\\|[^'])*)'\s*$/.exec(clause);
-    if (!match) return false;
-    const key = match[1] as "id" | "projectId" | "repoRoot" | "filePath" | "contentHash";
-    return record[key] === unescapePredicateLiteral(match[2]);
+    const eq = /^\s*(id|projectId|repoRoot|filePath|contentHash)\s*=\s*'((?:''|\\\\|[^'])*)'\s*$/.exec(clause);
+    if (eq) {
+      const key = eq[1] as "id" | "projectId" | "repoRoot" | "filePath" | "contentHash";
+      return record[key] === unescapePredicateLiteral(eq[2]);
+    }
+    const inClause = /^\s*(id|projectId|repoRoot|filePath|contentHash)\s+IN\s+\((.+)\)\s*$/i.exec(clause);
+    if (inClause) {
+      const key = inClause[1] as "id" | "projectId" | "repoRoot" | "filePath" | "contentHash";
+      return parsePredicateList(inClause[2]).includes(record[key]);
+    }
+    return false;
   });
+}
+
+function parsePredicateList(list: string): string[] {
+  const values: string[] = [];
+  const literal = /'((?:''|\\\\|[^'])*)'/g;
+  let match: RegExpExecArray | null;
+  while ((match = literal.exec(list)) !== null) {
+    values.push(unescapePredicateLiteral(match[1]));
+  }
+  return values;
 }
 
 function unescapePredicateLiteral(value: string): string {

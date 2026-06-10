@@ -384,11 +384,25 @@ function urlFromExpression(expression: ts.Expression, stringConstants: Map<strin
 
 function collectStringConstants(sourceFile: ts.SourceFile): Map<string, string> {
   const constants = new Map<string, string>();
+  const conflicting = new Set<string>();
 
   function visit(node: ts.Node): void {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const name = node.name.text;
       const value = stringValueFromExpression(node.initializer, constants);
-      if (value !== undefined) constants.set(node.name.text, value);
+      if (value !== undefined && !conflicting.has(name)) {
+        const existing = constants.get(name);
+        if (existing !== undefined && existing !== value) {
+          // Same identifier bound to different string values across scopes in one file.
+          // Bounded dataflow cannot tell which binding a reference resolves to, so drop it
+          // and let callers degrade to framework_template / unresolved instead of emitting
+          // a confident-but-wrong route link.
+          conflicting.add(name);
+          constants.delete(name);
+        } else {
+          constants.set(name, value);
+        }
+      }
     }
     ts.forEachChild(node, visit);
   }
