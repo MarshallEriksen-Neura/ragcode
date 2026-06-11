@@ -30,6 +30,10 @@ export interface SemanticRuntimeComponents {
 
 export function createSemanticRuntimeFromEnv(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): SemanticRuntimeComponents {
   const config = readSemanticRuntimeConfig(env, cwd);
+  return createSemanticRuntimeFromConfig(config, env);
+}
+
+export function createSemanticRuntimeFromConfig(config: SemanticRuntimeConfig, env: Partial<Pick<NodeJS.ProcessEnv, "RAGCODE_EMBEDDING_API_KEY">> = process.env): SemanticRuntimeComponents {
   const embeddingProvider = createEmbeddingProvider(config, env);
   const semanticStore = createSemanticStore(config, embeddingProvider);
   return { semanticStore, embeddingProvider, config };
@@ -54,7 +58,7 @@ export function readSemanticRuntimeConfig(env: NodeJS.ProcessEnv = process.env, 
   };
 }
 
-function createEmbeddingProvider(config: SemanticRuntimeConfig, env: NodeJS.ProcessEnv): EmbeddingProvider {
+function createEmbeddingProvider(config: SemanticRuntimeConfig, env: Partial<Pick<NodeJS.ProcessEnv, "RAGCODE_EMBEDDING_API_KEY">>): EmbeddingProvider {
   if (config.embeddingProvider === "deterministic") {
     return new DeterministicEmbeddingProvider(config.embeddingDimensions ?? 64);
   }

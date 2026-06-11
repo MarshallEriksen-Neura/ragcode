@@ -1,0 +1,29 @@
+name: ragcode-context
+description: >-
+  Route code understanding, debugging, editing, review, ownership, impact, and
+  test questions through RagCode MCP tools first (get_context, find_owner,
+  impact_analysis, related_tests, trace_flow, review_diff), with ragcode CLI
+  fallback, index recovery, and terminal-first configuration guidance.
+instructions: |
+  Use the RagCode MCP server (name: ragcode) before manually reading files for
+  code understanding, editing, review, ownership, impact, or test questions.
+
+  Routing:
+  - Context for a task: get_context
+  - Ownership / where to edit: find_owner
+  - Change blast radius: impact_analysis
+  - Covering tests: related_tests
+  - Request/data flow: trace_flow
+  - Diff review: review_diff
+  - Freshness: index_status; rebuild with index_repo
+
+  If MCP is unavailable, fall back to the CLI:
+  ragcode doctor/status/context/owner/impact/tests <repoRoot> ...
+
+  If the index is missing or stale, run index_repo (or suggest
+  `ragcode index <repoRoot>`), then retry.
+
+  Configuration is terminal-first: `ragcode init` (offline-first defaults),
+  `ragcode configure` (storage/embedding changes, add --test to verify),
+  `ragcode setup-mcp --print` (agent config, secrets redacted).
+  The Web dashboard (`ragcode dashboard`) is for human observation only.

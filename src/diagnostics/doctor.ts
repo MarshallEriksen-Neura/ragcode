@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { readGraphRuntimeConfig } from "../config/graph-runtime.js";
-import { readSemanticRuntimeConfig } from "../config/semantic-runtime.js";
+import { loadRuntimeConfig, redactRuntimeConfig } from "../config/runtime-config.js";
 import type { ContextEngine } from "../core/contracts.js";
 import { RagCodeEngine } from "../core/engine.js";
 import type { IndexStatus, RepoIndex, SearchHit } from "../core/types.js";
@@ -65,8 +64,7 @@ export interface DoctorReport {
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const env = options.env ?? process.env;
-  const graph = readCheck(() => readGraphRuntimeConfig(env, cwd));
-  const semantic = readCheck(() => readSemanticRuntimeConfig(env, cwd));
+  const runtime = readCheck(() => loadRuntimeConfig({ cwd, env, overrides: options.repoRoot ? { repoRoot: path.resolve(cwd, options.repoRoot) } : undefined }));
   const sqlite = await importCheck("node:sqlite", "node:sqlite import ok");
   const lancedb = await importCheck("@lancedb/lancedb", "@lancedb/lancedb import ok");
   const mcpSdk = await importCheck("@modelcontextprotocol/sdk/server/mcp.js", "@modelcontextprotocol/sdk import ok");
@@ -77,12 +75,12 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     cwd,
     node: checkNodeVersion(),
     runtime: {
-      graph: graph.ok
-        ? { ok: true, message: "graph runtime config ok", config: graph.value }
-        : { ok: false, message: graph.message },
-      semantic: semantic.ok
-        ? { ok: true, message: "semantic runtime config ok", config: semantic.value }
-        : { ok: false, message: semantic.message }
+      graph: runtime.ok
+        ? { ok: true, message: "graph runtime config ok", config: redactRuntimeConfig(runtime.value) }
+        : { ok: false, message: runtime.message },
+      semantic: runtime.ok
+        ? { ok: true, message: "semantic runtime config ok", config: redactRuntimeConfig(runtime.value) }
+        : { ok: false, message: runtime.message }
     },
     dependencies: {
       sqlite,

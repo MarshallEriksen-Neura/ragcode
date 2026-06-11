@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { loadDotEnv } from "../config/dotenv.js";
+import { createRuntimeComponentsForRepo } from "../config/runtime-config.js";
 import { RagCodeEngine } from "../core/engine.js";
+import { runConfigureCommand } from "./configure.js";
 import { runDoctor } from "../diagnostics/doctor.js";
 import { startStdioMcpServer } from "../mcp/server.js";
 import { buildExplainImpactReport } from "../subgraph/impact-explainer.js";
 import { expandNode, parseNodeRef } from "../subgraph/node-expander.js";
 import { FileWatchDaemon } from "../watch/watch-daemon.js";
+import { runInitConfig } from "../../scripts/init-config.js";
+import { setupMCP } from "../../scripts/setup-mcp.js";
 
 loadDotEnv();
 
@@ -209,7 +213,7 @@ program
     autoIndex?: boolean;
     indexOnStart?: boolean;
   }) => {
-    const engine = new RagCodeEngine({ cwd: repoRoot, env: cliEnv() });
+    const engine = buildCliEngine(repoRoot);
     const daemon = new FileWatchDaemon(engine, repoRoot, {
       batchDelayMs: options.batchDelay,
       minQuietMs: options.quiet,
@@ -260,47 +264,85 @@ program
 program
   .command("init")
   .argument("[directory]")
+  .option("-y, --yes", "write offline-first defaults without interactive prompts")
+  .option("--defaults", "write offline-first defaults without interactive prompts")
   .description("Initialize RagCode configuration (interactive wizard)")
-  .action(async (directory?: string) => {
-    const { spawnSync } = await import("node:child_process");
-    const targetDir = directory || process.cwd();
-
-    const result = spawnSync("tsx", ["scripts/init-config.ts", targetDir], {
-      stdio: "inherit",
-      cwd: process.cwd()
+  .action(async (directory: string | undefined, options: { yes?: boolean; defaults?: boolean }) => {
+    await runInitConfig({
+      targetDir: directory || process.cwd(),
+      defaults: Boolean(options.yes || options.defaults)
     });
-
-    if (result.error) {
-      console.error("Failed to run init wizard:", result.error);
-      process.exitCode = 1;
-    } else if (result.status !== 0) {
-      process.exitCode = result.status ?? 1;
-    }
   });
 
 program
   .command("setup-mcp")
   .option("--config <path>", "Custom MCP config path")
   .option("--print", "Print config without writing")
+  .option("--include-secrets", "Include real secrets instead of redacted placeholders")
+  .option("--client <client>", "Client format: claude, codex, or generic")
   .description("Auto-configure RagCode as an MCP server for Claude Desktop")
-  .action(async (options: { config?: string; print?: boolean }) => {
-    const { spawnSync } = await import("node:child_process");
-    const args = ["scripts/setup-mcp.ts"];
-
-    if (options.print) args.push("--print");
-    if (options.config) args.push("--config", options.config);
-
-    const result = spawnSync("tsx", args, {
-      stdio: "inherit",
-      cwd: process.cwd()
+  .action(async (options: { config?: string; print?: boolean; includeSecrets?: boolean; client?: "claude" | "codex" | "generic" }) => {
+    setupMCP({
+      configPath: options.config,
+      print: options.print,
+      includeSecrets: options.includeSecrets,
+      client: options.client,
+      cwd: process.cwd(),
+      env: process.env
     });
+  });
 
-    if (result.error) {
-      console.error("Failed to run setup-mcp:", result.error);
-      process.exitCode = 1;
-    } else if (result.status !== 0) {
-      process.exitCode = result.status ?? 1;
-    }
+program
+  .command("configure")
+  .argument("[repoRoot]")
+  .option("--show", "Print the effective runtime config (secrets redacted) and exit")
+  .option("--test", "Test the effective embedding provider")
+  .option("--graph-store <store>", "Graph store: memory or sqlite")
+  .option("--sqlite-path <path>", "SQLite graph database path")
+  .option("--semantic-store <store>", "Semantic store: memory or lancedb")
+  .option("--lancedb-uri <path>", "LanceDB storage path")
+  .option("--embedding-provider <provider>", "Embedding provider: deterministic or openai-compatible")
+  .option("--base-url <url>", "Embedding API base URL")
+  .option("--model <model>", "Embedding model name")
+  .option("--api-key <key>", "Embedding API key (persisted to .ragcode/config.json)")
+  .option("--dimensions <number>", "Embedding dimensions", parseNumber)
+  .option("--request-dimensions <bool>", "Send dimensions parameter to the provider (true/false)")
+  .description("Edit storage and embedding runtime config from the terminal, with embedding test")
+  .action(async (repoRoot: string | undefined, options: {
+    show?: boolean;
+    test?: boolean;
+    graphStore?: string;
+    sqlitePath?: string;
+    semanticStore?: string;
+    lancedbUri?: string;
+    embeddingProvider?: string;
+    baseUrl?: string;
+    model?: string;
+    apiKey?: string;
+    dimensions?: number;
+    requestDimensions?: string;
+  }) => {
+    await runConfigureCommand(repoRoot, {
+      show: options.show,
+      test: options.test,
+      graphStore: options.graphStore,
+      sqlitePath: options.sqlitePath,
+      semanticStore: options.semanticStore,
+      lancedbUri: options.lancedbUri,
+      embeddingProvider: options.embeddingProvider,
+      embeddingBaseUrl: options.baseUrl,
+      embeddingModel: options.model,
+      embeddingApiKey: options.apiKey,
+      embeddingDimensions: options.dimensions,
+      embeddingRequestDimensions: options.requestDimensions === undefined ? undefined : options.requestDimensions === "true"
+    });
+  });
+
+program
+  .command("dashboard")
+  .description("Start the Web observability dashboard API (graph/search/context/watch observation)")
+  .action(async () => {
+    await import("../web/server.js");
   });
 
 program.parseAsync().catch((error: unknown) => {
@@ -309,8 +351,8 @@ program.parseAsync().catch((error: unknown) => {
   process.exitCode = 1;
 });
 
-async function withEngine<T>(cwd: string | undefined, fn: (engine: RagCodeEngine) => Promise<T>): Promise<T> {
-  const engine = new RagCodeEngine({ cwd, env: cliEnv() });
+async function withEngine<T>(repoRoot: string | undefined, fn: (engine: RagCodeEngine) => Promise<T>): Promise<T> {
+  const engine = buildCliEngine(repoRoot);
   try {
     return await fn(engine);
   } finally {
@@ -318,18 +360,27 @@ async function withEngine<T>(cwd: string | undefined, fn: (engine: RagCodeEngine
   }
 }
 
+// CLI commands resolve runtime config through the shared loader so that explicit args, env,
+// .ragcode/config.json, and offline-first defaults (sqlite + lancedb + deterministic) apply
+// uniformly across CLI, MCP, Web, and doctor. The engine constructor itself stays env-driven
+// for embedded/library/test usage.
+function buildCliEngine(repoRoot: string | undefined): RagCodeEngine {
+  const components = createRuntimeComponentsForRepo({
+    cwd: process.cwd(),
+    overrides: repoRoot ? { repoRoot } : undefined
+  });
+  return new RagCodeEngine({
+    cwd: repoRoot,
+    graphStore: components.graphStore,
+    semanticStore: components.semanticStore,
+    embeddingProvider: components.embeddingProvider
+  });
+}
+
 function parseNumber(value: string): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`Invalid number: ${value}`);
   return parsed;
-}
-
-function cliEnv(): NodeJS.ProcessEnv {
-  if (process.env.RAGCODE_GRAPH_STORE) return process.env;
-  return {
-    ...process.env,
-    RAGCODE_GRAPH_STORE: "sqlite"
-  };
 }
 
 function formatCliError(error: unknown): string {
@@ -339,5 +390,3 @@ function formatCliError(error: unknown): string {
   }
   return message;
 }
-
-

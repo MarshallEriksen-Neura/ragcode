@@ -6,6 +6,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { loadRuntimeConfig, runtimeConfigToEnv } from '../src/config/runtime-config.js';
 
 interface MCPServerConfig {
   command: string;
@@ -18,7 +21,16 @@ interface MCPConfig {
   mcpServers: Record<string, MCPServerConfig>;
 }
 
-function getClaudeMCPConfigPath(): string {
+export interface SetupMcpOptions {
+  configPath?: string;
+  print?: boolean;
+  includeSecrets?: boolean;
+  client?: 'claude' | 'codex' | 'generic';
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+export function getClaudeMCPConfigPath(): string {
   const platform = os.platform();
 
   if (platform === 'win32') {
@@ -47,8 +59,7 @@ function loadOrCreateMCPConfig(configPath: string): MCPConfig {
 function getRagCodeCommand(): string {
   // Check if ragcode is globally installed
   try {
-    const { execSync } = require('node:child_process');
-    execSync('ragcode --version', { stdio: 'ignore' });
+    execFileSync('ragcode', ['--version'], { stdio: 'ignore' });
     return 'ragcode';
   } catch {
     // Fallback to npx
@@ -56,8 +67,11 @@ function getRagCodeCommand(): string {
   }
 }
 
-function setupMCP(customConfigPath?: string): void {
-  const configPath = customConfigPath || getClaudeMCPConfigPath();
+export function setupMCP(options: SetupMcpOptions = {}): MCPConfig | MCPServerConfig {
+  validateClient(options.client);
+  if (options.print) return printConfig(options);
+
+  const configPath = options.configPath || getClaudeMCPConfigPath();
   const configDir = path.dirname(configPath);
 
   console.log(`📍 MCP config path: ${configPath}`);
@@ -78,43 +92,31 @@ function setupMCP(customConfigPath?: string): void {
     console.log(JSON.stringify(config.mcpServers.ragcode, null, 2));
 
     // Ask for confirmation to overwrite
-    const readline = require('node:readline');
-    const rl = readline.createInterface({
+    void import('node:readline').then((readline) => {
+      const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout
-    });
+      });
 
-    rl.question('\nOverwrite existing configuration? (y/N): ', (answer: string) => {
-      rl.close();
-      if (answer.toLowerCase() !== 'y') {
-        console.log('❌ Setup cancelled.');
-        process.exit(0);
-      }
-      writeConfig(config, configPath);
+      rl.question('\nOverwrite existing configuration? (y/N): ', (answer: string) => {
+        rl.close();
+        if (answer.toLowerCase() !== 'y') {
+          console.log('❌ Setup cancelled.');
+          process.exit(0);
+        }
+        writeConfig(config, configPath, options);
+      });
     });
   } else {
-    writeConfig(config, configPath);
+    writeConfig(config, configPath, options);
   }
+
+  return config;
 }
 
-function writeConfig(config: MCPConfig, configPath: string): void {
-  const command = getRagCodeCommand();
-  const args = command === 'npx' ? ['ragcode-context-engine', 'mcp'] : ['mcp'];
-
+function writeConfig(config: MCPConfig, configPath: string, options: SetupMcpOptions): void {
   // Add ragcode server config
-  config.mcpServers.ragcode = {
-    command,
-    args,
-    env: {
-      RAGCODE_GRAPH_STORE: 'sqlite',
-      RAGCODE_SQLITE_PATH: '.ragcode/graph.sqlite',
-      RAGCODE_SEMANTIC_STORE: 'lancedb',
-      RAGCODE_LANCEDB_URI: '.ragcode/lancedb',
-      RAGCODE_EMBEDDING_PROVIDER: 'openai',
-      // User should set this via system env
-      // OPENAI_API_KEY: 'your-api-key'
-    }
-  };
+  config.mcpServers.ragcode = buildMcpServerConfig(options);
 
   // Write config
   try {
@@ -131,31 +133,28 @@ function writeConfig(config: MCPConfig, configPath: string): void {
   }
 }
 
-function printConfig(): void {
+export function buildMcpServerConfig(options: SetupMcpOptions = {}): MCPServerConfig {
   const command = getRagCodeCommand();
   const args = command === 'npx' ? ['ragcode-context-engine', 'mcp'] : ['mcp'];
+  const runtime = loadRuntimeConfig({ cwd: options.cwd ?? process.cwd(), env: options.env ?? process.env });
 
-  const config: MCPServerConfig = {
+  return {
     command,
     args,
-    env: {
-      RAGCODE_GRAPH_STORE: 'sqlite',
-      RAGCODE_SQLITE_PATH: '.ragcode/graph.sqlite',
-      RAGCODE_SEMANTIC_STORE: 'lancedb',
-      RAGCODE_LANCEDB_URI: '.ragcode/lancedb',
-      RAGCODE_EMBEDDING_PROVIDER: 'openai',
-      OPENAI_API_KEY: 'your-api-key'
-    }
+    cwd: runtime.repoRoot,
+    env: runtimeConfigToEnv(runtime, { includeSecrets: options.includeSecrets })
   };
+}
+
+function printConfig(options: SetupMcpOptions = {}): MCPServerConfig {
+  const config = buildMcpServerConfig(options);
 
   console.log('Add this to your MCP client config:\n');
   console.log(JSON.stringify({ mcpServers: { ragcode: config } }, null, 2));
+  return config;
 }
 
-// CLI
-const args = process.argv.slice(2);
-
-if (args.includes('--help') || args.includes('-h')) {
+function printHelp(): void {
   console.log(`
 RagCode MCP Setup
 
@@ -165,6 +164,8 @@ Usage:
 Options:
   --config <path>    Custom MCP config path
   --print            Print config without writing
+  --include-secrets  Include real secrets instead of redacted placeholders
+  --client <client>  Client format: claude, codex, or generic
   --help, -h         Show this help
 
 Examples:
@@ -172,13 +173,39 @@ Examples:
   ragcode setup-mcp --config ~/.config/custom-mcp.json
   ragcode setup-mcp --print
   `);
-  process.exit(0);
 }
 
-if (args.includes('--print')) {
-  printConfig();
-} else {
+function parseOptions(args: string[]): SetupMcpOptions {
   const configIndex = args.indexOf('--config');
-  const customPath = configIndex >= 0 ? args[configIndex + 1] : undefined;
-  setupMCP(customPath);
+  const clientIndex = args.indexOf('--client');
+  const client = clientIndex >= 0 ? args[clientIndex + 1] : undefined;
+  validateClient(client);
+  return {
+    print: args.includes('--print'),
+    includeSecrets: args.includes('--include-secrets'),
+    configPath: configIndex >= 0 ? args[configIndex + 1] : undefined,
+    client: client as SetupMcpOptions['client'] | undefined
+  };
+}
+
+function validateClient(client: string | undefined): void {
+  if (client && client !== 'claude' && client !== 'codex' && client !== 'generic') {
+    throw new Error(`Unsupported MCP client: ${client}`);
+  }
+}
+
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
+if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2);
+  if (args.includes('--help') || args.includes('-h')) {
+    printHelp();
+    process.exit(0);
+  }
+
+  try {
+    setupMCP(parseOptions(args));
+  } catch (error) {
+    console.error(`❌ MCP setup failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
 }

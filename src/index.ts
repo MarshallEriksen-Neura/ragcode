@@ -3,6 +3,7 @@ export * from "./core/engine.js";
 export * from "./core/types.js";
 export * from "./config/graph-runtime.js";
 export * from "./config/semantic-runtime.js";
+export * from "./config/runtime-config.js";
 export * from "./config/dotenv.js";
 export * from "./graph/in-memory-graph-store.js";
 export * from "./graph/sqlite-graph-store.js";
@@ -26,6 +27,7 @@ export * from "./reuse/reuse-detector.js";
 export * from "./retrieval/hybrid-retriever.js";
 export * from "./retrieval/path-classification.js";
 export * from "./diagnostics/doctor.js";
+export * from "./diagnostics/embedding-test.js";
 export * from "./mcp/tools.js";
 export * from "./mcp/server.js";
 

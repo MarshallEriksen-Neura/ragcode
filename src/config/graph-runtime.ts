@@ -18,6 +18,10 @@ export interface GraphRuntimeComponents {
 
 export function createGraphRuntimeFromEnv(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): GraphRuntimeComponents {
   const config = readGraphRuntimeConfig(env, cwd);
+  return createGraphRuntimeFromConfig(config);
+}
+
+export function createGraphRuntimeFromConfig(config: GraphRuntimeConfig): GraphRuntimeComponents {
   if (config.graphStore === "memory") {
     return { graphStore: new InMemoryGraphStore(), config };
   }

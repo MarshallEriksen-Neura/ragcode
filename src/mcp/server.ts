@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createRuntimeComponentsForRepo } from "../config/runtime-config.js";
 import type { ContextEngine } from "../core/contracts.js";
 import { RagCodeEngine, type RagCodeEngineOptions } from "../core/engine.js";
 import { callTool, listRuntimeToolDefinitions } from "./tools.js";
@@ -40,9 +41,17 @@ export function createMcpServer(engine: ContextEngine, options: McpServerOptions
 }
 
 export async function startStdioMcpServer(options: StdioMcpServerOptions = {}): Promise<void> {
+  // Entry points resolve runtime config through the shared loader (CLI args > env >
+  // .ragcode/config.json > offline-first defaults). The engine constructor itself stays
+  // env-driven so embedded/library/test usage keeps its lightweight in-memory defaults.
+  const components = (options.graphStore && options.semanticStore && options.embeddingProvider)
+    ? undefined
+    : createRuntimeComponentsForRepo({ cwd: options.cwd, env: options.env });
   const engine = new RagCodeEngine({
     ...options,
-    env: persistentDefaultEnv(options.env)
+    graphStore: options.graphStore ?? components?.graphStore,
+    semanticStore: options.semanticStore ?? components?.semanticStore,
+    embeddingProvider: options.embeddingProvider ?? components?.embeddingProvider
   });
   const server = createMcpServer(engine, options);
   const transport = new StdioServerTransport();
@@ -69,12 +78,4 @@ export async function startStdioMcpServer(options: StdioMcpServerOptions = {}): 
   });
 
   await server.connect(transport);
-}
-
-function persistentDefaultEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  if (env.RAGCODE_GRAPH_STORE) return env;
-  return {
-    ...env,
-    RAGCODE_GRAPH_STORE: "sqlite"
-  };
 }

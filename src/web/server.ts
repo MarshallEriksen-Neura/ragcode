@@ -4,8 +4,7 @@ import express from 'express'
 import cors from 'cors'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { RagCodeEngine } from '../core/engine.js'
-import { createGraphRuntimeFromEnv } from '../config/graph-runtime.js'
-import { createSemanticRuntimeFromEnv } from '../config/semantic-runtime.js'
+import { createRuntimeComponentsForRepo, loadRuntimeConfig, readRuntimeConfigFile, redactRuntimeConfig, writeRuntimeConfigFile, type RuntimeConfigFile } from '../config/runtime-config.js'
 import { FileWatchDaemon, type WatchDaemonStatus } from '../watch/watch-daemon.js'
 import type { WatchEventJournalEntry } from '../watch/event-journal.js'
 import type { ContextMode, SymbolNode, VerifiedSubgraphMode } from '../core/types.js'
@@ -32,13 +31,13 @@ function broadcast(payload: unknown): void {
   }
 }
 
-function buildEngine(): RagCodeEngine {
-  const graphRuntime = createGraphRuntimeFromEnv()
-  const semanticRuntime = createSemanticRuntimeFromEnv()
+function buildEngine(repoPath = activeRepo ?? defaultRepo): RagCodeEngine {
+  const runtime = createRuntimeComponentsForRepo({ cwd: repoPath, overrides: { repoRoot: repoPath } })
   return new RagCodeEngine({
-    graphStore: graphRuntime.graphStore,
-    semanticStore: semanticRuntime.semanticStore,
-    embeddingProvider: semanticRuntime.embeddingProvider,
+    cwd: repoPath,
+    graphStore: runtime.graphStore,
+    semanticStore: runtime.semanticStore,
+    embeddingProvider: runtime.embeddingProvider,
   })
 }
 
@@ -65,46 +64,19 @@ function fail(res: express.Response, error: unknown): void {
 }
 
 // ===== Config (persisted to .ragcode/config.json) =====
-interface PersistedConfig {
-  graphStore: string
-  semanticStore: string
-  embeddingProvider: string
-  sqlitePath?: string
-  lancedbUri?: string
-  embeddingBaseUrl?: string
-  embeddingModel?: string
-}
-
-function readPersistedConfig(): Partial<PersistedConfig> {
-  try {
-    return JSON.parse(fs.readFileSync(configPath, 'utf8')) as Partial<PersistedConfig>
-  } catch {
-    return {}
-  }
-}
-
 app.get('/api/config', (_req, res) => {
-  const persisted = readPersistedConfig()
-  res.json({
-    graphStore: persisted.graphStore ?? process.env.RAGCODE_GRAPH_STORE ?? 'memory',
-    semanticStore: persisted.semanticStore ?? process.env.RAGCODE_SEMANTIC_STORE ?? 'memory',
-    embeddingProvider: persisted.embeddingProvider ?? process.env.RAGCODE_EMBEDDING_PROVIDER ?? 'deterministic',
-    sqlitePath: persisted.sqlitePath ?? process.env.RAGCODE_SQLITE_PATH ?? '',
-    lancedbUri: persisted.lancedbUri ?? process.env.RAGCODE_LANCEDB_URI ?? '',
-    embeddingBaseUrl: persisted.embeddingBaseUrl ?? process.env.RAGCODE_EMBEDDING_BASE_URL ?? '',
-    embeddingModel: persisted.embeddingModel ?? process.env.RAGCODE_EMBEDDING_MODEL ?? '',
-    repoRoot: activeRepo ?? defaultRepo,
-    configPath,
-  })
+  const repoRoot = activeRepo ?? defaultRepo
+  const runtime = redactRuntimeConfig(loadRuntimeConfig({ cwd: repoRoot, overrides: { repoRoot } }))
+  res.json(runtime)
 })
 
 app.post('/api/config', (req, res) => {
   try {
-    const body = req.body as Partial<PersistedConfig>
-    const merged = { ...readPersistedConfig(), ...body }
-    fs.mkdirSync(path.dirname(configPath), { recursive: true })
-    fs.writeFileSync(configPath, JSON.stringify(merged, null, 2), 'utf8')
-    res.json({ success: true, configPath, note: 'Restart the server for store/provider changes to take effect.' })
+    const repoRoot = activeRepo ?? defaultRepo
+    const body = req.body as Partial<RuntimeConfigFile>
+    const merged = { ...readRuntimeConfigFile(path.join(repoRoot, '.ragcode', 'config.json')), ...body }
+    const writtenPath = writeRuntimeConfigFile(repoRoot, merged)
+    res.json({ success: true, configPath: writtenPath, note: 'Restart the server or re-index the repository for store/provider changes to take effect.' })
   } catch (error) {
     fail(res, error)
   }
@@ -114,10 +86,11 @@ app.post('/api/config', (req, res) => {
 app.post('/api/index', async (req, res) => {
   const repoPath = (req.body?.repoPath as string | undefined) ?? defaultRepo
   try {
-    const eng = buildEngine()
-    await eng.indexRepo(path.resolve(repoPath))
+    const resolvedRepo = path.resolve(repoPath)
+    const eng = buildEngine(resolvedRepo)
+    await eng.indexRepo(resolvedRepo)
     engine = eng
-    activeRepo = path.resolve(repoPath)
+    activeRepo = resolvedRepo
     const status = await eng.indexStatus(undefined)
     res.json({ success: true, repoRoot: activeRepo, status })
   } catch (error) {

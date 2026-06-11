@@ -6,15 +6,36 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
+import { DEFAULT_RUNTIME_CONFIG, writeRuntimeConfigFile, type RuntimeConfigFile } from '../src/config/runtime-config.js';
 
 interface ConfigOptions {
   graphStore: 'sqlite' | 'memory';
   sqlitePath?: string;
   semanticStore: 'lancedb' | 'memory';
   lancedbUri?: string;
-  embeddingProvider: 'openai' | 'deterministic';
+  embeddingProvider: 'openai-compatible' | 'deterministic';
   openaiApiKey?: string;
 }
+
+export interface InitConfigOptions {
+  targetDir?: string;
+  defaults?: boolean;
+}
+
+export interface InitConfigResult {
+  targetDir: string;
+  configPath: string;
+  config: RuntimeConfigFile;
+}
+
+const DEFAULT_INIT_CONFIG: ConfigOptions = {
+  graphStore: DEFAULT_RUNTIME_CONFIG.graphStore,
+  sqlitePath: DEFAULT_RUNTIME_CONFIG.sqlitePath,
+  semanticStore: DEFAULT_RUNTIME_CONFIG.semanticStore,
+  lancedbUri: DEFAULT_RUNTIME_CONFIG.lancedbUri,
+  embeddingProvider: DEFAULT_RUNTIME_CONFIG.embeddingProvider
+};
 
 function createInterface() {
   return readline.createInterface({
@@ -34,7 +55,7 @@ async function runWizard(): Promise<ConfigOptions> {
   const config: ConfigOptions = {
     graphStore: 'sqlite',
     semanticStore: 'lancedb',
-    embeddingProvider: 'openai'
+    embeddingProvider: 'deterministic'
   };
 
   console.log('🧙 RagCode Configuration Wizard\n');
@@ -61,10 +82,10 @@ async function runWizard(): Promise<ConfigOptions> {
 
   // Embedding provider
   console.log('\n🤖 Embedding Provider');
-  const embeddingProvider = await question(rl, '  Choose: [1] OpenAI (requires API key), [2] Deterministic (offline, less accurate) [1]: ');
-  config.embeddingProvider = embeddingProvider === '2' ? 'deterministic' : 'openai';
+  const embeddingProvider = await question(rl, '  Choose: [1] Deterministic (offline), [2] OpenAI-compatible (requires API key) [1]: ');
+  config.embeddingProvider = embeddingProvider === '2' ? 'openai-compatible' : 'deterministic';
 
-  if (config.embeddingProvider === 'openai') {
+  if (config.embeddingProvider === 'openai-compatible') {
     console.log('  💡 Set OPENAI_API_KEY environment variable or provide it now.');
     const apiKey = await question(rl, '  OpenAI API Key (leave empty to use env var): ');
     if (apiKey) {
@@ -76,18 +97,8 @@ async function runWizard(): Promise<ConfigOptions> {
   return config;
 }
 
-function writeConfigFile(targetDir: string, config: ConfigOptions): void {
-  const ragcodeDir = path.join(targetDir, '.ragcode');
-  const configPath = path.join(ragcodeDir, 'config.json');
-
-  // Create .ragcode directory
-  if (!fs.existsSync(ragcodeDir)) {
-    fs.mkdirSync(ragcodeDir, { recursive: true });
-    console.log(`\n📁 Created directory: ${ragcodeDir}`);
-  }
-
-  // Prepare config object
-  const configObj: Record<string, any> = {
+function toRuntimeConfigFile(config: ConfigOptions): RuntimeConfigFile {
+  const configObj: RuntimeConfigFile = {
     graphStore: config.graphStore,
     semanticStore: config.semanticStore,
     embeddingProvider: config.embeddingProvider
@@ -95,11 +106,21 @@ function writeConfigFile(targetDir: string, config: ConfigOptions): void {
 
   if (config.sqlitePath) configObj.sqlitePath = config.sqlitePath;
   if (config.lancedbUri) configObj.lancedbUri = config.lancedbUri;
-  if (config.openaiApiKey) configObj.openaiApiKey = config.openaiApiKey;
+  if (config.openaiApiKey) configObj.embeddingApiKey = config.openaiApiKey;
 
-  // Write config
-  fs.writeFileSync(configPath, JSON.stringify(configObj, null, 2), 'utf-8');
+  return configObj;
+}
+
+function writeConfigFile(targetDir: string, config: ConfigOptions): string {
+  const ragcodeDir = path.join(targetDir, '.ragcode');
+  if (!fs.existsSync(ragcodeDir)) {
+    fs.mkdirSync(ragcodeDir, { recursive: true });
+    console.log(`\n📁 Created directory: ${ragcodeDir}`);
+  }
+
+  const configPath = writeRuntimeConfigFile(targetDir, toRuntimeConfigFile(config));
   console.log(`✅ Configuration saved to: ${configPath}\n`);
+  return configPath;
 }
 
 function writeEnvExample(targetDir: string, config: ConfigOptions): void {
@@ -120,7 +141,7 @@ function writeEnvExample(targetDir: string, config: ConfigOptions): void {
 
   envContent += `\nRAGCODE_EMBEDDING_PROVIDER=${config.embeddingProvider}\n`;
 
-  if (config.embeddingProvider === 'openai') {
+  if (config.embeddingProvider === 'openai-compatible') {
     envContent += 'OPENAI_API_KEY=your-api-key-here\n';
   }
 
@@ -136,44 +157,61 @@ function printNextSteps(config: ConfigOptions): void {
   console.log('  2. Search code:');
   console.log('     ragcode search . "your query"\n');
 
-  if (config.embeddingProvider === 'openai' && !config.openaiApiKey) {
+  if (config.embeddingProvider === 'openai-compatible' && !config.openaiApiKey) {
     console.log('  ⚠️  Remember to set OPENAI_API_KEY:');
     console.log('     export OPENAI_API_KEY=your-key\n');
   }
 
   console.log('  3. Start the MCP server:');
-  console.log('     ragcode mcp\n');
-  console.log('  4. Launch the web dashboard:');
+  console.log('     ragcode setup-mcp\n');
+  console.log('  4. Upgrade embedding provider if needed:');
+  console.log('     ragcode configure\n');
+  console.log('  5. Launch the web dashboard for observation:');
   console.log('     ragcode dashboard\n');
+}
+
+export async function runInitConfig(options: InitConfigOptions = {}): Promise<InitConfigResult> {
+  const targetDir = path.resolve(options.targetDir || process.cwd());
+
+  console.log(`📍 Target directory: ${targetDir}\n`);
+
+  const config = options.defaults ? { ...DEFAULT_INIT_CONFIG } : await runWizard();
+  const configPath = writeConfigFile(targetDir, config);
+  writeEnvExample(targetDir, config);
+  printNextSteps(config);
+
+  return { targetDir, configPath, config: toRuntimeConfigFile(config) };
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  const targetDir = args[0] || process.cwd();
 
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`
 RagCode Configuration Wizard
 
 Usage:
-  ragcode init [directory]
+  ragcode init [directory] [--defaults]
 
 Examples:
   ragcode init              # Initialize in current directory
   ragcode init /path/to/project
+  ragcode init --defaults   # Write offline-first defaults without prompts
     `);
     process.exit(0);
   }
 
-  console.log(`📍 Target directory: ${targetDir}\n`);
-
-  const config = await runWizard();
-  writeConfigFile(targetDir, config);
-  writeEnvExample(targetDir, config);
-  printNextSteps(config);
+  const positional = args.filter((arg) => !arg.startsWith('-'));
+  await runInitConfig({
+    targetDir: positional[0],
+    defaults: args.includes('--defaults') || args.includes('--yes') || args.includes('-y')
+  });
 }
 
-main().catch(err => {
-  console.error('❌ Setup failed:', err);
-  process.exit(1);
-});
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
+if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
+  main().catch(err => {
+    console.error('❌ Setup failed:', err);
+    process.exit(1);
+  });
+}

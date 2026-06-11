@@ -6,46 +6,41 @@ The intended direction is to stand on the shoulders of projects such as CodeGrap
 
 ## Quick Start
 
+Terminal-first, offline-first — the first run needs no embedding API key, no account, no hosted service:
+
 ```bash
 # Install globally
 npm install -g ragcode-context-engine
 
-# Initialize configuration (interactive wizard)
-ragcode init
-
-# Index your codebase
-ragcode index .
-
-# Search code
-ragcode search . "your query"
-
-# Setup MCP integration for Claude Desktop
-ragcode setup-mcp
+cd my-project
+ragcode init          # offline-first config: sqlite + lancedb + deterministic embeddings
+ragcode index .       # build the structural + semantic index
+ragcode setup-mcp     # register the MCP server for your agent client
 ```
 
-See [docs/INSTALLATION.md](docs/INSTALLATION.md) for detailed installation instructions.
-
-## Web Dashboard (New!)
-
-A web-based management interface is now available for easier configuration and monitoring:
+Upgrade semantic recall later with a real embedding provider (optional, never a blocker):
 
 ```bash
-# Quick start - launches both backend and frontend
-./start-dashboard.sh
-
-# Or manually:
-npm run web:server  # Backend API (port 3000)
-cd web && npm run dev  # Frontend (port 5173)
+ragcode configure          # edit storage / provider / model / base URL / dimensions
+ragcode configure --test   # verify the provider (classified failures, secrets never printed)
 ```
 
-Features:
-- **Configuration Management**: Graphical setup for storage engines and embedding providers
-- **Index Dashboard**: Real-time statistics (files, symbols, chunks, edges)
-- **Code Graph Visualization**: Interactive dependency graph with ECharts
-- **Search Debugger**: Test retrieval modes and view ranked results
-- **Live Monitoring**: WebSocket-based file change event stream
+See [docs/ONBOARDING.md](docs/ONBOARDING.md) for the full first-run flow and [docs/INSTALLATION.md](docs/INSTALLATION.md) for detailed installation instructions.
 
-See [web/README.md](web/README.md) for details.
+## Web Dashboard (observation and debugging)
+
+The Web dashboard is RagCode's observability surface — graph visualization, search debugging, context-pack inspection, watcher monitoring, and a runtime-config view with per-field source labels and redacted secrets. Setup and configuration stay in the terminal.
+
+```bash
+ragcode dashboard      # backend API (port 3000)
+cd web && npm run dev  # Vue frontend (port 5173, development)
+```
+
+See [docs/DASHBOARD.md](docs/DASHBOARD.md) for scope and [web/README.md](web/README.md) for development details.
+
+## Agent Skill
+
+A Codex/OMX skill template ships in `integrations/codex/skills/ragcode-context/` — it routes agents to MCP tools first (`get_context`, `find_owner`, `impact_analysis`, ...), with CLI fallback and missing-index recovery. See [docs/CODEX_SKILL.md](docs/CODEX_SKILL.md).
 
 ## Core Folders
 

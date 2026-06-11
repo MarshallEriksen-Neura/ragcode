@@ -54,7 +54,7 @@ describe("doctor", () => {
 
     expect(report.ok).toBe(false);
     expect(report.runtime.graph.ok).toBe(false);
-    expect(report.runtime.graph.message).toContain("Invalid graph runtime value");
+    expect(report.runtime.graph.message).toContain("Invalid runtime config field graphStore");
   });
 });
 
