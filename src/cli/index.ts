@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import path from "node:path";
 import { Command } from "commander";
 import { loadDotEnv } from "../config/dotenv.js";
 import { createRuntimeComponentsForRepo } from "../config/runtime-config.js";
@@ -23,6 +24,14 @@ program
   .argument("<repoRoot>")
   .description("Index a repository")
   .action(async (repoRoot: string) => {
+    if (process.stdout.isTTY) {
+      const { runIndexProgressTui } = await import("./tui/index-progress.js");
+      await runIndexProgressTui({
+        repoRoot,
+        run: async (onProgress) => withEngine(repoRoot, (engine) => engine.indexRepo(repoRoot, { onProgress }))
+      });
+      return;
+    }
     await withEngine(repoRoot, async (engine) => {
       const result = await engine.indexRepo(repoRoot);
       console.log(JSON.stringify({ repoRoot: result.repoRoot, files: result.files.length, chunks: result.chunks.length }, null, 2));
@@ -214,6 +223,61 @@ program
     indexOnStart?: boolean;
   }) => {
     const engine = buildCliEngine(repoRoot);
+    if (process.stdout.isTTY) {
+      const { createWatchStatusTui } = await import("./tui/watch-status.js");
+      const absoluteRoot = path.resolve(repoRoot);
+      let tui: ReturnType<typeof createWatchStatusTui> | undefined;
+      let shuttingDown = false;
+      const daemon = new FileWatchDaemon(engine, repoRoot, {
+        batchDelayMs: options.batchDelay,
+        minQuietMs: options.quiet,
+        flushEventsMs: options.flushEvents,
+        awaitWriteFinishMs: options.awaitWrite,
+        burstThreshold: options.burstThreshold,
+        maxDirtyFiles: options.maxDirtyFiles,
+        maxBatchFiles: options.maxBatchFiles,
+        usePolling: options.poll,
+        autoIndex: options.autoIndex,
+        indexOnStart: options.indexOnStart,
+        onStatus: (status) => tui?.update(status)
+      });
+      tui = createWatchStatusTui({
+        repoRoot: absoluteRoot,
+        running: false,
+        ready: false,
+        bufferedEvents: 0,
+        scheduler: {
+          repoRoot: absoluteRoot,
+          running: false,
+          scheduled: false,
+          indexing: false,
+          pendingFiles: 0,
+          indexingFiles: 0
+        }
+      });
+      const shutdown = async (): Promise<void> => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        await daemon.stop();
+        engine.close();
+        tui?.unmount();
+      };
+      const exitFromSignal = (): void => {
+        void shutdown().finally(() => process.exit(0));
+      };
+      process.once("SIGINT", exitFromSignal);
+      process.once("SIGTERM", exitFromSignal);
+      try {
+        await daemon.start();
+        tui.update(await daemon.status());
+        await tui.waitUntilExit();
+      } finally {
+        process.removeListener("SIGINT", exitFromSignal);
+        process.removeListener("SIGTERM", exitFromSignal);
+        await shutdown();
+      }
+      return;
+    }
     const daemon = new FileWatchDaemon(engine, repoRoot, {
       batchDelayMs: options.batchDelay,
       minQuietMs: options.quiet,
@@ -285,14 +349,16 @@ program
   .option("--config <path>", "Custom MCP config path")
   .option("--print", "Print config without writing")
   .option("--include-secrets", "Include real secrets instead of redacted placeholders")
-  .option("--client <client>", "Client format: claude, codex, or generic")
-  .description("Auto-configure RagCode as an MCP server for Claude Desktop")
-  .action(async (options: { config?: string; print?: boolean; includeSecrets?: boolean; client?: "claude" | "codex" | "generic" }) => {
+  .option("--client <client>", "Client format: claude (Desktop), claude-code (project .mcp.json), codex (~/.codex/config.toml), or generic")
+  .option("--force", "Overwrite an existing ragcode entry without prompting")
+  .description("Register RagCode as an MCP server for Claude Desktop, Claude Code, or Codex")
+  .action(async (options: { config?: string; print?: boolean; includeSecrets?: boolean; client?: "claude" | "claude-code" | "codex" | "generic"; force?: boolean }) => {
     setupMCP({
       configPath: options.config,
       print: options.print,
       includeSecrets: options.includeSecrets,
       client: options.client,
+      force: options.force,
       cwd: process.cwd(),
       env: process.env
     });

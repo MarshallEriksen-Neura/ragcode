@@ -94,9 +94,30 @@ export interface RepoIndex {
   skippedFiles: Array<{ filePath: string; reason: string }>;
 }
 
+export type IndexProgressPhase =
+  | "loading_existing_index"
+  | "scanning"
+  | "analyzing"
+  | "writing_graph"
+  | "writing_semantic"
+  | "complete";
+
+export interface IndexProgressEvent {
+  phase: IndexProgressPhase;
+  message: string;
+  scannedFiles?: number;
+  changedFiles?: number;
+  deletedFiles?: number;
+  refreshedFiles?: number;
+  chunks?: number;
+  symbols?: number;
+  edges?: number;
+}
+
 export interface IndexRefreshOptions {
   affectedFiles?: string[];
   reconcile?: boolean;
+  onProgress?: (event: IndexProgressEvent) => void;
 }
 
 export type DirtyFileStatus = "pending" | "indexing" | "dead_letter";

@@ -112,6 +112,13 @@ npx ragcode-context-engine index .
 npx ragcode-context-engine search . "query"
 ```
 
+从源码开发（未全局安装）？用 dev 脚本运行任意命令——它通过 `tsx` 直接执行 TypeScript 入口：
+
+```bash
+npm run dev -- index .
+npm run dev -- setup-mcp --client codex --print
+```
+
 ### 升级语义召回能力（可选，永不阻塞）
 
 ```bash
@@ -145,11 +152,17 @@ ragcode dashboard                   # Web 可观测后端（端口 3000）
 
 ### MCP 服务集成
 
-RagCode 可作为 MCP 服务运行，让 Claude 等智能体直接调用它的工具。自动注册：
+RagCode 可作为 MCP 服务运行，让 Claude 等智能体直接调用它的工具。按客户端自动注册：
 
 ```bash
-ragcode setup-mcp
+ragcode setup-mcp                       # Claude Desktop  (~/.../claude_desktop_config.json)
+ragcode setup-mcp --client claude-code  # Claude Code     (项目 ./.mcp.json)
+ragcode setup-mcp --client codex        # Codex CLI        (~/.codex/config.toml)
+ragcode setup-mcp --client codex --print # 仅打印配置，不写文件
 ```
+
+既有配置会被原地合并（保留其它服务和无关字段，并在覆盖前备份原文件）。加 `--force`
+可跳过提示直接覆盖已有的 `ragcode` 条目，加 `--include-secrets` 可写入真实 API 密钥而非脱敏占位符。
 
 或手动添加到你的 MCP 客户端配置：
 

@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 /**
- * Auto-configure RagCode as an MCP server for Claude Desktop
+ * Auto-configure RagCode as an MCP server for AI coding clients.
+ *
+ * Supported clients:
+ *   - claude       Claude Desktop      JSON  ~/.../claude_desktop_config.json   (mcpServers.ragcode)
+ *   - claude-code  Claude Code (repo)  JSON  <cwd>/.mcp.json                    (mcpServers.ragcode)
+ *   - codex        Codex CLI           TOML  ~/.codex/config.toml               (mcp_servers.ragcode)
+ *   - generic      print only          JSON  (paste into any MCP client)
+ *
+ * Merge strategy: existing config is parsed, the `ragcode` entry is upserted, and the
+ * file is rewritten. Other servers and unrelated keys are preserved. The previous file
+ * is backed up alongside the original before any overwrite.
  */
 
 import fs from 'node:fs';
@@ -8,7 +18,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { loadRuntimeConfig, runtimeConfigToEnv } from '../src/config/runtime-config.js';
+
+export type McpClient = 'claude' | 'claude-code' | 'codex' | 'generic';
 
 interface MCPServerConfig {
   command: string;
@@ -25,10 +38,18 @@ export interface SetupMcpOptions {
   configPath?: string;
   print?: boolean;
   includeSecrets?: boolean;
-  client?: 'claude' | 'codex' | 'generic';
+  client?: McpClient;
+  /** Skip the interactive overwrite prompt and replace any existing ragcode entry. */
+  force?: boolean;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
 }
+
+const SERVER_KEY = 'ragcode';
+
+// ---------------------------------------------------------------------------
+// Config-path resolution (one per client)
+// ---------------------------------------------------------------------------
 
 export function getClaudeMCPConfigPath(): string {
   const platform = os.platform();
@@ -43,18 +64,36 @@ export function getClaudeMCPConfigPath(): string {
   }
 }
 
-function loadOrCreateMCPConfig(configPath: string): MCPConfig {
-  try {
-    if (fs.existsSync(configPath)) {
-      const content = fs.readFileSync(configPath, 'utf-8');
-      return JSON.parse(content);
-    }
-  } catch (err) {
-    console.warn(`⚠️  Failed to read existing config: ${err}`);
-  }
-
-  return { mcpServers: {} };
+/** Claude Code reads project-scoped MCP servers from `<repoRoot>/.mcp.json`. */
+export function getClaudeCodeMCPConfigPath(cwd: string): string {
+  return path.join(cwd, '.mcp.json');
 }
+
+/** Codex CLI reads MCP servers from `~/.codex/config.toml` (CODEX_HOME overrides ~/.codex). */
+export function getCodexConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  const home = env.CODEX_HOME && env.CODEX_HOME.trim().length > 0
+    ? env.CODEX_HOME
+    : path.join(os.homedir(), '.codex');
+  return path.join(home, 'config.toml');
+}
+
+function resolveConfigPath(client: McpClient, options: SetupMcpOptions): string {
+  if (options.configPath) return options.configPath;
+  const cwd = options.cwd ?? process.cwd();
+  switch (client) {
+    case 'codex':
+      return getCodexConfigPath(options.env ?? process.env);
+    case 'claude-code':
+      return getClaudeCodeMCPConfigPath(cwd);
+    case 'claude':
+    default:
+      return getClaudeMCPConfigPath();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Server config (shared core — unchanged contract, tests depend on this)
+// ---------------------------------------------------------------------------
 
 function getRagCodeCommand(): string {
   // Check if ragcode is globally installed
@@ -64,72 +103,6 @@ function getRagCodeCommand(): string {
   } catch {
     // Fallback to npx
     return 'npx';
-  }
-}
-
-export function setupMCP(options: SetupMcpOptions = {}): MCPConfig | MCPServerConfig {
-  validateClient(options.client);
-  if (options.print) return printConfig(options);
-
-  const configPath = options.configPath || getClaudeMCPConfigPath();
-  const configDir = path.dirname(configPath);
-
-  console.log(`📍 MCP config path: ${configPath}`);
-
-  // Ensure config directory exists
-  if (!fs.existsSync(configDir)) {
-    console.log(`📁 Creating config directory: ${configDir}`);
-    fs.mkdirSync(configDir, { recursive: true });
-  }
-
-  // Load or create config
-  const config = loadOrCreateMCPConfig(configPath);
-
-  // Check if ragcode is already configured
-  if (config.mcpServers.ragcode) {
-    console.log('⚠️  RagCode MCP server is already configured.');
-    console.log('Current config:');
-    console.log(JSON.stringify(config.mcpServers.ragcode, null, 2));
-
-    // Ask for confirmation to overwrite
-    void import('node:readline').then((readline) => {
-      const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-      });
-
-      rl.question('\nOverwrite existing configuration? (y/N): ', (answer: string) => {
-        rl.close();
-        if (answer.toLowerCase() !== 'y') {
-          console.log('❌ Setup cancelled.');
-          process.exit(0);
-        }
-        writeConfig(config, configPath, options);
-      });
-    });
-  } else {
-    writeConfig(config, configPath, options);
-  }
-
-  return config;
-}
-
-function writeConfig(config: MCPConfig, configPath: string, options: SetupMcpOptions): void {
-  // Add ragcode server config
-  config.mcpServers.ragcode = buildMcpServerConfig(options);
-
-  // Write config
-  try {
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
-    console.log('\n✅ RagCode MCP server configured successfully!');
-    console.log('\n📝 Configuration written:');
-    console.log(JSON.stringify(config.mcpServers.ragcode, null, 2));
-    console.log('\n⚠️  Remember to set OPENAI_API_KEY in your environment:');
-    console.log('   export OPENAI_API_KEY=your-api-key');
-    console.log('\n🔄 Restart Claude Desktop to activate the MCP server.');
-  } catch (err) {
-    console.error(`❌ Failed to write config: ${err}`);
-    process.exit(1);
   }
 }
 
@@ -146,13 +119,234 @@ export function buildMcpServerConfig(options: SetupMcpOptions = {}): MCPServerCo
   };
 }
 
-function printConfig(options: SetupMcpOptions = {}): MCPServerConfig {
-  const config = buildMcpServerConfig(options);
+// ---------------------------------------------------------------------------
+// Pure merge functions (no IO — unit-testable)
+// ---------------------------------------------------------------------------
+
+/**
+ * Upsert the ragcode server into a JSON MCP config object (Claude Desktop / Claude Code).
+ * Unknown top-level keys and other servers are preserved. Returns a new object.
+ */
+export function mergeMcpServersJson(existing: unknown, server: MCPServerConfig): MCPConfig {
+  const base: Record<string, unknown> =
+    existing && typeof existing === 'object' ? { ...(existing as Record<string, unknown>) } : {};
+  const servers =
+    base.mcpServers && typeof base.mcpServers === 'object'
+      ? { ...(base.mcpServers as Record<string, unknown>) }
+      : {};
+  servers[SERVER_KEY] = server;
+  return { ...base, mcpServers: servers } as MCPConfig;
+}
+
+/**
+ * Upsert the ragcode server into a Codex config.toml string.
+ * Parses existing TOML, sets `mcp_servers.ragcode`, and re-stringifies. Other tables and
+ * keys are preserved; TOML comments are not (smol-toml limitation — callers back up first).
+ */
+export function mergeCodexToml(existingToml: string, server: MCPServerConfig): string {
+  let root: Record<string, unknown> = {};
+  const trimmed = existingToml.trim();
+  if (trimmed.length > 0) {
+    const parsed = parseToml(existingToml);
+    if (parsed && typeof parsed === 'object') {
+      root = parsed as Record<string, unknown>;
+    }
+  }
+
+  const mcpServers =
+    root.mcp_servers && typeof root.mcp_servers === 'object'
+      ? { ...(root.mcp_servers as Record<string, unknown>) }
+      : {};
+
+  // Codex stdio server schema: command, args, env. cwd is honored by recent Codex builds and
+  // ignored by older ones; the env values already carry absolute paths so behavior is correct
+  // either way. Drop undefined keys so the emitted TOML stays clean.
+  const entry: Record<string, unknown> = {
+    command: server.command,
+    args: server.args
+  };
+  if (server.cwd) entry.cwd = server.cwd;
+  if (server.env && Object.keys(server.env).length > 0) entry.env = server.env;
+
+  mcpServers[SERVER_KEY] = entry;
+  root.mcp_servers = mcpServers;
+
+  return stringifyToml(root);
+}
+
+function isJsonClient(client: McpClient): boolean {
+  return client === 'claude' || client === 'claude-code';
+}
+
+// ---------------------------------------------------------------------------
+// IO helpers
+// ---------------------------------------------------------------------------
+
+function ensureDir(filePath: string): void {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    console.log(`📁 Creating config directory: ${dir}`);
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+function backupExisting(filePath: string): void {
+  if (!fs.existsSync(filePath)) return;
+  const backup = `${filePath}.ragcode-backup`;
+  fs.copyFileSync(filePath, backup);
+  console.log(`🗂️  Backed up existing config to: ${backup}`);
+}
+
+function readFileSafe(filePath: string): string | undefined {
+  try {
+    if (fs.existsSync(filePath)) return fs.readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    console.warn(`⚠️  Failed to read existing config: ${err}`);
+  }
+  return undefined;
+}
+
+/** Detect whether a ragcode entry already exists in the on-disk config. */
+function hasExistingEntry(client: McpClient, raw: string | undefined): boolean {
+  if (!raw) return false;
+  try {
+    if (isJsonClient(client)) {
+      const parsed = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
+      return Boolean(parsed.mcpServers && SERVER_KEY in parsed.mcpServers);
+    }
+    const parsed = parseToml(raw) as { mcp_servers?: Record<string, unknown> };
+    return Boolean(parsed.mcp_servers && SERVER_KEY in parsed.mcp_servers);
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+export function setupMCP(options: SetupMcpOptions = {}): void {
+  const client: McpClient = options.client ?? 'claude';
+  validateClient(client);
+
+  if (options.print || client === 'generic') {
+    printConfig(options);
+    return;
+  }
+
+  const configPath = resolveConfigPath(client, options);
+  const server = buildMcpServerConfig(options);
+  const raw = readFileSafe(configPath);
+
+  console.log(`📍 ${clientLabel(client)} config path: ${configPath}`);
+
+  if (hasExistingEntry(client, raw) && !options.force) {
+    if (!process.stdin.isTTY) {
+      console.log('⚠️  RagCode is already configured here. Re-run with --force to overwrite, or remove the existing entry first.');
+      return;
+    }
+    void import('node:readline').then((readline) => {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      rl.question('\n⚠️  RagCode is already configured. Overwrite existing entry? (y/N): ', (answer: string) => {
+        rl.close();
+        if (answer.trim().toLowerCase() !== 'y') {
+          console.log('❌ Setup cancelled.');
+          return;
+        }
+        writeClientConfig(client, configPath, raw, server);
+      });
+    });
+    return;
+  }
+
+  writeClientConfig(client, configPath, raw, server);
+}
+
+function writeClientConfig(
+  client: McpClient,
+  configPath: string,
+  raw: string | undefined,
+  server: MCPServerConfig
+): void {
+  ensureDir(configPath);
+  backupExisting(configPath);
+
+  let contents: string;
+  if (isJsonClient(client)) {
+    let existing: unknown = {};
+    if (raw) {
+      try {
+        existing = JSON.parse(raw);
+      } catch (err) {
+        console.warn(`⚠️  Existing config is not valid JSON; starting fresh. (${err})`);
+      }
+    }
+    contents = `${JSON.stringify(mergeMcpServersJson(existing, server), null, 2)}\n`;
+  } else {
+    // codex
+    contents = mergeCodexToml(raw ?? '', server);
+  }
+
+  try {
+    fs.writeFileSync(configPath, contents, 'utf-8');
+  } catch (err) {
+    console.error(`❌ Failed to write config: ${err}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`\n✅ RagCode MCP server configured for ${clientLabel(client)}.`);
+  console.log('\n📝 Server entry:');
+  console.log(JSON.stringify(server, null, 2));
+  if (server.env?.RAGCODE_EMBEDDING_API_KEY === '<redacted>') {
+    console.log('\n⚠️  API key was redacted. Re-run with --include-secrets to embed it, or set the key in your environment.');
+  }
+  console.log(`\n🔄 ${restartHint(client)}`);
+}
+
+function printConfig(options: SetupMcpOptions = {}): void {
+  const client: McpClient = options.client ?? 'generic';
+  const server = buildMcpServerConfig(options);
+
+  if (client === 'codex') {
+    console.log('Add this to your Codex config (~/.codex/config.toml):\n');
+    console.log(mergeCodexToml('', server));
+    return;
+  }
 
   console.log('Add this to your MCP client config:\n');
-  console.log(JSON.stringify({ mcpServers: { ragcode: config } }, null, 2));
-  return config;
+  console.log(JSON.stringify({ mcpServers: { [SERVER_KEY]: server } }, null, 2));
 }
+
+function clientLabel(client: McpClient): string {
+  switch (client) {
+    case 'claude':
+      return 'Claude Desktop';
+    case 'claude-code':
+      return 'Claude Code';
+    case 'codex':
+      return 'Codex';
+    case 'generic':
+      return 'generic MCP client';
+  }
+}
+
+function restartHint(client: McpClient): string {
+  switch (client) {
+    case 'claude':
+      return 'Restart Claude Desktop to activate the MCP server.';
+    case 'claude-code':
+      return 'Reopen the project in Claude Code (it loads .mcp.json on startup) to activate the server.';
+    case 'codex':
+      return 'Restart your Codex session to activate the MCP server.';
+    default:
+      return 'Restart your client to activate the MCP server.';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
 
 function printHelp(): void {
   console.log(`
@@ -162,16 +356,19 @@ Usage:
   ragcode setup-mcp [options]
 
 Options:
-  --config <path>    Custom MCP config path
+  --config <path>    Custom config path (overrides the client default)
   --print            Print config without writing
   --include-secrets  Include real secrets instead of redacted placeholders
-  --client <client>  Client format: claude, codex, or generic
+  --client <client>  Target client: claude, claude-code, codex, or generic (default: claude)
+  --force            Overwrite an existing ragcode entry without prompting
   --help, -h         Show this help
 
 Examples:
-  ragcode setup-mcp
-  ragcode setup-mcp --config ~/.config/custom-mcp.json
-  ragcode setup-mcp --print
+  ragcode setup-mcp                          # Claude Desktop (default)
+  ragcode setup-mcp --client claude-code     # project .mcp.json for Claude Code
+  ragcode setup-mcp --client codex           # ~/.codex/config.toml
+  ragcode setup-mcp --client codex --print   # print TOML, write nothing
+  ragcode setup-mcp --config ~/custom.json   # custom path
   `);
 }
 
@@ -183,14 +380,15 @@ function parseOptions(args: string[]): SetupMcpOptions {
   return {
     print: args.includes('--print'),
     includeSecrets: args.includes('--include-secrets'),
+    force: args.includes('--force'),
     configPath: configIndex >= 0 ? args[configIndex + 1] : undefined,
-    client: client as SetupMcpOptions['client'] | undefined
+    client: client as McpClient | undefined
   };
 }
 
 function validateClient(client: string | undefined): void {
-  if (client && client !== 'claude' && client !== 'codex' && client !== 'generic') {
-    throw new Error(`Unsupported MCP client: ${client}`);
+  if (client && !['claude', 'claude-code', 'codex', 'generic'].includes(client)) {
+    throw new Error(`Unsupported MCP client: ${client} (expected claude, claude-code, codex, or generic)`);
   }
 }
 

@@ -112,6 +112,13 @@ npx ragcode-context-engine index .
 npx ragcode-context-engine search . "query"
 ```
 
+Working from source (no global install)? Run any command through the dev script — it executes the TypeScript entry directly via `tsx`:
+
+```bash
+npm run dev -- index .
+npm run dev -- setup-mcp --client codex --print
+```
+
 ### Upgrade semantic recall (optional, never a blocker)
 
 ```bash
@@ -147,11 +154,18 @@ Run `ragcode --help` or `ragcode <command> --help` for details.
 
 ### MCP server integration
 
-RagCode runs as an MCP server so agents like Claude can call its tools directly. Auto-register with:
+RagCode runs as an MCP server so agents like Claude can call its tools directly. Auto-register for your client:
 
 ```bash
-ragcode setup-mcp
+ragcode setup-mcp                       # Claude Desktop  (~/.../claude_desktop_config.json)
+ragcode setup-mcp --client claude-code  # Claude Code     (project ./.mcp.json)
+ragcode setup-mcp --client codex        # Codex CLI        (~/.codex/config.toml)
+ragcode setup-mcp --client codex --print # print config, write nothing
 ```
+
+Existing config is merged in place (other servers and unrelated keys are preserved, and the
+previous file is backed up). Add `--force` to overwrite an existing `ragcode` entry without
+prompting, and `--include-secrets` to embed the API key instead of redacting it.
 
 Or add it manually to your MCP client config:
 

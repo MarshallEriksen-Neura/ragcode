@@ -35,7 +35,7 @@ ragcode expand-node <repoRoot> <file[:symbol]> [--expansion focused_body|full_bo
 ```bash
 ragcode init [dir] [--defaults]      # first-run config; --defaults writes offline-first config without prompts
 ragcode configure [repoRoot]         # edit storage/embedding config; --show prints effective config; --test verifies embedding
-ragcode setup-mcp [--print] [--include-secrets] [--client claude|codex|generic]
+ragcode setup-mcp [--print] [--include-secrets] [--force] [--client claude|claude-code|codex|generic]
 ragcode mcp                          # start the MCP server over stdio
 ragcode dashboard                    # Web observability API (humans only)
 ```

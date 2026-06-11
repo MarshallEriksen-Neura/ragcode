@@ -74,7 +74,7 @@ export interface Indexer {
 }
 
 export interface ContextEngine {
-  indexRepo(repoRoot: string): Promise<RepoIndex>;
+  indexRepo(repoRoot: string, options?: IndexRefreshOptions): Promise<RepoIndex>;
   refreshIndex(repoRoot: string | undefined, options?: IndexRefreshOptions): Promise<RepoIndex>;
   indexStatus(repoRoot: string | undefined): Promise<IndexStatus>;
   recordFileEvents(repoRoot: string | undefined, filePaths: string[], options?: WatcherEventOptions): Promise<WatcherState>;

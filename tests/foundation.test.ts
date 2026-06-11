@@ -67,6 +67,25 @@ describe("RagCode foundation", () => {
     expect(hits[0]?.reason).toContain("Matched");
   });
 
+  it("emits truthful index progress phases", async () => {
+    const engine = new RagCodeEngine();
+    const phases: string[] = [];
+
+    await engine.indexRepo(tempRoot, {
+      onProgress: (event) => phases.push(event.phase)
+    });
+
+    expect(phases).toEqual(expect.arrayContaining([
+      "loading_existing_index",
+      "scanning",
+      "analyzing",
+      "writing_graph",
+      "writing_semantic",
+      "complete"
+    ]));
+    expect(phases.at(-1)).toBe("complete");
+  });
+
   it("builds budgeted context packs with file and line evidence", async () => {
     const engine = new RagCodeEngine();
     await engine.indexRepo(tempRoot);

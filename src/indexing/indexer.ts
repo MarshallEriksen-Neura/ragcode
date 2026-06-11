@@ -16,9 +16,11 @@ export class RepoIndexer implements Indexer {
 
   async indexRepo(repoRoot: string, projectId: string, project?: ProjectIdentity, options: IndexRefreshOptions = {}): Promise<RepoIndex> {
     const absoluteRoot = path.resolve(repoRoot);
+    options.onProgress?.({ phase: "loading_existing_index", message: "Loading existing index" });
     const existingFiles = await this.options.graphStore.getFiles(absoluteRoot).catch(() => []);
     const fullReindex = existingFiles.length === 0;
     const affectedPaths = fullReindex ? undefined : normalizedAffectedFiles(options.affectedFiles);
+    options.onProgress?.({ phase: "scanning", message: affectedPaths ? "Scanning affected files" : "Scanning repository" });
     const scan = await scanRepo(absoluteRoot, projectId, affectedPaths ? { filePaths: [...affectedPaths] } : {});
     const files = affectedPaths ? mergeAffectedScan(existingFiles, scan.files, affectedPaths) : scan.files;
     const skippedFiles = affectedPaths
@@ -54,6 +56,14 @@ export class RepoIndexer implements Indexer {
       ? refreshedFilePaths(files, cached.edges, changedFilePaths, deletedFiles)
       : changedFilePaths;
     const filesToAnalyze = files.filter((file) => refreshedFiles.includes(file.path));
+    options.onProgress?.({
+      phase: "analyzing",
+      message: cached ? "Analyzing changed graph slice" : "Analyzing full repository",
+      scannedFiles: scan.files.length,
+      changedFiles: changedFilePaths.length,
+      deletedFiles: deletedFiles.length,
+      refreshedFiles: refreshedFiles.length
+    });
     const { chunks, symbols, edges } = cached
       ? await chunkFilesIncremental(absoluteRoot, files, filesToAnalyze, cached)
       : await chunkFiles(absoluteRoot, files);
@@ -77,8 +87,37 @@ export class RepoIndexer implements Indexer {
       skippedFiles
     };
 
+    options.onProgress?.({
+      phase: "writing_graph",
+      message: "Writing graph index",
+      scannedFiles: index.scannedFiles?.length,
+      changedFiles: index.changedFiles.length,
+      deletedFiles: index.deletedFiles.length,
+      refreshedFiles: index.refreshedFiles?.length,
+      chunks: index.chunks.length,
+      symbols: index.symbols.length,
+      edges: index.edges.length
+    });
     await this.options.graphStore.upsertIndex(index);
+    options.onProgress?.({
+      phase: "writing_semantic",
+      message: "Writing semantic index",
+      chunks: index.chunks.length,
+      symbols: index.symbols.length,
+      edges: index.edges.length
+    });
     await this.updateSemanticIndex(absoluteRoot, projectId, index);
+    options.onProgress?.({
+      phase: "complete",
+      message: "Index complete",
+      scannedFiles: index.scannedFiles?.length,
+      changedFiles: index.changedFiles.length,
+      deletedFiles: index.deletedFiles.length,
+      refreshedFiles: index.refreshedFiles?.length,
+      chunks: index.chunks.length,
+      symbols: index.symbols.length,
+      edges: index.edges.length
+    });
     return index;
   }
 
