@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { getPackageVersion } from "../config/package-info.js";
 import { createRuntimeComponentsForRepo } from "../config/runtime-config.js";
 import type { ContextEngine } from "../core/contracts.js";
 import { RagCodeEngine, type RagCodeEngineOptions } from "../core/engine.js";
@@ -15,7 +16,7 @@ export interface StdioMcpServerOptions extends McpServerOptions, RagCodeEngineOp
 export function createMcpServer(engine: ContextEngine, options: McpServerOptions = {}): McpServer {
   const server = new McpServer({
     name: options.name ?? "ragcode-context-engine",
-    version: options.version ?? "0.1.0"
+    version: options.version ?? getPackageVersion()
   });
 
   for (const tool of listRuntimeToolDefinitions()) {

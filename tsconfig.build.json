@@ -6,6 +6,6 @@
     "declaration": true,
     "declarationMap": false
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "scripts/init-config.ts", "scripts/setup-mcp.ts"],
   "exclude": ["dist", "node_modules", "tests", "scripts", "**/*.test.ts", "**/*.test.tsx"]
 }

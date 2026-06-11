@@ -1,14 +1,14 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { createRequire } from "node:module";
+import { getPackageVersion, PACKAGE_NAME } from "../config/package-info.js";
 
 const execFileAsync = promisify(execFile);
+
+export { PACKAGE_NAME };
 
 // `ragcode update` upgrades the globally-installed CLI in place. We don't bundle an auto-updater;
 // we shell out to the package manager that owns the global install. The published package name is
 // `ragcode-context-engine` (see package.json), which is what npm/pnpm/yarn install globally.
-
-export const PACKAGE_NAME = "ragcode-context-engine";
 
 export interface UpdateOptions {
   /** Only report current vs latest; don't install. */
@@ -26,21 +26,6 @@ export interface UpdateResult {
   upToDate: boolean;
   installed: boolean;
   message: string;
-}
-
-function currentVersion(): string {
-  // The package.json depth differs between source (src/cli/update.ts -> ../../package.json) and the
-  // built layout (dist/src/cli/update.js -> ../../../package.json), so try both rather than guessing.
-  const require = createRequire(import.meta.url);
-  for (const candidate of ["../../package.json", "../../../package.json"]) {
-    try {
-      const pkg = require(candidate) as { name?: string; version?: string };
-      if (pkg.name === PACKAGE_NAME && pkg.version) return pkg.version;
-    } catch {
-      // try the next candidate
-    }
-  }
-  return "unknown";
 }
 
 // Auto-detect the package manager from the npm_config_user_agent the parent PM exposes, falling
@@ -76,7 +61,7 @@ function installArgv(pm: string, spec: string): { file: string; args: string[] }
 }
 
 export async function runUpdate(options: UpdateOptions = {}): Promise<UpdateResult> {
-  const current = currentVersion();
+  const current = getPackageVersion();
   const pm = options.packageManager ?? detectPackageManager();
   const target = options.version ?? "latest";
 

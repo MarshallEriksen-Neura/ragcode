@@ -2,6 +2,7 @@
 import path from "node:path";
 import { Command } from "commander";
 import { loadDotEnv } from "../config/dotenv.js";
+import { getPackageVersion } from "../config/package-info.js";
 import { createRuntimeComponentsForRepo } from "../config/runtime-config.js";
 import { RagCodeEngine } from "../core/engine.js";
 import { runConfigureCommand } from "./configure.js";
@@ -20,7 +21,7 @@ loadDotEnv();
 
 const program = new Command();
 
-program.name("ragcode").description("Local code intelligence context engine").version("0.1.0");
+program.name("ragcode").description("Local code intelligence context engine").version(getPackageVersion());
 
 program
   .command("index")
