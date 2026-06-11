@@ -30,7 +30,7 @@ describe("mergeMcpServersJson", () => {
 
     expect(result.mcpServers.ragcode).toEqual(SERVER);
     expect(result.mcpServers.other).toEqual({ command: "other-tool", args: ["serve"] });
-    expect((result as Record<string, unknown>).theme).toBe("dark");
+    expect((result as unknown as Record<string, unknown>).theme).toBe("dark");
   });
 
   it("overwrites an existing ragcode entry rather than duplicating it", () => {
