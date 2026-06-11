@@ -20,12 +20,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/ragcode.git"
+    "url": "git+https://github.com/MarshallEriksen-Neura/ragcode.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/ragcode/issues"
+    "url": "https://github.com/MarshallEriksen-Neura/ragcode/issues"
   },
-  "homepage": "https://github.com/yourusername/ragcode#readme",
+  "homepage": "https://github.com/MarshallEriksen-Neura/ragcode#readme",
   "bin": {
     "ragcode": "./dist/src/cli/index.js"
   },
