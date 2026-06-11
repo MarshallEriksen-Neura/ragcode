@@ -201,7 +201,15 @@ Or add it manually to your MCP client config:
 }
 ```
 
-**Available MCP tools:** `index_repo`, `search_code`, `get_context`, `find_symbol`, `explain_file`, `find_owner`, `impact_analysis`, `related_tests`, `trace_flow`, `review_diff`.
+**Available MCP tools (19):**
+
+- *Index lifecycle* — `index_repo`, `refresh_index`, `index_status`, `record_file_events`, `watch_status`
+- *Search & context* — `search_code`, `get_context`, `topology_map`, `expand_node`
+- *Symbols & files* — `find_symbol`, `explain_file`, `find_owner`, `find_reuse_candidates`
+- *Impact & flow* — `impact_analysis`, `explain_impact`, `related_tests`, `trace_flow`, `trace_request_flow`
+- *Review* — `review_diff`
+
+`watch_status` is read-only: it reports whether a live watcher is keeping the index fresh, but never starts one (that belongs to `ragcode watch` or the OS service).
 
 ### Web dashboard (observation and debugging)
 
@@ -260,7 +268,7 @@ ragcode/
 - **Multi-language analysis** — full AST support for TypeScript/JavaScript via the TS Compiler API; tree-sitter–backed analysis for Python, Go, Rust, and Java, with fallback line chunking for other file types.
 - **Incremental freshness** — chokidar OS watcher → durable event journal → dirty-file coalescing → background batched re-index. Restarts replay the journal so no dirty work is lost.
 - **Offline-first** — deterministic embeddings require no API key; swap in an OpenAI-compatible provider whenever you want, without re-architecting.
-- **MCP-native** — ten agent tools over a thin stdio server, plus a Codex/OMX skill template that routes agents to MCP first with CLI fallback.
+- **MCP-native** — 19 agent tools over a thin stdio server (index lifecycle, search/context, impact/flow, review), plus a Codex/OMX skill template that routes agents to MCP first with CLI fallback.
 - **Web observability** — graph visualization, search debugger, context-pack inspector, watcher monitor, and a redacted runtime-config view.
 
 ---

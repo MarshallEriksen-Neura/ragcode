@@ -198,7 +198,15 @@ ragcode setup-mcp --client codex --print # 仅打印配置，不写文件
 }
 ```
 
-**可用的 MCP 工具：** `index_repo`、`search_code`、`get_context`、`find_symbol`、`explain_file`、`find_owner`、`impact_analysis`、`related_tests`、`trace_flow`、`review_diff`。
+**可用的 MCP 工具（共 19 个）：**
+
+- *索引生命周期* — `index_repo`、`refresh_index`、`index_status`、`record_file_events`、`watch_status`
+- *搜索与上下文* — `search_code`、`get_context`、`topology_map`、`expand_node`
+- *符号与文件* — `find_symbol`、`explain_file`、`find_owner`、`find_reuse_candidates`
+- *影响与流向* — `impact_analysis`、`explain_impact`、`related_tests`、`trace_flow`、`trace_request_flow`
+- *评审* — `review_diff`
+
+`watch_status` 是只读的：它报告是否有活着的 watcher 在保持索引新鲜，但绝不启动 watcher（启动属于 `ragcode watch` 或 OS 服务的职责）。
 
 ### Web 仪表盘（观测与调试）
 
@@ -257,7 +265,7 @@ ragcode/
 - **多语言分析** — 通过 TS Compiler API 对 TypeScript/JavaScript 提供完整 AST 支持；通过 tree-sitter 对 Python、Go、Rust、Java 进行分析，其他文件类型则回退到按行分块。
 - **增量新鲜度** — chokidar OS 监听 → 持久化事件日志 → 脏文件合并 → 后台批量重建索引。重启时回放日志，确保脏文件工作不丢失。
 - **离线优先** — 确定性嵌入无需 API key；任何时候都能换成 OpenAI 兼容的提供商，无需重构架构。
-- **MCP 原生** — 十个智能体工具运行在轻薄的 stdio 服务之上，外加一个 Codex/OMX 技能模板，引导智能体优先走 MCP、CLI 兜底。
+- **MCP 原生** — 19 个智能体工具运行在轻薄的 stdio 服务之上（索引生命周期、搜索/上下文、影响/流向、评审），外加一个 Codex/OMX 技能模板，引导智能体优先走 MCP、CLI 兜底。
 - **Web 可观测性** — 图可视化、搜索调试器、上下文包检视器、监听器监控，以及脱敏的运行时配置视图。
 
 ---
