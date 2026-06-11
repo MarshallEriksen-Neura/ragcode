@@ -27,7 +27,7 @@
   },
   "homepage": "https://github.com/MarshallEriksen-Neura/ragcode#readme",
   "bin": {
-    "ragcode": "./dist/src/cli/index.js"
+    "ragcode": "dist/src/cli/index.js"
   },
   "files": [
     "dist/src",
