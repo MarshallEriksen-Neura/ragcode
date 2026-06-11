@@ -89,11 +89,18 @@ describe("CLI persisted reads", () => {
 });
 
 async function runCli(args: string[], env: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string }> {
-  const result = await execFileAsync("bun", ["--silent", "run", "dev", "--", ...args], {
-    cwd: process.cwd(),
-    env,
-    encoding: "utf8"
-  });
+  // Run the CLI through the current Node + tsx loader (matches the repo's `node --import tsx`
+  // convention) so the test has no implicit dependency on bun being installed — CI has node
+  // and tsx but not bun, which previously caused `spawn bun ENOENT`.
+  const result = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "src/cli/index.ts", ...args],
+    {
+      cwd: process.cwd(),
+      env,
+      encoding: "utf8"
+    }
+  );
   return {
     stdout: String(result.stdout),
     stderr: String(result.stderr)
