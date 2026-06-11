@@ -13,9 +13,23 @@
 
 <p align="center"><b>English</b> · <a href="./README.zh-CN.md">简体中文</a></p>
 
-RagCode is a **local code intelligence foundation** for agent-facing context retrieval. It is not a UI and not a generic RAG demo — it is a durable base that cleanly separates structural code indexing, semantic retrieval, context packing, and MCP integration so each layer can evolve independently.
+RagCode is a **fully-local, verified context layer for coding agents.**
 
-It builds on ideas from projects like CodeGraph and Understand-Anything, adding a LanceDB semantic layer and a stronger context-engine contract: `get_context` returns the smallest currently indexed *task context pack* an agent needs to answer, debug, modify, or review code — with explicit citations, freshness, ownership, topology, and a record of what evidence is still missing.
+Most code-intelligence tools *retrieve* — they hand an agent relevant snippets and stop there. RagCode goes one step further: it tells the agent **whether it has enough verified context to safely act**. Every answer carries explicit citations, freshness, ownership, blast-radius, coverage signals, and an `edit-readiness` verdict (`safe_to_edit_after_reading` / `investigate_only` / `not_enough_context`) — plus an honest record of what evidence is still missing.
+
+It is **editor-agnostic and MCP-native** (Claude Code, Codex, or any MCP client — not locked to one editor) and runs **entirely on your machine** (no account, no API key, no code leaving the building). The first run works offline with deterministic embeddings; swap in an OpenAI-compatible provider only if and when you want better recall.
+
+Under the hood it cleanly separates structural code indexing, semantic retrieval, context packing, and MCP integration so each layer evolves independently — building on ideas from projects like CodeGraph and Understand-Anything, with a LanceDB semantic layer and a stronger context-engine contract on top.
+
+---
+
+## Why RagCode
+
+| If you need… | RagCode fits because… |
+|---|---|
+| Context that isn't locked to one editor | MCP-native; works with any agent harness, not a single IDE |
+| Code that never leaves your machine | Fully local index + offline embeddings; no cloud round-trip |
+| Agents that act correctly, not just confidently | Verified subgraphs with coverage signals + `edit-readiness`, not raw snippet dumps |
 
 ---
 
