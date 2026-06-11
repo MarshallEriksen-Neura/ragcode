@@ -266,12 +266,18 @@ program
   .argument("[directory]")
   .option("-y, --yes", "write offline-first defaults without interactive prompts")
   .option("--defaults", "write offline-first defaults without interactive prompts")
-  .description("Initialize RagCode configuration (interactive wizard)")
+  .description("Initialize RagCode configuration (interactive first-run setup)")
   .action(async (directory: string | undefined, options: { yes?: boolean; defaults?: boolean }) => {
-    await runInitConfig({
-      targetDir: directory || process.cwd(),
-      defaults: Boolean(options.yes || options.defaults)
-    });
+    const targetDir = directory || process.cwd();
+    const defaults = Boolean(options.yes || options.defaults);
+    if (!defaults && process.stdin.isTTY) {
+      // Interactive first-run goes through the Ink wizard (same app as `ragcode configure`,
+      // first_run mode defaults index/setup-mcp to yes). Loaded lazily to keep --defaults light.
+      const { runInkConfigure } = await import("./configure/run.js");
+      await runInkConfigure({ repoRoot: targetDir, mode: "first_run" });
+      return;
+    }
+    await runInitConfig({ targetDir, defaults: true });
   });
 
 program

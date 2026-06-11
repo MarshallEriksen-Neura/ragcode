@@ -1,4 +1,3 @@
-import readline from "node:readline/promises";
 import {
   loadRuntimeConfig,
   readRuntimeConfigFile,
@@ -84,11 +83,16 @@ export async function runConfigureCommand(repoRootArg: string | undefined, optio
     return;
   }
 
-  const updates = hasEditFlags ? pickUpdates(options) : await interactiveUpdates(repoRoot);
-  if (!updates) {
-    console.log("Configuration unchanged.");
+  if (!hasEditFlags) {
+    // Interactive path: the Ink wizard (loaded lazily so flag-driven runs never pull in
+    // ink/react). It collects answers via the state machine and executes test/save/index/
+    // setup-mcp itself.
+    const { runInkConfigure } = await import("./configure/run.js");
+    await runInkConfigure({ repoRoot, mode: "configure" });
     return;
   }
+
+  const updates = pickUpdates(options);
   const result = await applyConfigureUpdates({
     repoRoot,
     updates,
@@ -118,47 +122,6 @@ function pickUpdates(options: ConfigureCommandOptions): ConfigureUpdates {
     if (options[key] !== undefined) (updates as Record<string, unknown>)[key] = options[key];
   }
   return updates;
-}
-
-async function interactiveUpdates(repoRoot: string): Promise<ConfigureUpdates | undefined> {
-  const current = redactRuntimeConfig(loadRuntimeConfig({ cwd: repoRoot, overrides: { repoRoot } }));
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    console.log("🛠  RagCode Configure (Enter keeps the current value)\n");
-    const updates: ConfigureUpdates = {};
-
-    const graphStore = await ask(rl, `Graph store (memory/sqlite) [${current.graphStore}]: `);
-    if (graphStore) updates.graphStore = graphStore;
-    const semanticStore = await ask(rl, `Semantic store (memory/lancedb) [${current.semanticStore}]: `);
-    if (semanticStore) updates.semanticStore = semanticStore;
-    const provider = await ask(rl, `Embedding provider (deterministic/openai-compatible) [${current.embeddingProvider}]: `);
-    if (provider) updates.embeddingProvider = provider;
-
-    const effectiveProvider = updates.embeddingProvider ?? current.embeddingProvider;
-    if (effectiveProvider === "openai-compatible") {
-      const baseUrl = await ask(rl, `Embedding base URL [${current.embeddingBaseUrl ?? "https://api.openai.com/v1"}]: `);
-      if (baseUrl) updates.embeddingBaseUrl = baseUrl;
-      const model = await ask(rl, `Embedding model [${current.embeddingModel ?? "text-embedding-3-small"}]: `);
-      if (model) updates.embeddingModel = model;
-      const apiKey = await ask(rl, `Embedding API key [${current.embeddingApiKey === "set" ? "keep existing" : "unset"}]: `);
-      if (apiKey) updates.embeddingApiKey = apiKey;
-      const dimensions = await ask(rl, `Embedding dimensions [${current.embeddingDimensions ?? "provider default"}]: `);
-      if (dimensions) updates.embeddingDimensions = Number(dimensions);
-      const requestDimensions = await ask(rl, `Request dimensions from provider (true/false) [${current.embeddingRequestDimensions}]: `);
-      if (requestDimensions) updates.embeddingRequestDimensions = requestDimensions === "true";
-    }
-
-    if (Object.keys(updates).length === 0) return undefined;
-    const confirm = await ask(rl, "Save these changes? (Y/n): ");
-    if (confirm.toLowerCase() === "n") return undefined;
-    return updates;
-  } finally {
-    rl.close();
-  }
-}
-
-async function ask(rl: readline.Interface, prompt: string): Promise<string> {
-  return (await rl.question(prompt)).trim();
 }
 
 function printEmbeddingTest(result: EmbeddingTestResult): void {
