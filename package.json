@@ -29,8 +29,13 @@
   "bin": {
     "ragcode": "./dist/src/cli/index.js"
   },
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "npm run build",
     "audit:plan": "tsx scripts/audit-plan.ts",
     "check": "tsc -p tsconfig.json --noEmit",
