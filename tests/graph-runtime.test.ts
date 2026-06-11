@@ -23,7 +23,8 @@ describe("graph runtime configuration", () => {
 
     expect(config).toEqual({
       graphStore: "memory",
-      sqlitePath: "D:\\repo\\.ragcode\\graph.sqlite"
+      // Derived via path.join — separator is platform-dependent (\\ on Windows, / on POSIX/CI).
+      sqlitePath: path.join("D:/repo", ".ragcode", "graph.sqlite")
     });
   });
 

@@ -12,7 +12,8 @@ describe("semantic runtime configuration", () => {
     expect(config).toMatchObject({
       semanticStore: "memory",
       embeddingProvider: "deterministic",
-      lanceDbUri: "D:\\repo\\.ragcode\\lancedb",
+      // Derived via path.join — separator is platform-dependent (\\ on Windows, / on POSIX/CI).
+      lanceDbUri: path.join("D:/repo", ".ragcode", "lancedb"),
       lanceDbTableName: "code_chunks",
       embeddingBatchSize: 64,
       embeddingConcurrency: 1
