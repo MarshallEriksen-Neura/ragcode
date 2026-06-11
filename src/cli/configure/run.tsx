@@ -72,9 +72,22 @@ export async function runInkConfigure(options: { repoRoot: string; mode: WizardM
     setupMCP({ cwd: repoRoot, env: process.env });
   }
 
+  if (result.actions.installWatcherService) {
+    // Loaded lazily so the wizard doesn't pull in the service layer unless the user opts in.
+    const { installWatcherService } = await import("../../service/service-manager.js");
+    try {
+      const service = await installWatcherService(repoRoot);
+      console.log(service.ok ? `👁  ${service.message}` : `⚠️  ${service.message}`);
+    } catch (error) {
+      console.log(`⚠️  Could not install the background watcher service: ${error instanceof Error ? error.message : String(error)}`);
+      console.log("   You can still keep the index fresh by running `ragcode watch .` manually.");
+    }
+  }
+
   console.log("\n🚀 Summary / next steps:");
   if (!result.actions.indexNow) console.log("  ragcode index .            # build the index");
   if (!result.actions.setupMcp) console.log("  ragcode setup-mcp          # register the MCP server");
+  if (!result.actions.installWatcherService) console.log("  ragcode service install .  # keep the index fresh automatically");
   console.log("  ragcode configure          # adjust storage/embedding later");
   console.log("  ragcode dashboard          # observe graph/search/context/watch");
 }

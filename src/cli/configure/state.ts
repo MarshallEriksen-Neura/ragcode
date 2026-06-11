@@ -39,6 +39,7 @@ export interface WizardActions {
   save: boolean;
   indexNow: boolean;
   setupMcp: boolean;
+  installWatcherService: boolean;
 }
 
 export interface WizardResult {
@@ -139,6 +140,15 @@ export function createWizardState(mode: WizardMode, repoRoot: string, current: R
       title: "Register the MCP server for your agent client now?",
       defaultValue: mode === "first_run" ? "yes" : "no",
       skip: (answers) => answers.save !== "yes"
+    },
+    {
+      key: "installWatcherService",
+      kind: "confirm",
+      // Without this, freshness silently depends on a long-lived `ragcode watch` nobody starts.
+      // Installing the OS service is what actually closes the onboarding loop.
+      title: "Enable a background watcher service so the index stays fresh automatically?",
+      defaultValue: mode === "first_run" ? "yes" : "no",
+      skip: (answers) => answers.save !== "yes"
     }
   ];
 
@@ -198,7 +208,8 @@ export function wizardResult(state: WizardState): WizardResult | undefined {
       testEmbedding: answers.testEmbedding === "yes",
       save: answers.save === "yes",
       indexNow: answers.indexNow === "yes",
-      setupMcp: answers.setupMcp === "yes"
+      setupMcp: answers.setupMcp === "yes",
+      installWatcherService: answers.installWatcherService === "yes"
     }
   };
 }

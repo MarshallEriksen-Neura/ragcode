@@ -6,6 +6,7 @@ import { RagCodeEngine } from "../core/engine.js";
 import type { IndexStatus, RepoIndex, SearchHit } from "../core/types.js";
 import { createMcpServer } from "../mcp/server.js";
 import { listToolDefinitions } from "../mcp/tools.js";
+import { readWatcherLiveness, type WatcherLivenessState } from "../watch/watcher-liveness.js";
 
 export interface DoctorOptions {
   cwd?: string;
@@ -36,6 +37,14 @@ export interface DoctorReport {
   mcp: DoctorCheck & {
     toolCount: number;
     tools: string[];
+  };
+  watcher?: DoctorCheck & {
+    state: WatcherLivenessState;
+    processAlive: boolean;
+    heartbeatFresh: boolean;
+    heartbeatAgeMs?: number;
+    pendingFiles?: number;
+    indexingFiles?: number;
   };
   smoke?: DoctorCheck & {
     repoRoot: string;
@@ -91,6 +100,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   };
 
   if (options.repoRoot) {
+    report.watcher = await buildWatcherCheck(path.resolve(cwd, options.repoRoot));
     report.smoke = await runRepoSmoke({
       cwd,
       env,
@@ -111,6 +121,32 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   ].filter((check): check is DoctorCheck => Boolean(check)).every((check) => check.ok);
 
   return report;
+}
+
+// Watcher liveness is informational: a repo with no running watcher is a valid (if not-auto-fresh)
+// state, so this never flips report.ok to false. It surfaces the gap the lifecycle work closes —
+// "indexed but nothing keeps it fresh" — so `doctor <repo>` is where a user discovers they should
+// run `ragcode service install`.
+async function buildWatcherCheck(repoRoot: string): Promise<NonNullable<DoctorReport["watcher"]>> {
+  const liveness = await readWatcherLiveness(repoRoot);
+  const message =
+    liveness.state === "running"
+      ? `Watcher running (pid ${liveness.lock?.pid}); heartbeat ${liveness.heartbeatAgeMs}ms ago.`
+      : liveness.state === "stale"
+        ? `Watcher process is alive but its heartbeat is stale (${liveness.heartbeatAgeMs}ms old); it may be hung.`
+        : liveness.state === "dead"
+          ? "A watcher lock/heartbeat exists but no live process backs it; it likely crashed. Re-run `ragcode service install` or `ragcode watch`."
+          : "No background watcher running. The index will not auto-refresh. Run `ragcode service install <repo>` to keep it fresh across reboots.";
+  return {
+    ok: true,
+    message,
+    state: liveness.state,
+    processAlive: liveness.processAlive,
+    heartbeatFresh: liveness.heartbeatFresh,
+    heartbeatAgeMs: liveness.heartbeatAgeMs,
+    pendingFiles: liveness.heartbeat?.pendingFiles,
+    indexingFiles: liveness.heartbeat?.indexingFiles
+  };
 }
 
 function checkNodeVersion(): DoctorCheck {

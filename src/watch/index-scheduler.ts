@@ -8,6 +8,14 @@ export interface WatchIndexSchedulerOptions extends WatcherEventOptions {
   maxRetryAttempts?: number;
   maxRetryDelayMs?: number;
   autoIndex?: boolean;
+  /**
+   * Idle re-scan interval. Even with no in-process chokidar events, the scheduler periodically
+   * re-reads dirty state from the shared store so that dirty files written by *another* process
+   * (an MCP client calling record_file_events, a manual `ragcode record-events`) get picked up by
+   * the live daemon. This is what makes the SQLite dirty table a cross-process work queue without
+   * any IPC. Set 0 to disable. Defaults to 3000ms.
+   */
+  idlePollMs?: number;
   onStatus?: (status: WatchIndexSchedulerStatus) => void;
 }
 
@@ -27,9 +35,11 @@ const DEFAULT_MIN_QUIET_MS = 250;
 const DEFAULT_MAX_BATCH_FILES = 1_000;
 const DEFAULT_MAX_RETRY_ATTEMPTS = 5;
 const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
+const DEFAULT_IDLE_POLL_MS = 3_000;
 
 export class WatchIndexScheduler {
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private idleTimer: ReturnType<typeof setInterval> | undefined;
   private running = false;
   private indexing = false;
   private lastIndexedAtMs: number | undefined;
@@ -45,17 +55,41 @@ export class WatchIndexScheduler {
   start(): void {
     if (this.running) return;
     this.running = true;
+    this.startIdlePoll();
     this.schedule();
   }
 
   async stop(): Promise<void> {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
+    if (this.idleTimer) clearInterval(this.idleTimer);
     this.timer = undefined;
+    this.idleTimer = undefined;
     while (this.indexing) {
       await sleep(25);
     }
     await this.emitStatus();
+  }
+
+  // Low-frequency safety net: when no in-process event timer is armed, re-check the shared dirty
+  // store and arm a flush if another process queued work. Cheap (one indexStatus read) and skipped
+  // entirely while a flush is already scheduled or running, so it never competes with event flow.
+  private startIdlePoll(): void {
+    const interval = this.options.idlePollMs ?? DEFAULT_IDLE_POLL_MS;
+    if (interval <= 0 || this.options.autoIndex === false) return;
+    this.idleTimer = setInterval(() => {
+      if (!this.running || this.indexing || this.timer) return;
+      void this.engine
+        .indexStatus(this.repoRoot)
+        .then((status) => {
+          if (this.running && !this.indexing && !this.timer && (status.pendingFileCount > 0 || status.indexingFileCount > 0)) {
+            this.schedule(0);
+          }
+        })
+        .catch(() => undefined);
+    }, interval);
+    // Don't keep the event loop alive solely for the idle poll; the watcher itself holds the process.
+    this.idleTimer.unref?.();
   }
 
   schedule(delayMs = this.options.batchDelayMs ?? DEFAULT_BATCH_DELAY_MS): void {

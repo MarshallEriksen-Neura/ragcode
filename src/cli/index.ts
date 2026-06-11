@@ -10,8 +10,11 @@ import { startStdioMcpServer } from "../mcp/server.js";
 import { buildExplainImpactReport } from "../subgraph/impact-explainer.js";
 import { expandNode, parseNodeRef } from "../subgraph/node-expander.js";
 import { FileWatchDaemon } from "../watch/watch-daemon.js";
+import { WatcherLockError, readWatcherLiveness } from "../watch/watcher-liveness.js";
+import { installWatcherService, uninstallWatcherService, watcherServiceStatus, UnsupportedPlatformError } from "../service/service-manager.js";
 import { runInitConfig } from "../../scripts/init-config.js";
 import { setupMCP } from "../../scripts/setup-mcp.js";
+import { runUpdate } from "./update.js";
 
 loadDotEnv();
 
@@ -271,6 +274,15 @@ program
         await daemon.start();
         tui.update(await daemon.status());
         await tui.waitUntilExit();
+      } catch (error) {
+        if (error instanceof WatcherLockError) {
+          // Another live watcher already owns this repo. shutdown() (guarded, runs in finally)
+          // tears down our half-started daemon and closes the engine; just surface the reason.
+          tui?.unmount();
+          console.error(`⚠️  ${error.message}`);
+          return;
+        }
+        throw error;
       } finally {
         process.removeListener("SIGINT", exitFromSignal);
         process.removeListener("SIGTERM", exitFromSignal);
@@ -303,8 +315,68 @@ program
     process.once("SIGTERM", () => {
       void shutdown().finally(() => process.exit(0));
     });
-    await daemon.start();
+    try {
+      await daemon.start();
+    } catch (error) {
+      if (error instanceof WatcherLockError) {
+        engine.close();
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
+      throw error;
+    }
     console.log(JSON.stringify(await daemon.status(), null, 2));
+  });
+
+const service = program
+  .command("service")
+  .description("Manage the background watcher as an OS service (one per repo) so freshness survives reboots");
+
+service
+  .command("install")
+  .argument("<repoRoot>")
+  .option("--poll", "register the watcher with polling instead of native fs.watch")
+  .description("Register and start a background watcher service for this repo (systemd user / launchd / Task Scheduler)")
+  .action(async (repoRoot: string, options: { poll?: boolean }) => {
+    // Index once up front so the service can start with --no-index-on-start and not block on a full
+    // reindex at boot. Then register the OS unit. The per-repo lock (P0) makes redundant launches safe.
+    await withEngine(repoRoot, (engine) => engine.indexRepo(repoRoot));
+    try {
+      const result = await installWatcherService(repoRoot, { extraArgs: options.poll ? ["--poll"] : undefined });
+      console.log(JSON.stringify(result, null, 2));
+      if (!result.ok) process.exitCode = 1;
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+service
+  .command("uninstall")
+  .argument("<repoRoot>")
+  .description("Stop and remove the background watcher service for this repo")
+  .action(async (repoRoot: string) => {
+    try {
+      const result = await uninstallWatcherService(repoRoot);
+      console.log(JSON.stringify(result, null, 2));
+      if (!result.ok) process.exitCode = 1;
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+service
+  .command("status")
+  .argument("<repoRoot>")
+  .description("Report whether a watcher service is registered and whether the watcher process is alive")
+  .action(async (repoRoot: string) => {
+    const [registration, liveness] = await Promise.all([
+      watcherServiceStatus(repoRoot),
+      readWatcherLiveness(path.resolve(repoRoot))
+    ]);
+    console.log(JSON.stringify({ registration, liveness }, null, 2));
   });
 
 program
@@ -368,7 +440,6 @@ program
   .command("configure")
   .argument("[repoRoot]")
   .option("--show", "Print the effective runtime config (secrets redacted) and exit")
-  .option("--test", "Test the effective embedding provider")
   .option("--graph-store <store>", "Graph store: memory or sqlite")
   .option("--sqlite-path <path>", "SQLite graph database path")
   .option("--semantic-store <store>", "Semantic store: memory or lancedb")
@@ -408,6 +479,18 @@ program
       embeddingDimensions: options.dimensions,
       embeddingRequestDimensions: options.requestDimensions === undefined ? undefined : options.requestDimensions === "true"
     });
+  });
+
+program
+  .command("update")
+  .option("--check", "only report whether a newer version is available; don't install")
+  .option("--pm <manager>", "package manager to use: npm, pnpm, or yarn (default: auto-detect)")
+  .option("--version <version>", "install a specific version or dist-tag instead of latest")
+  .description("Update the globally-installed RagCode CLI to the latest version")
+  .action(async (options: { check?: boolean; pm?: string; version?: string }) => {
+    const result = await runUpdate({ checkOnly: options.check, packageManager: options.pm, version: options.version });
+    console.log(result.message);
+    if (!result.ok) process.exitCode = 1;
   });
 
 program

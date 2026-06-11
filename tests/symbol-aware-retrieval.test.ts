@@ -81,6 +81,45 @@ describe("symbol-aware retrieval", () => {
     expect(files).toContain("packages/vite/src/node/build.ts");
     expect(indexOf(files, "packages/vite/src/node/plugins/index.ts")).toBeLessThan(indexOf(files, "packages/vite/src/node/plugins/__tests__/resolve.spec.ts"));
   });
+
+  it("keeps test-heavy files behind implementation owners for default owner queries", async () => {
+    const engine = new RagCodeEngine();
+    await engine.indexRepo(tempRoot);
+
+    const owners = await engine.findOwner(tempRoot, "resolve plugins build hooks", 6);
+    const files = owners.map((owner) => owner.filePath);
+
+    expect(files[0]).toBe("packages/vite/src/node/plugins/index.ts");
+    expect(indexOf(files, "packages/vite/src/node/plugins/index.ts")).toBeLessThan(indexOf(files, "packages/vite/src/node/plugins/__tests__/resolve.spec.ts"));
+    expect(owners.find((owner) => owner.filePath === "packages/vite/src/node/plugins/__tests__/resolve.spec.ts")?.reasons)
+      .toEqual(expect.arrayContaining([expect.stringContaining("test default demotion")]));
+  });
+
+  it("keeps explicitly requested test owners eligible for the top owner result", async () => {
+    const engine = new RagCodeEngine();
+    await engine.indexRepo(tempRoot);
+
+    const owners = await engine.findOwner(tempRoot, "resolve plugins build hooks spec", 6);
+
+    expect(owners[0]?.filePath).toBe("packages/vite/src/node/plugins/__tests__/resolve.spec.ts");
+    expect(owners[0]?.reasons).toEqual(expect.arrayContaining([expect.stringContaining("test relevance boost")]));
+  });
+
+  it("applies owner test-path intent with SQLite FTS", async () => {
+    const dbDir = path.join(tempRoot, ".ragcode-owner-test");
+    await fs.mkdir(dbDir, { recursive: true });
+    const store = new SQLiteGraphStore(path.join(dbDir, "graph.sqlite"));
+    openStores.push(store);
+    const engine = new RagCodeEngine({ graphStore: store });
+    await engine.indexRepo(tempRoot);
+
+    const defaultOwners = await engine.findOwner(tempRoot, "resolve plugins build hooks", 6);
+    const defaultFiles = defaultOwners.map((owner) => owner.filePath);
+    expect(indexOf(defaultFiles, "packages/vite/src/node/plugins/index.ts")).toBeLessThan(indexOf(defaultFiles, "packages/vite/src/node/plugins/__tests__/resolve.spec.ts"));
+
+    const testOwners = await engine.findOwner(tempRoot, "resolve plugins build hooks spec", 6);
+    expect(testOwners[0]?.filePath).toBe("packages/vite/src/node/plugins/__tests__/resolve.spec.ts");
+  });
 });
 
 function assertImplementationOwnersLeadSupportingEvidence(hits: Awaited<ReturnType<RagCodeEngine["searchCode"]>>): void {

@@ -49,7 +49,7 @@ describe("configure wizard state machine", () => {
       embeddingProvider: "deterministic"
     });
     expect(result?.updates.embeddingBaseUrl).toBeUndefined();
-    expect(result?.actions).toEqual({ testEmbedding: true, save: true, indexNow: false, setupMcp: false });
+    expect(result?.actions).toEqual({ testEmbedding: true, save: true, indexNow: false, setupMcp: false, installWatcherService: false });
   });
 
   it("walks openai-compatible provider details and collects them into updates", () => {
@@ -67,6 +67,7 @@ describe("configure wizard state machine", () => {
     state = answerCurrentStep(state, "yes");                    // save
     state = answerCurrentStep(state, "");                       // index now (default no)
     state = answerCurrentStep(state, "");                       // setup mcp (default no)
+    state = answerCurrentStep(state, "");                       // install watcher service (default no)
 
     const result = wizardResult(state);
     expect(result?.updates).toEqual({
@@ -93,7 +94,7 @@ describe("configure wizard state machine", () => {
   it("defaults index-now and setup-mcp to yes in first_run mode", () => {
     const state = acceptDefaults(createWizardState("first_run", "/repo", baseConfig));
 
-    expect(wizardResult(state)?.actions).toEqual({ testEmbedding: true, save: true, indexNow: true, setupMcp: true });
+    expect(wizardResult(state)?.actions).toEqual({ testEmbedding: true, save: true, indexNow: true, setupMcp: true, installWatcherService: true });
   });
 
   it("skips index/setup-mcp steps when the user declines saving", () => {
@@ -105,7 +106,7 @@ describe("configure wizard state machine", () => {
     state = answerCurrentStep(state, "no");  // save -> index/setup-mcp skipped
 
     expect(state.done).toBe(true);
-    expect(wizardResult(state)?.actions).toEqual({ testEmbedding: false, save: false, indexNow: false, setupMcp: false });
+    expect(wizardResult(state)?.actions).toEqual({ testEmbedding: false, save: false, indexNow: false, setupMcp: false, installWatcherService: false });
   });
 });
 
@@ -124,7 +125,7 @@ describe("configure wizard ink rendering", () => {
     expect(lastFrame()).toContain("RagCode Configure");
     expect(lastFrame()).toContain("Graph store");
 
-    for (let presses = 0; presses < 7 && !finished; presses += 1) {
+    for (let presses = 0; presses < 8 && !finished; presses += 1) {
       stdin.write("\r");
       await tick();
     }

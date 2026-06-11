@@ -6,6 +6,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { RagCodeEngine } from '../core/engine.js'
 import { createRuntimeComponentsForRepo, loadRuntimeConfig, readRuntimeConfigFile, redactRuntimeConfig, writeRuntimeConfigFile, type RuntimeConfigFile } from '../config/runtime-config.js'
 import { FileWatchDaemon, type WatchDaemonStatus } from '../watch/watch-daemon.js'
+import { readWatcherLiveness } from '../watch/watcher-liveness.js'
 import type { WatchEventJournalEntry } from '../watch/event-journal.js'
 import type { ContextMode, SymbolNode, VerifiedSubgraphMode } from '../core/types.js'
 
@@ -293,8 +294,12 @@ app.post('/api/subgraph', async (req, res) => {
 
 // ===== Watch daemon control =====
 app.get('/api/watch/status', async (_req, res) => {
-  if (!daemon) return res.json({ running: false, status: null })
-  res.json({ running: true, status: await daemon.status() })
+  // Report both the dashboard's in-process observation daemon (if started here) and the on-disk
+  // liveness of any OS-service watcher, so the UI shows freshness even when the watcher is owned by
+  // systemd/launchd/Task Scheduler rather than this process.
+  const liveness = await readWatcherLiveness(activeRepo ?? defaultRepo)
+  if (!daemon) return res.json({ running: false, status: null, liveness })
+  res.json({ running: true, status: await daemon.status(), liveness })
 })
 
 app.post('/api/watch/start', async (_req, res) => {
@@ -304,6 +309,10 @@ app.post('/api/watch/start', async (_req, res) => {
   try {
     daemon = new FileWatchDaemon(eng, activeRepo ?? defaultRepo, {
       indexOnStart: false,
+      // This is an in-process observation daemon for the dashboard, not the canonical watcher. Don't
+      // acquire the per-repo lock or publish a heartbeat — that belongs to `ragcode watch` / the OS
+      // service. Without this, starting observation here would collide with a live service watcher.
+      manageLifecycleFiles: false,
       onEvent: (event: WatchEventJournalEntry) => {
         broadcast({ type: 'file-event', event: event.event, path: event.filePath, timestamp: event.observedAtMs })
       },

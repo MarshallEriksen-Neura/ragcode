@@ -23,6 +23,7 @@ import { normalizeUserPath } from "../utils/path.js";
 import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
 import { buildQueryMatchProfile, scoreChunkText, scoreSymbolText } from "../retrieval/query-matching.js";
 import { extractChangedFiles } from "./diff-files.js";
+import { applyOwnerPathIntent } from "./owner-ranking.js";
 
 interface RepoGraphState {
   projectId?: string;
@@ -255,12 +256,13 @@ export class InMemoryGraphStore implements GraphStore {
       candidates.set(symbol.filePath, existing);
     }
 
-    return [...candidates.values()]
+    const ranked = applyOwnerPathIntent([...candidates.values()]
       .map((candidate) => ({
         ...candidate,
         reasons: [...new Set(candidate.reasons)],
         symbols: uniqueSymbols(candidate.symbols)
-      }))
+      })), query);
+    return ranked
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
   }

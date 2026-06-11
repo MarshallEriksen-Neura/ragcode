@@ -27,6 +27,7 @@ import { SqliteStatements } from "./sqlite-statements.js";
 import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
 import { buildQueryMatchProfile, scoreChunkText, scoreSymbolText } from "../retrieval/query-matching.js";
 import { extractChangedFiles } from "./diff-files.js";
+import { applyOwnerPathIntent } from "./owner-ranking.js";
 
 export class SQLiteGraphStore implements GraphStore {
   private readonly db: DatabaseSync;
@@ -35,7 +36,16 @@ export class SQLiteGraphStore implements GraphStore {
   constructor(dbPath: string) {
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout = 5000");
-    this.db.exec("PRAGMA journal_mode = DELETE");
+    // WAL lets readers (search/context/status) run without blocking the single background
+    // writer (the watch daemon's indexer). Concurrent writers are still serialized by SQLite's
+    // write lock, but with WAL they no longer abort each other on contention the way DELETE
+    // mode does. This is the prerequisite for running a long-lived watcher alongside ad-hoc
+    // CLI/MCP index calls. SQLiteGraphStore is only ever constructed with an on-disk path
+    // (the `memory` graph kind routes to InMemoryGraphStore), so WAL always applies.
+    this.db.exec("PRAGMA journal_mode = WAL");
+    // NORMAL is the standard durability/throughput tradeoff under WAL: durable across app
+    // crashes, only at risk on OS/power loss, which is acceptable for a rebuildable index.
+    this.db.exec("PRAGMA synchronous = NORMAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.migrate();
     this.sql = new SqliteStatements(this.db);
@@ -297,8 +307,9 @@ export class SQLiteGraphStore implements GraphStore {
       candidates.set(symbol.filePath, current);
     }
 
-    return [...candidates.values()]
-      .map((candidate) => ({ ...candidate, reasons: [...new Set(candidate.reasons)], symbols: uniqueSymbols(candidate.symbols) }))
+    const ranked = applyOwnerPathIntent([...candidates.values()]
+      .map((candidate) => ({ ...candidate, reasons: [...new Set(candidate.reasons)], symbols: uniqueSymbols(candidate.symbols) })), query);
+    return ranked
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
   }

@@ -97,6 +97,25 @@ describe("agent tool upgrades", () => {
     expect(freshStatus.fileCount).toBe(refreshed.files.length);
   }, 15_000);
 
+  it("reports watcher liveness as not_running through watch_status when no watcher is live", async () => {
+    const engine = new RagCodeEngine();
+    await engine.indexRepo(tempRoot);
+
+    const status = await callTool(engine, "watch_status", { repoRoot: tempRoot }) as {
+      repoRoot: string;
+      watcher: { state: string; processAlive: boolean; heartbeatFresh: boolean };
+      backlog: { pendingFiles: number; indexingFiles: number; staleFiles: number };
+      hint?: string;
+    };
+
+    expect(status.watcher.state).toBe("not_running");
+    expect(status.watcher.processAlive).toBe(false);
+    expect(status.watcher.heartbeatFresh).toBe(false);
+    expect(status.backlog).toMatchObject({ pendingFiles: 0, indexingFiles: 0 });
+    // A non-running watcher must surface actionable guidance so agents know freshness is manual.
+    expect(status.hint).toContain("ragcode service install");
+  });
+
   it("returns owner-chain and topology evidence through topology_map", async () => {
     const engine = new RagCodeEngine();
     await engine.indexRepo(tempRoot);

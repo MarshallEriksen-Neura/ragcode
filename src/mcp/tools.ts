@@ -3,11 +3,13 @@ import type { ContextEngine } from "../core/contracts.js";
 import { buildExplainImpactReport } from "../subgraph/impact-explainer.js";
 import { expandNode, parseNodeRef } from "../subgraph/node-expander.js";
 import { applyExplainImpactOutputPreset, applySubgraphOutputPreset } from "../subgraph/output-preset.js";
+import { readWatcherLiveness } from "../watch/watcher-liveness.js";
 
 export const ToolNameSchema = z.enum([
   "index_repo",
   "refresh_index",
   "index_status",
+  "watch_status",
   "record_file_events",
   "search_code",
   "get_context",
@@ -33,6 +35,7 @@ export const SubgraphOutputPresetSchema = z.enum(["compact", "agent_edit", "debu
 export const WorkspaceHintInput = z.object({ root: z.string().min(1).optional(), filePath: z.string().min(1).optional() }).optional();
 export const RefreshIndexInput = z.object({ repoRoot: z.string().min(1).optional(), workspace: WorkspaceHintInput });
 export const IndexStatusInput = z.object({ repoRoot: z.string().min(1).optional(), workspace: WorkspaceHintInput });
+export const WatchStatusInput = z.object({ repoRoot: z.string().min(1).optional(), workspace: WorkspaceHintInput });
 export const RecordFileEventsInput = z.object({
   repoRoot: z.string().min(1).optional(),
   workspace: WorkspaceHintInput,
@@ -105,6 +108,11 @@ export function listRuntimeToolDefinitions(): McpRuntimeToolDefinition[] {
       name: "index_status",
       description: "Report indexed file/chunk/symbol/edge counts plus freshness, stale, pending, and skipped file state for the active repository.",
       inputSchema: IndexStatusInput
+    },
+    {
+      name: "watch_status",
+      description: "Report whether a background watcher is alive for the active repository (lock + heartbeat liveness) plus current dirty/pending backlog. Read-only: never starts a watcher.",
+      inputSchema: WatchStatusInput
     },
     {
       name: "record_file_events",
@@ -197,6 +205,27 @@ export async function callTool(engine: ContextEngine, name: ToolName, rawInput: 
     case "index_status": {
       const input = IndexStatusInput.parse(rawInput);
       return engine.indexStatus(input.repoRoot ?? input.workspace?.root);
+    }
+    case "watch_status": {
+      const input = WatchStatusInput.parse(rawInput);
+      // Resolve the repo via indexStatus (which applies workspace resolution), then read liveness
+      // from the on-disk lock/heartbeat. Pure read — never spawns a watcher; clients that want one
+      // running must install the OS service (`ragcode service install`) or run `ragcode watch`.
+      const status = await engine.indexStatus(input.repoRoot ?? input.workspace?.root);
+      const liveness = await readWatcherLiveness(status.repoRoot);
+      return {
+        repoRoot: status.repoRoot,
+        projectId: status.projectId,
+        watcher: liveness,
+        backlog: {
+          pendingFiles: status.pendingFileCount,
+          indexingFiles: status.indexingFileCount,
+          staleFiles: status.staleFileCount
+        },
+        hint: liveness.state === "running"
+          ? undefined
+          : "No live watcher; the index will not auto-refresh. Run `ragcode service install <repo>` for a background watcher, or `ragcode watch <repo>` manually."
+      };
     }
     case "record_file_events": {
       const input = RecordFileEventsInput.parse(rawInput);

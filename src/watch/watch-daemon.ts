@@ -5,6 +5,13 @@ import { shouldIgnoreDirectory, shouldIgnoreFile } from "../indexing/ignore-poli
 import { normalizeRepoPath, normalizeUserPath } from "../utils/path.js";
 import { FileEventJournal, type WatchEventJournalEntry } from "./event-journal.js";
 import { WatchIndexScheduler, type WatchIndexSchedulerOptions, type WatchIndexSchedulerStatus } from "./index-scheduler.js";
+import {
+  acquireWatcherLock,
+  clearHeartbeat,
+  writeHeartbeat,
+  type WatcherHeartbeat,
+  type WatcherLockHandle
+} from "./watcher-liveness.js";
 
 export interface FileWatchDaemonOptions extends Omit<WatchIndexSchedulerOptions, "onStatus"> {
   awaitWriteFinishMs?: number;
@@ -16,6 +23,14 @@ export interface FileWatchDaemonOptions extends Omit<WatchIndexSchedulerOptions,
   flushRetryMaxDelayMs?: number;
   maxFileBytes?: number;
   indexOnStart?: boolean;
+  /** Interval for refreshing the on-disk heartbeat even when idle. Defaults to 10s. */
+  heartbeatIntervalMs?: number;
+  /**
+   * Acquire the per-repo watcher lock on start (refusing if another live watcher holds it) and
+   * publish a heartbeat file. Defaults to true. Set false for embedded/in-process usage where
+   * no cross-process coordination is needed (e.g. the dashboard's observation daemon).
+   */
+  manageLifecycleFiles?: boolean;
   journal?: FileEventJournal;
   onEvent?: (event: WatchEventJournalEntry) => void;
   onStatus?: (status: WatchDaemonStatus) => void;
@@ -35,6 +50,7 @@ const DEFAULT_MAX_FILE_BYTES = 1_000_000;
 const DEFAULT_MAX_BUFFERED_EVENTS = 1_000;
 const DEFAULT_MAX_FLUSH_WAIT_MS = 5_000;
 const DEFAULT_FLUSH_RETRY_MAX_DELAY_MS = 30_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
 
 export class FileWatchDaemon {
   private watcher: FSWatcher | undefined;
@@ -52,6 +68,9 @@ export class FileWatchDaemon {
   private lastError: string | undefined;
   private running = false;
   private ready = false;
+  private lockHandle: WatcherLockHandle | undefined;
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private lastIndexedAtMs: number | undefined;
 
   constructor(
     private readonly engine: ContextEngine,
@@ -63,6 +82,7 @@ export class FileWatchDaemon {
     this.scheduler = new WatchIndexScheduler(engine, this.repoRoot, {
       ...options,
       onStatus: (status) => {
+        if (status.lastIndexedAtMs) this.lastIndexedAtMs = status.lastIndexedAtMs;
         options.onStatus?.({
           repoRoot: this.repoRoot,
           running: this.running,
@@ -70,16 +90,25 @@ export class FileWatchDaemon {
           bufferedEvents: this.bufferedPaths.size,
           scheduler: status
         });
+        // Refresh the heartbeat on every scheduler tick so an actively-indexing daemon publishes
+        // freshness faster than the idle interval, and so pending/indexing counts stay current.
+        if (this.running && this.options.manageLifecycleFiles !== false) void this.publishHeartbeat();
       }
     });
   }
 
   async start(): Promise<void> {
     if (this.running) return;
+    // Acquire the per-repo lock first, before any indexing work, so a second watcher on the same
+    // repo fails fast (throwing WatcherLockError) instead of racing the live one as a second writer.
+    if (this.options.manageLifecycleFiles !== false) {
+      this.lockHandle = acquireWatcherLock(this.repoRoot);
+    }
     this.running = true;
     await this.ensureIndexed();
     await this.replayJournal();
     this.scheduler.start();
+    this.startHeartbeat();
     this.watcher = chokidar.watch(this.repoRoot, {
       cwd: this.repoRoot,
       persistent: true,
@@ -129,9 +158,11 @@ export class FileWatchDaemon {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     if (this.maxFlushTimer) clearTimeout(this.maxFlushTimer);
     if (this.flushRetryTimer) clearTimeout(this.flushRetryTimer);
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.flushTimer = undefined;
     this.maxFlushTimer = undefined;
     this.flushRetryTimer = undefined;
+    this.heartbeatTimer = undefined;
     await this.watcher?.close();
     this.watcher = undefined;
     try {
@@ -141,6 +172,19 @@ export class FileWatchDaemon {
       await this.scheduler.stop();
       this.ready = false;
       await this.emitStatus();
+      // Tear down lifecycle files last, after the scheduler has drained, so a reader never sees
+      // a cleared heartbeat while the daemon is still writing the index. Clear the heartbeat
+      // before releasing the lock so the window where the lock exists without a heartbeat
+      // (which a reader would classify as "dead") is as small as possible.
+      //
+      // Only touch lifecycle files if WE own the lock. A second watcher that failed to acquire the
+      // lock (start() threw) reaches stop() via the CLI's shutdown path with lockHandle undefined —
+      // it must NOT clear the live watcher's heartbeat or release its lock.
+      if (this.options.manageLifecycleFiles !== false && this.lockHandle) {
+        await clearHeartbeat(this.repoRoot).catch(() => undefined);
+        this.lockHandle.release();
+        this.lockHandle = undefined;
+      }
     }
   }
 
@@ -152,6 +196,42 @@ export class FileWatchDaemon {
       bufferedEvents: this.bufferedPaths.size,
       scheduler: await this.scheduler.status()
     };
+  }
+
+  // Publish a fresh heartbeat immediately, then on a fixed interval so doctor/dashboard/MCP can
+  // distinguish a live-but-idle daemon from a dead one even when no file events are flowing. The
+  // scheduler's own onStatus callback also refreshes the heartbeat on every tick (see constructor),
+  // so an actively-indexing daemon heartbeats more often than the interval.
+  private startHeartbeat(): void {
+    if (this.options.manageLifecycleFiles === false) return;
+    void this.publishHeartbeat();
+    const interval = this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    this.heartbeatTimer = setInterval(() => {
+      void this.publishHeartbeat();
+    }, interval);
+    this.heartbeatTimer.unref?.();
+  }
+
+  private async publishHeartbeat(): Promise<void> {
+    if (this.options.manageLifecycleFiles === false || !this.lockHandle) return;
+    const scheduler = await this.scheduler.status().catch(() => undefined);
+    if (scheduler?.lastIndexedAtMs) this.lastIndexedAtMs = scheduler.lastIndexedAtMs;
+    const heartbeat: WatcherHeartbeat = {
+      pid: this.lockHandle.info.pid,
+      hostname: this.lockHandle.info.hostname,
+      repoRoot: this.repoRoot,
+      startedAtMs: this.lockHandle.info.startedAtMs,
+      lastHeartbeatMs: Date.now(),
+      lastIndexedAtMs: this.lastIndexedAtMs,
+      pendingFiles: scheduler?.pendingFiles ?? 0,
+      indexingFiles: scheduler?.indexingFiles ?? 0,
+      ready: this.ready,
+      lastError: this.lastError ?? scheduler?.lastError
+    };
+    await writeHeartbeat(this.repoRoot, heartbeat).catch((error: unknown) => {
+      // A heartbeat write failure shouldn't take down the watcher; surface it as lastError.
+      this.setLastError(error);
+    });
   }
 
   private async ensureIndexed(): Promise<void> {

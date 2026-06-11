@@ -171,6 +171,7 @@ describe("RagCode foundation", () => {
       "index_repo",
       "refresh_index",
       "index_status",
+      "watch_status",
       "record_file_events",
       "search_code",
       "get_context",

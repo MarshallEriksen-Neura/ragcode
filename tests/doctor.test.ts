@@ -43,6 +43,11 @@ describe("doctor", () => {
     expect(report.mcp.toolCount).toBeGreaterThan(0);
     expect(report.smoke?.indexed?.files).toBe(1);
     expect(report.smoke?.search?.hits[0]?.filePath).toBe("src/doctor.ts");
+    // No watcher is running for this fresh temp repo, so liveness reports not_running. This is
+    // informational (doesn't fail doctor) but must be present whenever a repoRoot is given.
+    expect(report.watcher).toBeDefined();
+    expect(report.watcher?.state).toBe("not_running");
+    expect(report.watcher?.processAlive).toBe(false);
   }, 20_000);
 
   it("reports invalid runtime env instead of throwing", async () => {
