@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 export class SqliteStatements {
   // Projects
   readonly upsertProject: any;
+  readonly updateSemanticStatus: any;
   readonly selectProjectByRoot: any;
   readonly listProjects: any;
 
@@ -74,6 +75,15 @@ export class SqliteStatements {
         last_indexed_at_ms = excluded.last_indexed_at_ms,
         indexed_at_ms = excluded.indexed_at_ms,
         index_generation = excluded.index_generation`
+    );
+    this.updateSemanticStatus = db.prepare(
+      `UPDATE projects
+       SET semantic_generation = ?,
+           semantic_fresh = ?,
+           semantic_rebuild_needed = ?,
+           semantic_last_error = ?,
+           semantic_updated_at_ms = ?
+       WHERE project_id = ?`
     );
     this.selectProjectByRoot = db.prepare(
       "SELECT * FROM projects WHERE lower(repo_root) = lower(?) OR lower(COALESCE(canonical_root, repo_root)) = lower(?) ORDER BY indexed_at_ms DESC LIMIT 1"
@@ -162,7 +172,8 @@ export class SqliteStatements {
       "SELECT file_path, reason FROM skipped_files WHERE project_id = ? ORDER BY file_path"
     );
     this.insertSkippedFile = db.prepare(
-      "INSERT INTO skipped_files(project_id, file_path, reason) VALUES (?, ?, ?)"
+      `INSERT INTO skipped_files(project_id, file_path, reason) VALUES (?, ?, ?)
+       ON CONFLICT(project_id, file_path) DO UPDATE SET reason = excluded.reason`
     );
     this.deleteSkippedFiles = db.prepare(
       "DELETE FROM skipped_files WHERE project_id = ?"

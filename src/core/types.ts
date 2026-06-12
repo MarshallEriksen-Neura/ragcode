@@ -107,6 +107,9 @@ export interface RepoIndex {
   changedFiles: string[];
   deletedFiles: string[];
   affectedFiles?: string[];
+  partialBootstrap?: boolean;
+  partialGraphSnapshot?: boolean;
+  semanticDeferred?: boolean;
   scannedFiles?: string[];
   refreshedFiles?: string[];
   fullReindex: boolean;
@@ -118,13 +121,30 @@ export interface RepoIndex {
   analysisWarnings?: IndexAnalysisWarning[];
 }
 
+export interface SemanticIndexStatus {
+  projectId: string;
+  semanticGeneration: number;
+  semanticFresh: boolean;
+  semanticRebuildNeeded: boolean;
+  semanticLastError?: string;
+  semanticUpdatedAtMs?: number;
+}
+
+export type SemanticCoverage = "indexed_graph" | "complete_repo";
+
 export type IndexProgressPhase =
   | "loading_existing_index"
+  | "scanning_inventory"
+  | "scanning_batch"
   | "scanning"
+  | "analyzing_batch"
   | "analyzing"
+  | "writing_graph_batch"
   | "writing_graph"
+  | "writing_semantic_batch"
   | "writing_semantic"
-  | "complete";
+  | "complete"
+  | "failed";
 
 export interface IndexProgressEvent {
   phase: IndexProgressPhase;
@@ -138,11 +158,17 @@ export interface IndexProgressEvent {
   symbols?: number;
   edges?: number;
   warnings?: number;
+  heapUsedMb?: number;
+  rssMb?: number;
+  partialBootstrap?: boolean;
+  semanticDeferred?: boolean;
 }
 
 export interface IndexRefreshOptions {
   affectedFiles?: string[];
   reconcile?: boolean;
+  maxAnalysisMemoryMb?: number;
+  disableSemanticOnBootstrap?: boolean;
   onProgress?: (event: IndexProgressEvent) => void;
 }
 
@@ -288,6 +314,12 @@ export interface FreshnessReport {
   projectId: string;
   indexGeneration: number;
   indexedAtMs: number;
+  graphFresh: boolean;
+  semanticGeneration: number;
+  semanticFresh: boolean;
+  semanticCoverage: SemanticCoverage;
+  semanticRebuildNeeded: boolean;
+  semanticLastError?: string;
   staleFiles: string[];
   pendingFiles: string[];
   indexingFiles: string[];
@@ -346,6 +378,12 @@ export interface IndexStatus {
   skippedFileCount: number;
   burstMode: boolean;
   droppedEventCount: number;
+  graphFresh: boolean;
+  semanticGeneration: number;
+  semanticFresh: boolean;
+  semanticCoverage: SemanticCoverage;
+  semanticRebuildNeeded: boolean;
+  semanticLastError?: string;
   freshness: FreshnessReport;
 }
 

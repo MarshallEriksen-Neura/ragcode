@@ -87,7 +87,7 @@ describe("RagCode foundation", () => {
 
     expect(phases).toEqual(expect.arrayContaining([
       "loading_existing_index",
-      "scanning",
+      "scanning_inventory",
       "analyzing",
       "writing_graph",
       "writing_semantic",

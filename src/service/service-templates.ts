@@ -2,10 +2,9 @@ import os from "node:os";
 import path from "node:path";
 
 // Pure unit/plist/command generators — no IO. Each returns the exact text or argv that the manager
-// writes/executes, so they can be snapshot-tested without touching the OS. The watcher is launched
-// via `<node> <cliEntry> watch <repoRoot> --no-index-on-start`: --no-index-on-start because a
-// service should attach to an already-indexed repo (the install step indexes once up front) rather
-// than blocking startup on a full reindex if the index is missing.
+// writes/executes, so they can be snapshot-tested without touching the OS. Templates default to
+// --no-index-on-start for boot safety; service install must not hide a long bootstrap in the
+// launched OS service unless a lower-level caller explicitly opts into that behavior.
 
 export interface ServiceLaunchSpec {
   /** Absolute path to the node/bun executable that runs the CLI. */
@@ -14,12 +13,19 @@ export interface ServiceLaunchSpec {
   cliEntry: string;
   repoRoot: string;
   serviceName: string;
+  indexOnStart?: boolean;
   /** Extra args appended after `watch <repoRoot>`, e.g. ["--poll"]. */
   extraArgs?: string[];
 }
 
 export function watchArgv(spec: ServiceLaunchSpec): string[] {
-  return [spec.cliEntry, "watch", spec.repoRoot, "--no-index-on-start", ...(spec.extraArgs ?? [])];
+  return [
+    spec.cliEntry,
+    "watch",
+    spec.repoRoot,
+    ...(spec.indexOnStart ? [] : ["--no-index-on-start"]),
+    ...(spec.extraArgs ?? [])
+  ];
 }
 
 // ---------------------------------------------------------------------------

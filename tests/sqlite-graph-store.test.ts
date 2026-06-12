@@ -166,6 +166,27 @@ describe("SQLiteGraphStore", () => {
     }
   });
 
+  it("preserves skipped files across affected refreshes without duplicate-key failures", async () => {
+    const repoRoot = await createRepo("sqlite-skipped-incremental", {
+      "src/a.ts": "export const a = 1;\n",
+      "src/b.ts": "export const b = 1;\n",
+      "secrets/.env": "TOKEN=secret\n"
+    });
+    const store = new SQLiteGraphStore(await tempDbPath());
+    const engine = new RagCodeEngine({ graphStore: store });
+
+    try {
+      await engine.indexRepo(repoRoot, { affectedFiles: ["src/a.ts", "secrets/.env"] });
+      await expect(engine.indexRepo(repoRoot, { affectedFiles: ["src/b.ts"] })).resolves.toBeDefined();
+
+      expect(await store.getSkippedFiles(repoRoot)).toEqual([
+        { filePath: "secrets/.env", reason: "sensitive file policy" }
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("uses SQLite FTS bm25 ranking for keyword search", async () => {
     const repeatedTerm = Array.from({ length: 20 }, () => "critical-marker").join(" ");
     const repoRoot = await createRepo("sqlite-fts", {

@@ -11,6 +11,12 @@ export interface ContextBuildMetadata {
   indexedAtMs: number;
   skippedFiles: Array<{ filePath: string; reason: string }>;
   indexGeneration?: number;
+  graphFresh?: boolean;
+  semanticGeneration?: number;
+  semanticFresh?: boolean;
+  semanticCoverage?: FreshnessReport["semanticCoverage"];
+  semanticRebuildNeeded?: boolean;
+  semanticLastError?: string;
   staleFiles?: string[];
   pendingFiles?: string[];
   indexingFiles?: string[];
@@ -264,6 +270,12 @@ function freshnessFor(metadata: ContextBuildMetadata): FreshnessReport {
     projectId: metadata.projectId,
     indexGeneration: metadata.indexGeneration ?? 1,
     indexedAtMs: metadata.indexedAtMs,
+    graphFresh: metadata.graphFresh ?? ((metadata.staleFiles?.length ?? 0) === 0 && (metadata.pendingFiles?.length ?? 0) === 0 && (metadata.indexingFiles?.length ?? 0) === 0),
+    semanticGeneration: metadata.semanticGeneration ?? metadata.indexGeneration ?? 1,
+    semanticFresh: metadata.semanticFresh ?? true,
+    semanticCoverage: metadata.semanticCoverage ?? "complete_repo",
+    semanticRebuildNeeded: metadata.semanticRebuildNeeded ?? false,
+    semanticLastError: metadata.semanticLastError,
     staleFiles: metadata.staleFiles ?? [],
     pendingFiles: metadata.pendingFiles ?? [],
     indexingFiles: metadata.indexingFiles ?? [],

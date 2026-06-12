@@ -104,6 +104,7 @@ describe("watcher liveness", () => {
       expect(liveness.state).toBe("running");
       expect(liveness.processAlive).toBe(true);
       expect(liveness.heartbeatFresh).toBe(true);
+      expect(liveness.diagnostic).toBe("live_watcher");
     } finally {
       handle.release();
       await clearHeartbeat(root);
@@ -119,6 +120,8 @@ describe("watcher liveness", () => {
       expect(liveness.state).toBe("stale");
       expect(liveness.processAlive).toBe(true);
       expect(liveness.heartbeatFresh).toBe(false);
+      expect(liveness.diagnostic).toBe("stale_heartbeat");
+      expect(liveness.nextAction).toContain("read-only");
     } finally {
       handle.release();
       await clearHeartbeat(root);
@@ -137,6 +140,19 @@ describe("watcher liveness", () => {
     const liveness = await readWatcherLiveness(root);
     expect(liveness.state).toBe("dead");
     expect(liveness.processAlive).toBe(false);
+    expect(liveness.diagnostic).toBe("dead_lock_holder");
+    expect(liveness.nextAction).toContain("reclaim");
+  });
+
+  it("reports heartbeat without lock as an actionable stale state", async () => {
+    const root = await createTempRepo();
+    await writeHeartbeat(root, heartbeatFor(root));
+
+    const liveness = await readWatcherLiveness(root);
+
+    expect(liveness.state).toBe("dead");
+    expect(liveness.diagnostic).toBe("heartbeat_without_lock");
+    expect(liveness.nextAction).toContain("ragcode watch");
   });
 
   it("clearHeartbeat removes the heartbeat file", async () => {

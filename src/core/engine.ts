@@ -112,6 +112,12 @@ export class RagCodeEngine implements ContextEngine {
       skippedFileCount: freshness.skippedFiles.length,
       burstMode: freshness.burstMode,
       droppedEventCount: freshness.droppedEvents,
+      graphFresh: freshness.graphFresh,
+      semanticGeneration: freshness.semanticGeneration,
+      semanticFresh: freshness.semanticFresh,
+      semanticCoverage: freshness.semanticCoverage,
+      semanticRebuildNeeded: freshness.semanticRebuildNeeded,
+      semanticLastError: freshness.semanticLastError,
       freshness
     };
   }
@@ -162,6 +168,12 @@ export class RagCodeEngine implements ContextEngine {
       repoRoot: scope.activeRepoRoot,
       indexedAtMs: this.indexedAtByRepo.get(scope.activeRepoRoot) ?? Date.now(),
       indexGeneration: freshness.indexGeneration,
+      graphFresh: freshness.graphFresh,
+      semanticGeneration: freshness.semanticGeneration,
+      semanticFresh: freshness.semanticFresh,
+      semanticCoverage: freshness.semanticCoverage,
+      semanticRebuildNeeded: freshness.semanticRebuildNeeded,
+      semanticLastError: freshness.semanticLastError,
       staleFiles: freshness.staleFiles,
       pendingFiles: freshness.pendingFiles,
       indexingFiles: freshness.indexingFiles,
@@ -382,10 +394,19 @@ export class RagCodeEngine implements ContextEngine {
     const indexGeneration = this.graphStore.getIndexGeneration
       ? await this.graphStore.getIndexGeneration(scope.activeRepoRoot).catch(() => 1)
       : 1;
+    const semanticStatus = await this.graphStore.getSemanticIndexStatus?.(scope.activeRepoRoot, scope.activeProjectId)
+      .catch(() => undefined);
+    const graphFresh = staleFiles.size === 0 && pendingFiles.size === 0 && (watcherState?.indexingFiles.length ?? 0) === 0;
     return {
       projectId: scope.activeProjectId,
       indexGeneration,
       indexedAtMs: this.indexedAtByRepo.get(scope.activeRepoRoot) ?? Date.now(),
+      graphFresh,
+      semanticGeneration: semanticStatus?.semanticGeneration ?? indexGeneration,
+      semanticFresh: semanticStatus?.semanticFresh ?? true,
+      semanticCoverage: graphFresh ? "complete_repo" : "indexed_graph",
+      semanticRebuildNeeded: semanticStatus?.semanticRebuildNeeded ?? false,
+      semanticLastError: semanticStatus?.semanticLastError,
       staleFiles: [...staleFiles].sort(),
       pendingFiles: [...pendingFiles].sort(),
       indexingFiles: [...new Set(watcherState?.indexingFiles ?? [])].sort(),

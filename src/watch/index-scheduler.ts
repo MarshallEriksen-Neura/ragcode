@@ -1,5 +1,6 @@
 import type { ContextEngine } from "../core/contracts.js";
 import type { IndexStatus, RepoIndex, WatcherEventOptions } from "../core/types.js";
+import { createIndexProgressRecorder } from "../indexing/index-progress-state.js";
 
 export interface WatchIndexSchedulerOptions extends WatcherEventOptions {
   batchDelayMs?: number;
@@ -7,6 +8,8 @@ export interface WatchIndexSchedulerOptions extends WatcherEventOptions {
   maxBatchFiles?: number;
   maxRetryAttempts?: number;
   maxRetryDelayMs?: number;
+  maxAnalysisMemoryMb?: number;
+  disableSemanticOnBootstrap?: boolean;
   autoIndex?: boolean;
   /**
    * Idle re-scan interval. Even with no in-process chokidar events, the scheduler periodically
@@ -105,6 +108,7 @@ export class WatchIndexScheduler {
   async flush(): Promise<RepoIndex | undefined> {
     if (!this.running || this.indexing || this.options.autoIndex === false) return undefined;
     this.indexing = true;
+    const progress = createIndexProgressRecorder(this.repoRoot);
     try {
       const status = await this.engine.indexStatus(this.repoRoot);
       const dirtyFiles = dirtyFilesForBatch(status, this.options.maxBatchFiles ?? DEFAULT_MAX_BATCH_FILES);
@@ -120,13 +124,20 @@ export class WatchIndexScheduler {
       }
 
       await this.engine.markDirtyFilesIndexing(this.repoRoot, dirtyFiles);
-      const index = await this.engine.refreshIndex(this.repoRoot, { affectedFiles: dirtyFiles });
+      const index = await this.engine.refreshIndex(this.repoRoot, {
+        affectedFiles: dirtyFiles,
+        maxAnalysisMemoryMb: this.options.maxAnalysisMemoryMb,
+        disableSemanticOnBootstrap: this.options.disableSemanticOnBootstrap,
+        onProgress: progress.onProgress
+      });
+      await progress.flush();
       this.lastIndexedAtMs = index.indexedAtMs;
       this.lastError = undefined;
       for (const filePath of dirtyFiles) this.failureAttemptsByFile.delete(filePath);
       return index;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
+      await progress.recordFailure(error);
       await this.requeueIndexingFiles(this.lastError);
       return undefined;
     } finally {

@@ -23,6 +23,7 @@ import {
   uninstallWatcherService,
   watcherServiceStatus
 } from "../src/service/service-manager.js";
+import { normalizeServiceInstallOptions } from "../src/cli/service-install-options.js";
 
 const tempRoots: string[] = [];
 
@@ -81,6 +82,21 @@ describe("service templates", () => {
   it("appends extra args after the repo root", () => {
     const argv = watchArgv({ ...spec("/r/api"), extraArgs: ["--poll"] });
     expect(argv).toEqual(["/opt/ragcode/dist/src/cli/index.js", "watch", "/r/api", "--no-index-on-start", "--poll"]);
+  });
+
+  it("keeps service-start indexing disabled even when bootstrap tuning args are present", () => {
+    const argv = watchArgv({ ...spec("/r/api"), extraArgs: ["--max-batch-files", "250"] });
+    expect(argv).toEqual(["/opt/ragcode/dist/src/cli/index.js", "watch", "/r/api", "--no-index-on-start", "--max-batch-files", "250"]);
+  });
+
+  it("normalizes service install to no synchronous index unless --index-now is explicit", () => {
+    expect(normalizeServiceInstallOptions({})).toEqual({ indexNow: false, extraArgs: undefined });
+    expect(normalizeServiceInstallOptions({ indexNow: true, poll: true, bootstrapBatchSize: 250, maxAnalysisMemoryMb: 1024 })).toEqual({
+      indexNow: true,
+      bootstrapBatchSize: 250,
+      maxAnalysisMemoryMb: 1024,
+      extraArgs: ["--poll", "--max-batch-files", "250", "--max-analysis-memory-mb", "1024"]
+    });
   });
 
   it("renders a restart-on-crash systemd user unit", () => {

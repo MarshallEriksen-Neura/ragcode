@@ -12,6 +12,7 @@ import type {
   FreshnessReport,
   GraphEdge,
   ImpactAnalysis,
+  IndexRefreshOptions,
   IndexStatus,
   OwnerCandidate,
   RelatedTests,
@@ -90,6 +91,75 @@ describe("file watch daemon", () => {
     expect(events.map((event) => event.filePath)).toContain("src/watched.ts");
     expect(engine.recordedBatches.flat()).toContain("src/watched.ts");
     expect(await journal.replay()).toEqual([]);
+  });
+
+  it("uses a numeric polling interval default when polling is enabled", async () => {
+    const root = await createTempRepo("ragcode-watch-poll-default-");
+    await fs.writeFile(path.join(root, "watched.ts"), "export const value = 1;\n");
+    const engine = new FakeEngine(root);
+    const daemon = new FileWatchDaemon(engine, root, {
+      autoIndex: false,
+      indexOnStart: false,
+      usePolling: true,
+      flushEventsMs: 20,
+      awaitWriteFinishMs: 10
+    });
+
+    await daemon.start();
+    await waitFor(async () => (await daemon.status()).ready);
+    await fs.writeFile(path.join(root, "watched.ts"), "export const value = 2;\n");
+    await waitFor(() => engine.recordedBatches.some((batch) => batch.includes("watched.ts")), 3_000);
+    await daemon.stop();
+
+    expect(engine.recordedBatches.flat()).toContain("watched.ts");
+  });
+
+  it("bootstraps an unindexed repo with one bounded batch and queues the remainder", async () => {
+    const root = await createTempRepo("ragcode-watch-bootstrap-start-");
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, "src", "a.ts"), "export const a = 1;\n");
+    await fs.writeFile(path.join(root, "src", "b.ts"), "export const b = 1;\n");
+    await fs.writeFile(path.join(root, "src", "c.ts"), "export const c = 1;\n");
+
+    const engine = new FakeEngine(root);
+    engine.missingUntilIndexed = true;
+    const daemon = new FileWatchDaemon(engine, root, {
+      autoIndex: false,
+      maxBatchFiles: 2,
+      flushEventsMs: 20,
+      awaitWriteFinishMs: 10
+    });
+
+    await daemon.start();
+    await daemon.stop();
+
+    expect(engine.indexRepoBatches).toEqual([["src/a.ts", "src/b.ts"]]);
+    expect(engine.recordedBatches).toContainEqual(["src/c.ts"]);
+  });
+
+  it("does not read every bootstrap file before choosing the first watcher batch", async () => {
+    const root = await createTempRepo("ragcode-watch-bootstrap-inventory-");
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, "src", "a.ts"), "export const a = 1;\n");
+    await fs.writeFile(path.join(root, "src", "b.ts"), "export const b = 1;\n");
+    await fs.writeFile(path.join(root, "src", "c.ts"), "export const c = 1;\n");
+    const readFile = vi.spyOn(fs, "readFile");
+
+    const engine = new FakeEngine(root);
+    engine.missingUntilIndexed = true;
+    const daemon = new FileWatchDaemon(engine, root, {
+      autoIndex: false,
+      maxBatchFiles: 2,
+      flushEventsMs: 20,
+      awaitWriteFinishMs: 10
+    });
+
+    await daemon.start();
+    await daemon.stop();
+
+    expect(engine.indexRepoBatches).toEqual([["src/a.ts", "src/b.ts"]]);
+    const readPaths = readFile.mock.calls.map(([file]) => String(file).replaceAll("\\", "/"));
+    expect(readPaths.some((file) => file.includes("/src/"))).toBe(false);
   });
 
   it("keeps journaled events recoverable when dirty-state recording fails", async () => {
@@ -223,6 +293,38 @@ describe("watch index scheduler", () => {
     expect((await engine.indexStatus(root)).freshness.pendingFiles).toEqual(["src/c.ts"]);
   });
 
+  it("passes memory guard options to background refresh batches", async () => {
+    const root = await createTempRepo("ragcode-watch-scheduler-memory-guard-");
+    const engine = new FakeEngine(root);
+    engine.seedDirty(["src/a.ts"], Date.now() - 10_000);
+    const scheduler = new WatchIndexScheduler(engine, root, { maxAnalysisMemoryMb: 128, minQuietMs: 0 });
+
+    scheduler.start();
+    await scheduler.flush();
+    await scheduler.stop();
+
+    expect(engine.refreshOptions[0]).toMatchObject({
+      affectedFiles: ["src/a.ts"],
+      maxAnalysisMemoryMb: 128
+    });
+  });
+
+  it("keeps empty-index bootstrap bounded to scheduler batches", async () => {
+    const root = await createTempRepo("ragcode-watch-scheduler-bootstrap-");
+    const engine = new FakeEngine(root);
+    engine.seedDirty(["src/a.ts", "src/b.ts", "src/c.ts"], Date.now() - 10_000);
+    const scheduler = new WatchIndexScheduler(engine, root, { maxBatchFiles: 2, minQuietMs: 0 });
+
+    scheduler.start();
+    const index = await scheduler.flush();
+    await scheduler.stop();
+
+    expect(index?.fullReindex).toBe(false);
+    expect(index?.affectedFiles).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(engine.affectedRefreshBatches).toEqual([["src/a.ts", "src/b.ts"]]);
+    expect((await engine.indexStatus(root)).freshness.pendingFiles).toEqual(["src/c.ts"]);
+  });
+
   it("computes quiet time for very large dirty queues without spreading into Math.max", async () => {
     const root = await createTempRepo("ragcode-watch-scheduler-large-");
     const engine = new FakeEngine(root);
@@ -273,7 +375,10 @@ class FakeEngine implements ContextEngine {
   indexingBatches: string[][] = [];
   affectedRefreshBatches: string[][] = [];
   deadLetterBatches: string[][] = [];
+  indexRepoBatches: string[][] = [];
+  refreshOptions: IndexRefreshOptions[] = [];
   refreshCount = 0;
+  missingUntilIndexed = false;
   failRecord = false;
   failRecordCount = 0;
   recordFailures = 0;
@@ -288,13 +393,17 @@ class FakeEngine implements ContextEngine {
     }
   }
 
-  async indexRepo(repoRoot: string): Promise<RepoIndex> {
-    return this.repoIndex(repoRoot, [...this.dirty.keys()].sort(), true);
+  async indexRepo(repoRoot: string, options?: IndexRefreshOptions): Promise<RepoIndex> {
+    this.missingUntilIndexed = false;
+    const affectedFiles = [...new Set(options?.affectedFiles ?? [])].sort();
+    this.indexRepoBatches.push(affectedFiles);
+    return this.repoIndex(repoRoot, affectedFiles, affectedFiles.length === 0, affectedFiles.length > 0 ? affectedFiles : undefined);
   }
 
-  async refreshIndex(repoRoot: string | undefined, options?: { affectedFiles?: string[] }): Promise<RepoIndex> {
+  async refreshIndex(repoRoot: string | undefined, options?: IndexRefreshOptions): Promise<RepoIndex> {
     if (this.failRefresh) throw new Error("refresh failed");
     this.refreshCount += 1;
+    this.refreshOptions.push({ ...options });
     const affectedFiles = [...new Set(options?.affectedFiles ?? [])].sort();
     this.affectedRefreshBatches.push(affectedFiles);
     const changedFiles = [...this.dirty.entries()]
@@ -302,10 +411,11 @@ class FakeEngine implements ContextEngine {
       .map(([filePath]) => filePath)
       .sort();
     for (const filePath of changedFiles) this.dirty.delete(filePath);
-    return this.repoIndex(repoRoot ?? this.root, changedFiles, false);
+    return this.repoIndex(repoRoot ?? this.root, changedFiles, false, affectedFiles);
   }
 
   async indexStatus(repoRoot: string | undefined): Promise<IndexStatus> {
+    if (this.missingUntilIndexed) throw new Error("Workspace is not indexed");
     const dirtyFiles = [...this.dirty.entries()].map(([filePath, state]) => ({
       projectId: "project",
       filePath,
@@ -319,6 +429,11 @@ class FakeEngine implements ContextEngine {
       projectId: "project",
       indexGeneration: this.refreshCount,
       indexedAtMs: 1,
+      graphFresh: dirtyFiles.length === 0,
+      semanticGeneration: this.refreshCount,
+      semanticFresh: true,
+      semanticCoverage: dirtyFiles.length === 0 ? "complete_repo" : "indexed_graph",
+      semanticRebuildNeeded: false,
       staleFiles: dirtyFiles.map((file) => file.filePath),
       pendingFiles: dirtyFiles.filter((file) => file.status === "pending").map((file) => file.filePath),
       indexingFiles: dirtyFiles.filter((file) => file.status === "indexing").map((file) => file.filePath),
@@ -342,6 +457,11 @@ class FakeEngine implements ContextEngine {
       skippedFileCount: 0,
       burstMode: false,
       droppedEventCount: 0,
+      graphFresh: freshness.graphFresh,
+      semanticGeneration: freshness.semanticGeneration,
+      semanticFresh: freshness.semanticFresh,
+      semanticCoverage: freshness.semanticCoverage,
+      semanticRebuildNeeded: freshness.semanticRebuildNeeded,
       freshness
     };
   }
@@ -401,7 +521,7 @@ class FakeEngine implements ContextEngine {
   async traceFlow(_repoRoot: string | undefined, entry: string): Promise<TraceFlow> { throw new Error(`not implemented ${entry}`); }
   async reviewDiff(): Promise<DiffReview> { return { changedFiles: [], relatedTests: [], riskLevel: "low", findings: [] }; }
 
-  private repoIndex(repoRoot: string, changedFiles: string[], fullReindex: boolean): RepoIndex {
+  private repoIndex(repoRoot: string, changedFiles: string[], fullReindex: boolean, affectedFiles?: string[]): RepoIndex {
     return {
       projectId: "project",
       repoRoot,
@@ -409,6 +529,7 @@ class FakeEngine implements ContextEngine {
       indexGeneration: this.refreshCount,
       changedFiles,
       deletedFiles: [],
+      affectedFiles,
       fullReindex,
       files: [],
       chunks: [],

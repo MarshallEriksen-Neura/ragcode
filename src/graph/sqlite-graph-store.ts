@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
-import type { GraphStore } from "../core/contracts.js";
+import type { EdgeScope, GraphStore } from "../core/contracts.js";
 import type {
   CodeChunk,
   CodeFile,
@@ -15,11 +15,13 @@ import type {
   RepoIndex,
   SearchHit,
   SearchQuery,
+  SemanticIndexStatus,
   SymbolNode,
   TraceFlow,
   WatcherEventOptions,
   WatcherState
 } from "../core/types.js";
+import type { SQLInputValue } from "node:sqlite";
 import { buildImpactAnalysis, impactReference } from "./impact-report.js";
 import { isIncomingImpactEdge, isOutgoingImpactEdge, matchesImpactTarget, parseImpactTarget } from "./target-matcher.js";
 import { normalizeUserPath } from "../utils/path.js";
@@ -149,6 +151,53 @@ export class SQLiteGraphStore implements GraphStore {
     this.transaction(() => this.clearDirtyRows(projectId, filePaths));
   }
 
+  async getSemanticIndexStatus(repoRoot: string, projectId: string): Promise<SemanticIndexStatus> {
+    const root = normalizeRepoRoot(repoRoot);
+    const row = this.sql.selectProjectByRoot.get(root, root) as Record<string, unknown> | undefined;
+    if (!row) return defaultSemanticStatus(projectId, 0);
+    return semanticStatusFromProjectRow(row, projectId);
+  }
+
+  async markSemanticIndexDeferred(repoRoot: string, projectId: string, reason: string, generation?: number): Promise<SemanticIndexStatus> {
+    const current = await this.getSemanticIndexStatus(repoRoot, projectId);
+    const next: SemanticIndexStatus = {
+      projectId,
+      semanticGeneration: generation ?? current.semanticGeneration,
+      semanticFresh: false,
+      semanticRebuildNeeded: true,
+      semanticLastError: reason,
+      semanticUpdatedAtMs: Date.now()
+    };
+    this.writeSemanticStatus(next);
+    return next;
+  }
+
+  async markSemanticIndexFresh(_repoRoot: string, projectId: string, generation: number): Promise<SemanticIndexStatus> {
+    const next: SemanticIndexStatus = {
+      projectId,
+      semanticGeneration: generation,
+      semanticFresh: true,
+      semanticRebuildNeeded: false,
+      semanticUpdatedAtMs: Date.now()
+    };
+    this.writeSemanticStatus(next);
+    return next;
+  }
+
+  async markSemanticIndexFailed(repoRoot: string, projectId: string, error: string, generation?: number): Promise<SemanticIndexStatus> {
+    const current = await this.getSemanticIndexStatus(repoRoot, projectId);
+    const next: SemanticIndexStatus = {
+      projectId,
+      semanticGeneration: generation ?? current.semanticGeneration,
+      semanticFresh: false,
+      semanticRebuildNeeded: true,
+      semanticLastError: error,
+      semanticUpdatedAtMs: Date.now()
+    };
+    this.writeSemanticStatus(next);
+    return next;
+  }
+
   async resetRepo(repoRoot: string): Promise<void> {
     const projectId = this.projectIdForRoot(repoRoot);
     if (!projectId) return;
@@ -184,7 +233,13 @@ export class SQLiteGraphStore implements GraphStore {
         }
       }
       for (const filePath of changedOrDeleted) this.deleteFileRows(index.projectId, filePath);
-      this.sql.deleteSkippedFiles.run(index.projectId);
+      if (index.fullReindex || !index.affectedFiles) {
+        this.sql.deleteSkippedFiles.run(index.projectId);
+      } else {
+        for (const filePath of index.affectedFiles) {
+          this.db.prepare("DELETE FROM skipped_files WHERE project_id = ? AND file_path = ?").run(index.projectId, filePath);
+        }
+      }
 
       const filesToWrite = index.fullReindex ? index.files : index.files.filter((file) => changedOrDeleted.has(file.path));
       for (const file of filesToWrite) {
@@ -221,6 +276,15 @@ export class SQLiteGraphStore implements GraphStore {
     return this.chunksForProject(projectId);
   }
 
+  async getChunksForFiles(repoRoot: string, filePaths: string[]): Promise<CodeChunk[]> {
+    const projectId = this.requireProjectId(repoRoot);
+    const normalized = uniqueSorted(filePaths);
+    if (normalized.length === 0) return [];
+    return this.db.prepare(`SELECT * FROM chunks WHERE project_id = ? AND file_path IN (${placeholders(normalized)}) ORDER BY file_path, start_line`)
+      .all(projectId, ...normalized)
+      .map(chunkFromRow);
+  }
+
   async getSkippedFiles(repoRoot: string): Promise<Array<{ filePath: string; reason: string }>> {
     const projectId = this.requireProjectId(repoRoot);
     return this.sql.selectSkippedFiles.all(projectId).map((row: any) => ({
@@ -234,11 +298,84 @@ export class SQLiteGraphStore implements GraphStore {
     return this.symbolsForProject(projectId);
   }
 
+  async getSymbolsForFiles(repoRoot: string, filePaths: string[]): Promise<SymbolNode[]> {
+    const projectId = this.requireProjectId(repoRoot);
+    const normalized = uniqueSorted(filePaths);
+    if (normalized.length === 0) return [];
+    return this.db.prepare(`SELECT * FROM symbols WHERE project_id = ? AND file_path IN (${placeholders(normalized)}) ORDER BY file_path, start_line`)
+      .all(projectId, ...normalized)
+      .map(symbolFromRow);
+  }
+
   async getEdges(repoRoot: string, kind?: EdgeKind): Promise<GraphEdge[]> {
     const projectId = this.requireProjectId(repoRoot);
     const rows = kind
       ? this.sql.selectEdgesByKind.all(projectId, kind)
       : this.sql.selectEdges.all(projectId);
+    return rows.map(edgeFromRow);
+  }
+
+  async getEdgesForFiles(repoRoot: string, filePaths: string[]): Promise<GraphEdge[]> {
+    const projectId = this.requireProjectId(repoRoot);
+    const normalized = uniqueSorted(filePaths);
+    if (normalized.length === 0) return [];
+    const pathPlaceholders = placeholders(normalized);
+    const rows = this.db.prepare(`
+      SELECT * FROM edges
+      WHERE project_id = ?
+        AND (
+          file_path IN (${pathPlaceholders})
+          OR json_extract(metadata_json, '$.targetFile') IN (${pathPlaceholders})
+          OR json_extract(metadata_json, '$.routeFile') IN (${pathPlaceholders})
+          OR json_extract(metadata_json, '$.testFile') IN (${pathPlaceholders})
+        )
+      ORDER BY id
+    `).all(projectId, ...normalized, ...normalized, ...normalized, ...normalized);
+    return rows.map(edgeFromRow);
+  }
+
+  async getEdgesForScope(repoRoot: string, scope: EdgeScope): Promise<GraphEdge[]> {
+    const projectId = this.requireProjectId(repoRoot);
+    const filePaths = uniqueSorted(scope.filePaths ?? []);
+    const routePaths = uniqueStrings(scope.routePaths ?? []);
+    const kinds = uniqueSorted(scope.kinds ?? []) as EdgeKind[];
+    if (filePaths.length === 0 && routePaths.length === 0) return [];
+    const filters: string[] = [];
+    const params: SQLInputValue[] = [projectId];
+
+    if (kinds.length > 0) {
+      filters.push(`kind IN (${placeholders(kinds)})`);
+      params.push(...kinds);
+    }
+
+    const scopeFilters: string[] = [];
+    if (filePaths.length > 0) {
+      const pathPlaceholders = placeholders(filePaths);
+      scopeFilters.push(`(
+        file_path IN (${pathPlaceholders})
+        OR json_extract(metadata_json, '$.targetFile') IN (${pathPlaceholders})
+        OR json_extract(metadata_json, '$.routeFile') IN (${pathPlaceholders})
+        OR json_extract(metadata_json, '$.testFile') IN (${pathPlaceholders})
+      )`);
+      params.push(...filePaths, ...filePaths, ...filePaths, ...filePaths);
+    }
+    if (routePaths.length > 0) {
+      const routePlaceholders = placeholders(routePaths);
+      scopeFilters.push(`(
+        json_extract(metadata_json, '$.route') IN (${routePlaceholders})
+        OR json_extract(metadata_json, '$.requestPath') IN (${routePlaceholders})
+      )`);
+      params.push(...routePaths, ...routePaths);
+    }
+    if (scopeFilters.length > 0) filters.push(`(${scopeFilters.join(" OR ")})`);
+
+    const where = filters.length > 0 ? `AND ${filters.join(" AND ")}` : "";
+    const rows = this.db.prepare(`
+      SELECT * FROM edges
+      WHERE project_id = ?
+        ${where}
+      ORDER BY id
+    `).all(...params);
     return rows.map(edgeFromRow);
   }
 
@@ -415,6 +552,11 @@ export class SQLiteGraphStore implements GraphStore {
         created_at_ms INTEGER,
         last_indexed_at_ms INTEGER,
         index_generation INTEGER,
+        semantic_generation INTEGER,
+        semantic_fresh INTEGER,
+        semantic_rebuild_needed INTEGER,
+        semantic_last_error TEXT,
+        semantic_updated_at_ms INTEGER,
         indexed_at_ms INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS files (
@@ -495,6 +637,12 @@ export class SQLiteGraphStore implements GraphStore {
       );
       CREATE INDEX IF NOT EXISTS idx_symbols_project_name ON symbols(project_id, name);
       CREATE INDEX IF NOT EXISTS idx_edges_project_kind ON edges(project_id, kind);
+      CREATE INDEX IF NOT EXISTS idx_edges_project_kind_file ON edges(project_id, kind, file_path);
+      CREATE INDEX IF NOT EXISTS idx_edges_project_kind_target_file ON edges(project_id, kind, json_extract(metadata_json, '$.targetFile'));
+      CREATE INDEX IF NOT EXISTS idx_edges_project_kind_route_file ON edges(project_id, kind, json_extract(metadata_json, '$.routeFile'));
+      CREATE INDEX IF NOT EXISTS idx_edges_project_kind_test_file ON edges(project_id, kind, json_extract(metadata_json, '$.testFile'));
+      CREATE INDEX IF NOT EXISTS idx_edges_project_kind_route ON edges(project_id, kind, json_extract(metadata_json, '$.route'));
+      CREATE INDEX IF NOT EXISTS idx_edges_project_kind_request_path ON edges(project_id, kind, json_extract(metadata_json, '$.requestPath'));
       CREATE INDEX IF NOT EXISTS idx_chunks_project_file ON chunks(project_id, file_path);
       CREATE INDEX IF NOT EXISTS idx_dirty_files_project_status ON dirty_files(project_id, status);
     `);
@@ -514,7 +662,12 @@ export class SQLiteGraphStore implements GraphStore {
       git_head: "ALTER TABLE projects ADD COLUMN git_head TEXT",
       created_at_ms: "ALTER TABLE projects ADD COLUMN created_at_ms INTEGER",
       last_indexed_at_ms: "ALTER TABLE projects ADD COLUMN last_indexed_at_ms INTEGER",
-      index_generation: "ALTER TABLE projects ADD COLUMN index_generation INTEGER"
+      index_generation: "ALTER TABLE projects ADD COLUMN index_generation INTEGER",
+      semantic_generation: "ALTER TABLE projects ADD COLUMN semantic_generation INTEGER",
+      semantic_fresh: "ALTER TABLE projects ADD COLUMN semantic_fresh INTEGER",
+      semantic_rebuild_needed: "ALTER TABLE projects ADD COLUMN semantic_rebuild_needed INTEGER",
+      semantic_last_error: "ALTER TABLE projects ADD COLUMN semantic_last_error TEXT",
+      semantic_updated_at_ms: "ALTER TABLE projects ADD COLUMN semantic_updated_at_ms INTEGER"
     };
     for (const [column, sql] of Object.entries(additions)) {
       if (!columns.has(column)) this.db.exec(sql);
@@ -524,6 +677,20 @@ export class SQLiteGraphStore implements GraphStore {
     this.db.exec("UPDATE projects SET created_at_ms = indexed_at_ms WHERE created_at_ms IS NULL");
     this.db.exec("UPDATE projects SET last_indexed_at_ms = indexed_at_ms WHERE last_indexed_at_ms IS NULL");
     this.db.exec("UPDATE projects SET index_generation = 1 WHERE index_generation IS NULL");
+    this.db.exec("UPDATE projects SET semantic_generation = index_generation WHERE semantic_generation IS NULL");
+    this.db.exec("UPDATE projects SET semantic_fresh = 1 WHERE semantic_fresh IS NULL");
+    this.db.exec("UPDATE projects SET semantic_rebuild_needed = 0 WHERE semantic_rebuild_needed IS NULL");
+  }
+
+  private writeSemanticStatus(status: SemanticIndexStatus): void {
+    this.sql.updateSemanticStatus.run(
+      status.semanticGeneration,
+      status.semanticFresh ? 1 : 0,
+      status.semanticRebuildNeeded ? 1 : 0,
+      status.semanticLastError ?? null,
+      status.semanticUpdatedAtMs ?? Date.now(),
+      status.projectId
+    );
   }
 
   private deleteProjectRows(projectId: string): void {
@@ -656,6 +823,30 @@ function dirtyFileFromRow(row: Record<string, unknown>): DirtyFile {
   };
 }
 
+function semanticStatusFromProjectRow(row: Record<string, unknown>, projectId: string): SemanticIndexStatus {
+  const graphGeneration = Number(row.index_generation ?? 0);
+  const semanticGeneration = row.semantic_generation === null || row.semantic_generation === undefined
+    ? graphGeneration
+    : Number(row.semantic_generation);
+  return {
+    projectId,
+    semanticGeneration,
+    semanticFresh: Boolean(Number(row.semantic_fresh ?? 1)),
+    semanticRebuildNeeded: Boolean(Number(row.semantic_rebuild_needed ?? 0)),
+    semanticLastError: row.semantic_last_error === null || row.semantic_last_error === undefined ? undefined : String(row.semantic_last_error),
+    semanticUpdatedAtMs: row.semantic_updated_at_ms === null || row.semantic_updated_at_ms === undefined ? undefined : Number(row.semantic_updated_at_ms)
+  };
+}
+
+function defaultSemanticStatus(projectId: string, graphGeneration: number): SemanticIndexStatus {
+  return {
+    projectId,
+    semanticGeneration: graphGeneration,
+    semanticFresh: true,
+    semanticRebuildNeeded: false
+  };
+}
+
 function fallbackProjectIdentity(projectId: string, repoRoot: string, indexedAtMs: number): ProjectIdentity {
   return {
     projectId,
@@ -754,6 +945,18 @@ function groupEdgesByPath(edges: GraphEdge[]): Map<string, GraphEdge[]> {
     grouped.set(filePath, current);
   }
   return grouped;
+}
+
+function uniqueSorted(filePaths: string[]): string[] {
+  return [...new Set(filePaths.map((filePath) => normalizeUserPath(filePath)).filter(Boolean))].sort();
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
+}
+
+function placeholders(values: unknown[]): string {
+  return values.map(() => "?").join(", ");
 }
 
 function edgeFilePath(edge: GraphEdge): string | null {

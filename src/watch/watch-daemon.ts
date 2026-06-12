@@ -2,6 +2,8 @@ import path from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 import type { ContextEngine } from "../core/contracts.js";
 import { shouldIgnoreDirectory, shouldIgnoreFile } from "../indexing/ignore-policy.js";
+import { createIndexProgressRecorder } from "../indexing/index-progress-state.js";
+import { indexRepoWithBootstrapBatch } from "../indexing/batch-bootstrap.js";
 import { normalizeRepoPath, normalizeUserPath } from "../utils/path.js";
 import { FileEventJournal, type WatchEventJournalEntry } from "./event-journal.js";
 import { WatchIndexScheduler, type WatchIndexSchedulerOptions, type WatchIndexSchedulerStatus } from "./index-scheduler.js";
@@ -22,6 +24,7 @@ export interface FileWatchDaemonOptions extends Omit<WatchIndexSchedulerOptions,
   maxFlushWaitMs?: number;
   flushRetryMaxDelayMs?: number;
   maxFileBytes?: number;
+  maxAnalysisMemoryMb?: number;
   indexOnStart?: boolean;
   /** Interval for refreshing the on-disk heartbeat even when idle. Defaults to 10s. */
   heartbeatIntervalMs?: number;
@@ -51,6 +54,7 @@ const DEFAULT_MAX_BUFFERED_EVENTS = 1_000;
 const DEFAULT_MAX_FLUSH_WAIT_MS = 5_000;
 const DEFAULT_FLUSH_RETRY_MAX_DELAY_MS = 30_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
+const DEFAULT_POLL_INTERVAL_MS = 100;
 
 export class FileWatchDaemon {
   private watcher: FSWatcher | undefined;
@@ -115,7 +119,7 @@ export class FileWatchDaemon {
       ignoreInitial: true,
       followSymlinks: false,
       usePolling: this.options.usePolling,
-      interval: this.options.pollIntervalMs,
+      interval: this.options.usePolling ? this.options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS : this.options.pollIntervalMs,
       atomic: true,
       awaitWriteFinish: {
         stabilityThreshold: this.options.awaitWriteFinishMs ?? DEFAULT_AWAIT_WRITE_FINISH_MS,
@@ -242,7 +246,24 @@ export class FileWatchDaemon {
     try {
       await this.engine.indexStatus(this.repoRoot);
     } catch {
-      await this.engine.indexRepo(this.repoRoot);
+      await this.bootstrapInitialIndexBatch();
+    }
+  }
+
+  private async bootstrapInitialIndexBatch(): Promise<void> {
+    const progress = createIndexProgressRecorder(this.repoRoot);
+    try {
+      await indexRepoWithBootstrapBatch(this.engine, this.repoRoot, {
+        maxBatchFiles: this.options.maxBatchFiles,
+        maxFileBytes: this.options.maxFileBytes,
+        maxAnalysisMemoryMb: this.options.maxAnalysisMemoryMb,
+        disableSemanticOnBootstrap: true,
+        onProgress: progress.onProgress
+      });
+      await progress.flush();
+    } catch (error) {
+      await progress.recordFailure(error);
+      throw error;
     }
   }
 

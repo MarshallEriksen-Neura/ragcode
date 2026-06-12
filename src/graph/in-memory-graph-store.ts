@@ -1,4 +1,4 @@
-import type { GraphStore } from "../core/contracts.js";
+import type { EdgeScope, GraphStore } from "../core/contracts.js";
 import type {
   CodeChunk,
   CodeFile,
@@ -12,6 +12,7 @@ import type {
   RepoIndex,
   SearchHit,
   SearchQuery,
+  SemanticIndexStatus,
   SymbolNode,
   TraceFlow,
   WatcherEventOptions,
@@ -33,6 +34,7 @@ interface RepoGraphState {
   symbols: Map<string, SymbolNode>;
   edges: GraphEdge[];
   skippedFiles: Array<{ filePath: string; reason: string }>;
+  semanticStatus?: SemanticIndexStatus;
   dirtyFiles: Map<string, DirtyFile>;
   burstMode: boolean;
   droppedEvents: number;
@@ -67,6 +69,7 @@ export class InMemoryGraphStore implements GraphStore {
         symbols: new Map<string, SymbolNode>(),
         edges: [] as GraphEdge[],
         skippedFiles: index.skippedFiles,
+        semanticStatus: stateForSemanticReset(index),
         dirtyFiles: new Map(),
         burstMode: false,
         droppedEvents: 0
@@ -75,7 +78,7 @@ export class InMemoryGraphStore implements GraphStore {
 
     state.projectId = index.projectId;
     state.indexGeneration = index.indexGeneration;
-    state.skippedFiles = index.skippedFiles;
+    state.skippedFiles = mergeSkippedFiles(state.skippedFiles, index.skippedFiles, index.fullReindex ? undefined : index.affectedFiles);
     const refreshedOrDeleted = refreshedOrDeletedFiles(index);
     for (const filePath of refreshedOrDeleted) this.deleteFileRows(state, filePath);
     const filesToWrite = index.fullReindex ? index.files : index.files.filter((file) => refreshedOrDeleted.has(file.path));
@@ -89,6 +92,48 @@ export class InMemoryGraphStore implements GraphStore {
     state.edges.push(...edgesToWrite);
     this.clearDirtyRows(state, index.affectedFiles);
     this.repos.set(index.repoRoot, state);
+  }
+
+  async getSemanticIndexStatus(repoRoot: string, projectId: string): Promise<SemanticIndexStatus> {
+    return semanticStatusOrDefault(this.ensureRepo(repoRoot), projectId);
+  }
+
+  async markSemanticIndexDeferred(repoRoot: string, projectId: string, reason: string, generation?: number): Promise<SemanticIndexStatus> {
+    const state = this.ensureRepo(repoRoot);
+    state.semanticStatus = {
+      projectId,
+      semanticGeneration: generation ?? state.semanticStatus?.semanticGeneration ?? 0,
+      semanticFresh: false,
+      semanticRebuildNeeded: true,
+      semanticLastError: reason,
+      semanticUpdatedAtMs: Date.now()
+    };
+    return state.semanticStatus;
+  }
+
+  async markSemanticIndexFresh(repoRoot: string, projectId: string, generation: number): Promise<SemanticIndexStatus> {
+    const state = this.ensureRepo(repoRoot);
+    state.semanticStatus = {
+      projectId,
+      semanticGeneration: generation,
+      semanticFresh: true,
+      semanticRebuildNeeded: false,
+      semanticUpdatedAtMs: Date.now()
+    };
+    return state.semanticStatus;
+  }
+
+  async markSemanticIndexFailed(repoRoot: string, projectId: string, error: string, generation?: number): Promise<SemanticIndexStatus> {
+    const state = this.ensureRepo(repoRoot);
+    state.semanticStatus = {
+      projectId,
+      semanticGeneration: generation ?? state.semanticStatus?.semanticGeneration ?? 0,
+      semanticFresh: false,
+      semanticRebuildNeeded: true,
+      semanticLastError: error,
+      semanticUpdatedAtMs: Date.now()
+    };
+    return state.semanticStatus;
   }
 
   async getIndexGeneration(repoRoot: string): Promise<number> {
@@ -170,6 +215,11 @@ export class InMemoryGraphStore implements GraphStore {
     return [...this.ensureRepo(repoRoot).chunks.values()];
   }
 
+  async getChunksForFiles(repoRoot: string, filePaths: string[]): Promise<CodeChunk[]> {
+    const paths = new Set(filePaths);
+    return [...this.ensureRepo(repoRoot).chunks.values()].filter((chunk) => paths.has(chunk.filePath));
+  }
+
   async getSkippedFiles(repoRoot: string): Promise<Array<{ filePath: string; reason: string }>> {
     return [...this.ensureRepo(repoRoot).skippedFiles];
   }
@@ -178,9 +228,36 @@ export class InMemoryGraphStore implements GraphStore {
     return [...this.ensureRepo(repoRoot).symbols.values()];
   }
 
+  async getSymbolsForFiles(repoRoot: string, filePaths: string[]): Promise<SymbolNode[]> {
+    const paths = new Set(filePaths);
+    return [...this.ensureRepo(repoRoot).symbols.values()].filter((symbol) => paths.has(symbol.filePath));
+  }
+
   async getEdges(repoRoot: string, kind?: EdgeKind): Promise<GraphEdge[]> {
     const edges = this.ensureRepo(repoRoot).edges;
     return kind ? edges.filter((edge) => edge.kind === kind) : [...edges];
+  }
+
+  async getEdgesForFiles(repoRoot: string, filePaths: string[]): Promise<GraphEdge[]> {
+    const paths = new Set(filePaths);
+    return this.ensureRepo(repoRoot).edges.filter((edge) => {
+      const sourceFile = edgeFilePath(edge);
+      const targetFile = typeof edge.metadata?.targetFile === "string" ? edge.metadata.targetFile : undefined;
+      const routeFile = typeof edge.metadata?.routeFile === "string" ? edge.metadata.routeFile : undefined;
+      const testFile = typeof edge.metadata?.testFile === "string" ? edge.metadata.testFile : undefined;
+      return Boolean((sourceFile && paths.has(sourceFile)) || (targetFile && paths.has(targetFile)) || (routeFile && paths.has(routeFile)) || (testFile && paths.has(testFile)));
+    });
+  }
+
+  async getEdgesForScope(repoRoot: string, scope: EdgeScope): Promise<GraphEdge[]> {
+    const paths = new Set(scope.filePaths ?? []);
+    const routes = new Set(scope.routePaths ?? []);
+    const kinds = new Set(scope.kinds ?? []);
+    if (paths.size === 0 && routes.size === 0) return [];
+    return this.ensureRepo(repoRoot).edges.filter((edge) => {
+      if (kinds.size > 0 && !kinds.has(edge.kind)) return false;
+      return edgeMatchesAnyPath(edge, paths) || edgeMatchesAnyRoute(edge, routes);
+    });
   }
 
   async findSymbol(repoRoot: string, name: string): Promise<SymbolNode[]> {
@@ -389,6 +466,28 @@ export class InMemoryGraphStore implements GraphStore {
   }
 }
 
+function stateForSemanticReset(index: RepoIndex): SemanticIndexStatus | undefined {
+  return index.semanticDeferred
+    ? {
+      projectId: index.projectId,
+      semanticGeneration: 0,
+      semanticFresh: false,
+      semanticRebuildNeeded: true,
+      semanticLastError: "semantic indexing deferred during partial bootstrap",
+      semanticUpdatedAtMs: index.indexedAtMs
+    }
+    : undefined;
+}
+
+function semanticStatusOrDefault(state: RepoGraphState, projectId: string): SemanticIndexStatus {
+  return state.semanticStatus ?? {
+    projectId,
+    semanticGeneration: state.indexGeneration,
+    semanticFresh: true,
+    semanticRebuildNeeded: false
+  };
+}
+
 function requireRepoRoot(repoRoot: string | undefined): string {
   if (!repoRoot) throw new Error("Internal error: graph search requires a resolved repoRoot.");
   return repoRoot;
@@ -416,8 +515,41 @@ function edgeFilePath(edge: GraphEdge): string | undefined {
   return typeof edge.metadata?.sourceFile === "string" ? edge.metadata.sourceFile : undefined;
 }
 
+function edgeMatchesAnyPath(edge: GraphEdge, paths: Set<string>): boolean {
+  if (paths.size === 0) return false;
+  const sourceFile = edgeFilePath(edge);
+  const targetFile = stringMetadata(edge, "targetFile");
+  const routeFile = stringMetadata(edge, "routeFile");
+  const testFile = stringMetadata(edge, "testFile");
+  return Boolean((sourceFile && paths.has(sourceFile)) || (targetFile && paths.has(targetFile)) || (routeFile && paths.has(routeFile)) || (testFile && paths.has(testFile)));
+}
+
+function edgeMatchesAnyRoute(edge: GraphEdge, routes: Set<string>): boolean {
+  if (routes.size === 0) return false;
+  const route = stringMetadata(edge, "route");
+  const requestPath = stringMetadata(edge, "requestPath");
+  return Boolean((route && routes.has(route)) || (requestPath && routes.has(requestPath)));
+}
+
+function stringMetadata(edge: GraphEdge, key: string): string | undefined {
+  const value = edge.metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
 function refreshedOrDeletedFiles(index: RepoIndex): Set<string> {
   return new Set(index.fullReindex ? index.files.map((file) => file.path) : [...(index.refreshedFiles ?? index.changedFiles), ...index.deletedFiles]);
+}
+
+function mergeSkippedFiles(
+  current: Array<{ filePath: string; reason: string }>,
+  next: Array<{ filePath: string; reason: string }>,
+  affectedFiles: string[] | undefined
+): Array<{ filePath: string; reason: string }> {
+  if (!affectedFiles) return next;
+  const affected = new Set(affectedFiles);
+  const merged = new Map(current.filter((file) => !affected.has(file.filePath)).map((file) => [file.filePath, file]));
+  for (const file of next) merged.set(file.filePath, file);
+  return [...merged.values()].sort((a, b) => a.filePath.localeCompare(b.filePath));
 }
 
 function isTraceEdge(kind: EdgeKind): boolean {

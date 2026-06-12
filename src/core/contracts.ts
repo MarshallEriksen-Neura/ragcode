@@ -23,6 +23,7 @@ import type {
   VerifiedCodeSubgraph,
   VerifiedSubgraphRequest,
   ProjectIdentity,
+  SemanticIndexStatus,
   WatcherEventOptions,
   WatcherState
 } from "./types.js";
@@ -31,6 +32,12 @@ export interface EmbeddingProvider {
   readonly dimensions?: number;
   embed(text: string): Promise<number[]>;
   embedBatch?(texts: string[]): Promise<number[][]>;
+}
+
+export interface EdgeScope {
+  filePaths?: string[];
+  routePaths?: string[];
+  kinds?: EdgeKind[];
 }
 
 export interface GraphStore {
@@ -43,14 +50,22 @@ export interface GraphStore {
   markDirtyFilesIndexing?(repoRoot: string, filePaths: string[]): Promise<WatcherState>;
   markDirtyFilesDeadLetter?(repoRoot: string, filePaths: string[], reason: string): Promise<WatcherState>;
   clearDirtyFiles?(repoRoot: string, filePaths?: string[]): Promise<void>;
+  getSemanticIndexStatus?(repoRoot: string, projectId: string): Promise<SemanticIndexStatus>;
+  markSemanticIndexDeferred?(repoRoot: string, projectId: string, reason: string, generation?: number): Promise<SemanticIndexStatus>;
+  markSemanticIndexFresh?(repoRoot: string, projectId: string, generation: number): Promise<SemanticIndexStatus>;
+  markSemanticIndexFailed?(repoRoot: string, projectId: string, error: string, generation?: number): Promise<SemanticIndexStatus>;
   needsRebuild?(repoRoot: string, projectId: string): Promise<boolean>;
   resetRepo(repoRoot: string): Promise<void>;
   upsertIndex(index: RepoIndex): Promise<void>;
   getFiles(repoRoot: string): Promise<CodeFile[]>;
   getChunks(repoRoot: string): Promise<CodeChunk[]>;
+  getChunksForFiles(repoRoot: string, filePaths: string[]): Promise<CodeChunk[]>;
   getSkippedFiles(repoRoot: string): Promise<Array<{ filePath: string; reason: string }>>;
   getSymbols(repoRoot: string): Promise<SymbolNode[]>;
+  getSymbolsForFiles(repoRoot: string, filePaths: string[]): Promise<SymbolNode[]>;
   getEdges(repoRoot: string, kind?: EdgeKind): Promise<GraphEdge[]>;
+  getEdgesForFiles(repoRoot: string, filePaths: string[]): Promise<GraphEdge[]>;
+  getEdgesForScope(repoRoot: string, scope: EdgeScope): Promise<GraphEdge[]>;
   findSymbol(repoRoot: string, name: string): Promise<SymbolNode[]>;
   explainFile(repoRoot: string, filePath: string): Promise<{ file?: CodeFile; chunks: CodeChunk[]; symbols: SymbolNode[] }>;
   searchText(query: SearchQuery): Promise<SearchHit[]>;

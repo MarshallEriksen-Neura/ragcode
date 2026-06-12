@@ -49,6 +49,8 @@ export interface WatcherLiveness {
   processAlive: boolean;
   /** True when a heartbeat exists and is within HEARTBEAT_STALE_MS. */
   heartbeatFresh: boolean;
+  diagnostic: "live_watcher" | "stale_heartbeat" | "dead_lock_holder" | "heartbeat_without_lock" | "lock_without_heartbeat" | "not_running";
+  nextAction?: string;
   lock?: WatcherLockInfo;
   heartbeat?: WatcherHeartbeat;
   heartbeatAgeMs?: number;
@@ -204,15 +206,27 @@ export async function readWatcherLiveness(repoRoot: string, nowMs = Date.now()):
   const heartbeatFresh = heartbeatAgeMs !== undefined && heartbeatAgeMs <= HEARTBEAT_STALE_MS;
 
   let state: WatcherLivenessState;
+  let diagnostic: WatcherLiveness["diagnostic"];
+  let nextAction: string | undefined;
   if (!lock && !heartbeat) {
     state = "not_running";
+    diagnostic = "not_running";
   } else if (processAlive && heartbeatFresh) {
     state = "running";
+    diagnostic = "live_watcher";
   } else if (processAlive && !heartbeatFresh) {
     state = "stale";
+    diagnostic = heartbeat ? "stale_heartbeat" : "lock_without_heartbeat";
+    nextAction = "Check the watcher process; status is read-only and will not remove lifecycle files.";
+  } else if (!lock && heartbeat) {
+    state = "dead";
+    diagnostic = "heartbeat_without_lock";
+    nextAction = "Run ragcode watch to replace stale heartbeat state.";
   } else {
     state = "dead";
+    diagnostic = "dead_lock_holder";
+    nextAction = "Next watcher acquisition will reclaim the stale lock.";
   }
 
-  return { state, processAlive, heartbeatFresh, lock, heartbeat, heartbeatAgeMs };
+  return { state, processAlive, heartbeatFresh, diagnostic, nextAction, lock, heartbeat, heartbeatAgeMs };
 }

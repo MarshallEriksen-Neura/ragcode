@@ -37,6 +37,8 @@ export interface ServiceManagerOptions {
   cliEntry?: string;
   /** Extra args appended to `watch <repoRoot>`, e.g. ["--poll"]. */
   extraArgs?: string[];
+  /** Whether the launched watcher may bootstrap the index on start. Defaults to false. */
+  indexOnStart?: boolean;
   home?: string;
   platform?: NodeJS.Platform;
 }
@@ -76,6 +78,7 @@ function buildSpec(repoRoot: string, options: ServiceManagerOptions): ServiceLau
     cliEntry: resolveCliEntry(options),
     repoRoot: path.resolve(repoRoot),
     serviceName: serviceNameForRepo(repoRoot),
+    indexOnStart: options.indexOnStart,
     extraArgs: options.extraArgs
   };
 }

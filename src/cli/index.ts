@@ -4,6 +4,7 @@ import { Command } from "commander";
 import { loadDotEnv } from "../config/dotenv.js";
 import { getPackageVersion } from "../config/package-info.js";
 import { createRuntimeComponentsForRepo } from "../config/runtime-config.js";
+import type { IndexProgressEvent } from "../core/types.js";
 import { RagCodeEngine } from "../core/engine.js";
 import { runConfigureCommand } from "./configure.js";
 import { runDoctor } from "../diagnostics/doctor.js";
@@ -13,6 +14,9 @@ import { expandNode, parseNodeRef } from "../subgraph/node-expander.js";
 import { FileWatchDaemon } from "../watch/watch-daemon.js";
 import { WatcherLockError, readWatcherLiveness } from "../watch/watcher-liveness.js";
 import { installWatcherService, uninstallWatcherService, watcherServiceStatus, UnsupportedPlatformError } from "../service/service-manager.js";
+import { DEFAULT_BOOTSTRAP_BATCH_FILES, indexRepoWithBootstrapBatch } from "../indexing/batch-bootstrap.js";
+import { createIndexProgressRecorder } from "../indexing/index-progress-state.js";
+import { normalizeServiceInstallOptions } from "./service-install-options.js";
 import { runInitConfig } from "../../scripts/init-config.js";
 import { setupMCP } from "../../scripts/setup-mcp.js";
 import { runUpdate } from "./update.js";
@@ -26,21 +30,41 @@ program.name("ragcode").description("Local code intelligence context engine").ve
 program
   .command("index")
   .argument("<repoRoot>")
+  .option("--max-batch-files <number>", "maximum files in the first empty-index bootstrap batch", parseNumber)
+  .option("--max-analysis-memory-mb <number>", "abort before continuing when heap exceeds this many MB", parseNumber)
+  .option("--semantic-on-bootstrap", "write semantic vectors during the first partial bootstrap batch")
+  .option("--full", "force the legacy all-at-once full index")
   .description("Index a repository")
-  .action(async (repoRoot: string) => {
+  .action(async (repoRoot: string, options: { maxBatchFiles?: number; maxAnalysisMemoryMb?: number; semanticOnBootstrap?: boolean; full?: boolean }) => {
+    assertPositive("--max-batch-files", options.maxBatchFiles);
+    assertPositive("--max-analysis-memory-mb", options.maxAnalysisMemoryMb);
     if (process.stdout.isTTY) {
       const { runIndexProgressTui } = await import("./tui/index-progress.js");
       await runIndexProgressTui({
         repoRoot,
-        run: async (onProgress) => withEngine(repoRoot, (engine) => engine.indexRepo(repoRoot, { onProgress }))
+        run: async (onProgress) => withEngine(repoRoot, (engine) => indexRepoForCli(engine, repoRoot, options, onProgress))
       });
       return;
     }
     await withEngine(repoRoot, async (engine) => {
-      const result = await engine.indexRepo(repoRoot);
+      const progress = createIndexProgressRecorder(repoRoot);
+      const onProgress = (event: Parameters<typeof progress.onProgress>[0]): void => {
+        console.error(JSON.stringify({ index: event }));
+        progress.onProgress(event);
+      };
+      const result = await indexRepoForCli(engine, repoRoot, options, onProgress).catch(async (error: unknown) => {
+        await progress.recordFailure(error);
+        throw error;
+      });
+      await progress.flush();
       console.log(JSON.stringify({
         repoRoot: result.repoRoot,
         files: result.files.length,
+        fullReindex: result.fullReindex,
+        affectedFiles: result.affectedFiles,
+        partialBootstrap: result.partialBootstrap ?? false,
+        semanticDeferred: result.semanticDeferred ?? false,
+        pendingFiles: (await engine.indexStatus(repoRoot).catch(() => undefined))?.pendingFileCount,
         chunks: result.chunks.length,
         skippedFiles: result.skippedFiles.length,
         analysisWarnings: result.analysisWarnings ?? []
@@ -216,6 +240,7 @@ program
   .option("--burst-threshold <number>", "dirty file count that activates burst mode", parseNumber)
   .option("--max-dirty-files <number>", "maximum dirty file paths to retain from one batch", parseNumber)
   .option("--max-batch-files <number>", "maximum dirty file paths to mark indexing in one scheduler batch", parseNumber)
+  .option("--max-analysis-memory-mb <number>", "abort an indexing batch when heap exceeds this many MB", parseNumber)
   .option("--poll", "use polling instead of native fs.watch")
   .option("--no-auto-index", "record dirty events but do not run background refresh")
   .option("--no-index-on-start", "fail if the repo is not already indexed instead of indexing before watching")
@@ -228,27 +253,20 @@ program
     burstThreshold?: number;
     maxDirtyFiles?: number;
     maxBatchFiles?: number;
+    maxAnalysisMemoryMb?: number;
     poll?: boolean;
     autoIndex?: boolean;
     indexOnStart?: boolean;
   }) => {
     const engine = buildCliEngine(repoRoot);
+    const watchOptions = normalizeWatchOptions(options);
     if (process.stdout.isTTY) {
       const { createWatchStatusTui } = await import("./tui/watch-status.js");
       const absoluteRoot = path.resolve(repoRoot);
       let tui: ReturnType<typeof createWatchStatusTui> | undefined;
       let shuttingDown = false;
       const daemon = new FileWatchDaemon(engine, repoRoot, {
-        batchDelayMs: options.batchDelay,
-        minQuietMs: options.quiet,
-        flushEventsMs: options.flushEvents,
-        awaitWriteFinishMs: options.awaitWrite,
-        burstThreshold: options.burstThreshold,
-        maxDirtyFiles: options.maxDirtyFiles,
-        maxBatchFiles: options.maxBatchFiles,
-        usePolling: options.poll,
-        autoIndex: options.autoIndex,
-        indexOnStart: options.indexOnStart,
+        ...watchOptions,
         onStatus: (status) => tui?.update(status)
       });
       tui = createWatchStatusTui({
@@ -298,16 +316,7 @@ program
       return;
     }
     const daemon = new FileWatchDaemon(engine, repoRoot, {
-      batchDelayMs: options.batchDelay,
-      minQuietMs: options.quiet,
-      flushEventsMs: options.flushEvents,
-      awaitWriteFinishMs: options.awaitWrite,
-      burstThreshold: options.burstThreshold,
-      maxDirtyFiles: options.maxDirtyFiles,
-      maxBatchFiles: options.maxBatchFiles,
-      usePolling: options.poll,
-      autoIndex: options.autoIndex,
-      indexOnStart: options.indexOnStart,
+      ...watchOptions,
       onStatus: (status) => {
         console.error(JSON.stringify({ watcher: status }));
       }
@@ -344,13 +353,19 @@ service
   .command("install")
   .argument("<repoRoot>")
   .option("--poll", "register the watcher with polling instead of native fs.watch")
+  .option("--index-now", "run one bounded index batch before registering the service", false)
+  .option("--bootstrap-batch-size <number>", "maximum files in the explicit --index-now bootstrap batch", parseNumber)
+  .option("--max-analysis-memory-mb <number>", "abort the explicit --index-now bootstrap when heap exceeds this many MB", parseNumber)
   .description("Register and start a background watcher service for this repo (systemd user / launchd / Task Scheduler)")
-  .action(async (repoRoot: string, options: { poll?: boolean }) => {
-    // Index once up front so the service can start with --no-index-on-start and not block on a full
-    // reindex at boot. Then register the OS unit. The per-repo lock (P0) makes redundant launches safe.
-    await withEngine(repoRoot, (engine) => engine.indexRepo(repoRoot));
+  .action(async (repoRoot: string, options: { poll?: boolean; indexNow?: boolean; bootstrapBatchSize?: number; maxAnalysisMemoryMb?: number }) => {
+    const installOptions = normalizeServiceInstallOptions(options);
+    if (installOptions.indexNow) await withEngine(repoRoot, (engine) => indexRepoWithBootstrapBatch(engine, repoRoot, {
+      maxBatchFiles: installOptions.bootstrapBatchSize,
+      maxAnalysisMemoryMb: installOptions.maxAnalysisMemoryMb,
+      disableSemanticOnBootstrap: true
+    }));
     try {
-      const result = await installWatcherService(repoRoot, { extraArgs: options.poll ? ["--poll"] : undefined });
+      const result = await installWatcherService(repoRoot, { extraArgs: installOptions.extraArgs, indexOnStart: false });
       console.log(JSON.stringify(result, null, 2));
       if (!result.ok) process.exitCode = 1;
     } catch (error) {
@@ -537,6 +552,74 @@ function buildCliEngine(repoRoot: string | undefined): RagCodeEngine {
     semanticStore: components.semanticStore,
     embeddingProvider: components.embeddingProvider
   });
+}
+
+function indexRepoForCli(
+  engine: RagCodeEngine,
+  repoRoot: string,
+  options: { maxBatchFiles?: number; maxAnalysisMemoryMb?: number; semanticOnBootstrap?: boolean; full?: boolean },
+  onProgress: (event: IndexProgressEvent) => void
+): Promise<import("../core/types.js").RepoIndex> {
+  const indexOptions = {
+    onProgress,
+    maxAnalysisMemoryMb: options.maxAnalysisMemoryMb ?? envPositiveNumber("RAGCODE_MAX_ANALYSIS_MEMORY_MB"),
+    disableSemanticOnBootstrap: options.semanticOnBootstrap !== true
+  };
+  if (options.full) return engine.indexRepo(repoRoot, indexOptions);
+  return indexRepoWithBootstrapBatch(engine, repoRoot, {
+    ...indexOptions,
+    maxBatchFiles: options.maxBatchFiles ?? envPositiveNumber("RAGCODE_MAX_INDEX_FILES_PER_BATCH") ?? DEFAULT_BOOTSTRAP_BATCH_FILES
+  });
+}
+
+function envPositiveNumber(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${name} must be a positive number.`);
+  return parsed;
+}
+
+function normalizeWatchOptions(options: {
+  batchDelay?: number;
+  quiet?: number;
+  flushEvents?: number;
+  awaitWrite?: number;
+  burstThreshold?: number;
+  maxDirtyFiles?: number;
+  maxBatchFiles?: number;
+  maxAnalysisMemoryMb?: number;
+  poll?: boolean;
+  autoIndex?: boolean;
+  indexOnStart?: boolean;
+}): ConstructorParameters<typeof FileWatchDaemon>[2] {
+  assertPositive("--batch-delay", options.batchDelay);
+  assertPositive("--quiet", options.quiet);
+  assertPositive("--flush-events", options.flushEvents);
+  assertPositive("--await-write", options.awaitWrite);
+  assertPositive("--max-dirty-files", options.maxDirtyFiles);
+  assertPositive("--max-batch-files", options.maxBatchFiles);
+  assertPositive("--max-analysis-memory-mb", options.maxAnalysisMemoryMb);
+  assertPositive("--burst-threshold", options.burstThreshold);
+  return {
+    batchDelayMs: options.batchDelay,
+    minQuietMs: options.quiet,
+    flushEventsMs: options.flushEvents,
+    awaitWriteFinishMs: options.awaitWrite,
+    burstThreshold: options.burstThreshold,
+    maxDirtyFiles: options.maxDirtyFiles,
+    maxBatchFiles: options.maxBatchFiles,
+    maxAnalysisMemoryMb: options.maxAnalysisMemoryMb,
+    usePolling: options.poll,
+    autoIndex: options.autoIndex,
+    indexOnStart: options.indexOnStart
+  };
+}
+
+function assertPositive(name: string, value: number | undefined): void {
+  if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+    throw new Error(`${name} must be a positive number.`);
+  }
 }
 
 function parseNumber(value: string): number {
