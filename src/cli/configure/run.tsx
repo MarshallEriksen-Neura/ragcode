@@ -69,7 +69,7 @@ export async function runInkConfigure(options: { repoRoot: string; mode: WizardM
   }
 
   if (result.actions.setupMcp) {
-    setupMCP({ cwd: repoRoot, env: process.env });
+    setupMCP({ cwd: repoRoot, env: process.env, client: result.actions.mcpClient as 'claude' | 'claude-code' | 'codex' });
   }
 
   if (result.actions.installWatcherService) {

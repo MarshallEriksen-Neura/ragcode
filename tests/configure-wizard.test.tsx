@@ -49,7 +49,7 @@ describe("configure wizard state machine", () => {
       embeddingProvider: "deterministic"
     });
     expect(result?.updates.embeddingBaseUrl).toBeUndefined();
-    expect(result?.actions).toEqual({ testEmbedding: true, save: true, indexNow: false, setupMcp: false, installWatcherService: false });
+    expect(result?.actions).toEqual({ testEmbedding: true, save: true, indexNow: false, setupMcp: false, mcpClient: undefined, installWatcherService: false });
   });
 
   it("walks openai-compatible provider details and collects them into updates", () => {
@@ -94,7 +94,7 @@ describe("configure wizard state machine", () => {
   it("defaults index-now and setup-mcp to yes in first_run mode", () => {
     const state = acceptDefaults(createWizardState("first_run", "/repo", baseConfig));
 
-    expect(wizardResult(state)?.actions).toEqual({ testEmbedding: true, save: true, indexNow: true, setupMcp: true, installWatcherService: true });
+    expect(wizardResult(state)?.actions).toEqual({ testEmbedding: true, save: true, indexNow: true, setupMcp: true, mcpClient: "claude-code", installWatcherService: true });
   });
 
   it("skips index/setup-mcp steps when the user declines saving", () => {
@@ -106,7 +106,31 @@ describe("configure wizard state machine", () => {
     state = answerCurrentStep(state, "no");  // save -> index/setup-mcp skipped
 
     expect(state.done).toBe(true);
-    expect(wizardResult(state)?.actions).toEqual({ testEmbedding: false, save: false, indexNow: false, setupMcp: false, installWatcherService: false });
+    expect(wizardResult(state)?.actions).toEqual({ testEmbedding: false, save: false, indexNow: false, setupMcp: false, mcpClient: undefined, installWatcherService: false });
+  });
+
+  it("collects mcpClient choice when user opts into MCP setup", () => {
+    let state = createWizardState("configure", "/repo", baseConfig);
+    state = answerCurrentStep(state, "");        // graphStore
+    state = answerCurrentStep(state, "");        // semanticStore
+    state = answerCurrentStep(state, "");        // provider (deterministic)
+    state = answerCurrentStep(state, "yes");     // test embedding
+    state = answerCurrentStep(state, "yes");     // save
+    state = answerCurrentStep(state, "yes");     // index now
+    state = answerCurrentStep(state, "yes");     // setup mcp
+    expect(currentStep(state)?.key).toBe("mcpClient");
+    state = answerCurrentStep(state, "codex");   // choose codex
+    state = answerCurrentStep(state, "no");      // install watcher service
+
+    expect(state.done).toBe(true);
+    expect(wizardResult(state)?.actions).toEqual({
+      testEmbedding: true,
+      save: true,
+      indexNow: true,
+      setupMcp: true,
+      mcpClient: "codex",
+      installWatcherService: false
+    });
   });
 });
 

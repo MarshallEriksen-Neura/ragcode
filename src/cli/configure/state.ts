@@ -39,6 +39,7 @@ export interface WizardActions {
   save: boolean;
   indexNow: boolean;
   setupMcp: boolean;
+  mcpClient?: string;
   installWatcherService: boolean;
 }
 
@@ -142,6 +143,18 @@ export function createWizardState(mode: WizardMode, repoRoot: string, current: R
       skip: (answers) => answers.save !== "yes"
     },
     {
+      key: "mcpClient",
+      kind: "select",
+      title: "Which MCP client?",
+      options: [
+        { value: "claude", label: "Claude Desktop (global ~/.../claude_desktop_config.json)" },
+        { value: "claude-code", label: "Claude Code (project .mcp.json)" },
+        { value: "codex", label: "Codex CLI (global ~/.codex/config.toml)" }
+      ],
+      defaultValue: "claude-code",
+      skip: (answers) => answers.setupMcp !== "yes"
+    },
+    {
       key: "installWatcherService",
       kind: "confirm",
       // Without this, freshness silently depends on a long-lived `ragcode watch` nobody starts.
@@ -209,6 +222,7 @@ export function wizardResult(state: WizardState): WizardResult | undefined {
       save: answers.save === "yes",
       indexNow: answers.indexNow === "yes",
       setupMcp: answers.setupMcp === "yes",
+      mcpClient: answers.mcpClient,
       installWatcherService: answers.installWatcherService === "yes"
     }
   };
