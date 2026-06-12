@@ -51,6 +51,7 @@
     "benchmark:list": "tsx scripts/benchmark.ts --list",
     "benchmark:all": "tsx scripts/benchmark.ts --all",
     "benchmark:observation": "tsx scripts/benchmark.ts --suite observation",
+    "benchmark:deeting": "tsx scripts/benchmark.ts --repo-name deeting --reuse-index",
     "benchmark:perf-smoke": "tsx scripts/benchmark-perf-smoke.ts",
     "benchmark:incremental-stress": "tsx scripts/benchmark-incremental-stress.ts",
     "setup-mcp": "tsx scripts/setup-mcp.ts",

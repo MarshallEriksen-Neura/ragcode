@@ -298,6 +298,66 @@
           ]
         }
       ]
+    },
+    {
+      "name": "deeting",
+      "suite": "project",
+      "localPath": "../Deeting",
+      "branch": "main",
+      "pinnedHead": "98eacea9cce92d2e2cf4f4eb34edca3f465044e7",
+      "useRepoRuntime": true,
+      "rationale": "Local Deeting desktop/runtime checkout with Rust, Tauri, Next.js, Python service code, generated artifacts, and dense retrieval/runtime owner chains. This benchmark uses Deeting's own .ragcode runtime so it can reuse the project index already built for that checkout.",
+      "cases": [
+        {
+          "name": "deeting-world-model-update-tool-runtime",
+          "query": "world model update tool calls runtime chat tools",
+          "mode": "explain",
+          "budgetChars": 9000,
+          "limit": 10,
+          "gate": true,
+          "maxExpectedOwnerRank": 8,
+          "expectedOwnerFiles": [
+            "deeting/src-tauri/src/modules/desktop_runtime/runtime/chat_tool_runtime/frame_tools/world_model_update.rs"
+          ]
+        },
+        {
+          "name": "deeting-tool-call-processor-runtime",
+          "query": "process_chat_tool_calls world_model_update tool_call_processor runtime tools",
+          "mode": "explain",
+          "budgetChars": 9000,
+          "limit": 10,
+          "gate": true,
+          "maxExpectedOwnerRank": 4,
+          "expectedOwnerFiles": [
+            "deeting/src-tauri/src/modules/desktop_runtime/runtime/chat_tool_runtime/tool_execution/tool_call_processor.rs"
+          ]
+        },
+        {
+          "name": "deeting-selected-knowledge-runtime-retrieval",
+          "query": "selected knowledge retrieval fuse fallback manifest",
+          "mode": "explain",
+          "budgetChars": 9000,
+          "limit": 10,
+          "gate": true,
+          "maxExpectedOwnerRank": 8,
+          "expectedOwnerFiles": [
+            "deeting/src-tauri/src/modules/desktop_runtime/local_orchestrator/retrieval.rs",
+            "deeting/src-tauri/src/modules/desktop_runtime/context_orchestrator/tests.rs"
+          ]
+        },
+        {
+          "name": "deeting-rag-eval-retrieval-metrics",
+          "query": "rag_eval evaluate_case aggregate run_eval recall mrr",
+          "mode": "explain",
+          "budgetChars": 9000,
+          "limit": 10,
+          "gate": false,
+          "expectedOwnerFiles": [
+            "deeting/src-tauri/src/modules/rag_eval/mod.rs",
+            "deeting/src-tauri/src/modules/rag_eval/tests.rs"
+          ]
+        }
+      ]
     }
   ]
 }

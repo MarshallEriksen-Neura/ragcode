@@ -6,13 +6,14 @@ import {
   hasSemanticParticipation,
   loadDotEnv,
   RagCodeEngine,
+  createRuntimeComponentsForRepo,
   readGraphRuntimeConfig,
   readSemanticRuntimeConfig
 } from "../src/index.js";
 import type { ContextPack, IndexStatus, RepoIndex, SearchHit } from "../src/index.js";
 
 type BenchmarkMode = "explain" | "debug" | "feature" | "refactor" | "review";
-type BenchmarkSuite = "core" | "observation";
+type BenchmarkSuite = "core" | "observation" | "project";
 type BenchmarkSuiteSelection = BenchmarkSuite | "all";
 
 interface BenchmarkCase {
@@ -33,6 +34,7 @@ interface BenchmarkRepoConfig {
   cloneUrl?: string;
   branch?: string;
   pinnedHead?: string;
+  useRepoRuntime?: boolean;
   rationale?: string;
   cases: BenchmarkCase[];
 }
@@ -77,6 +79,7 @@ interface BenchmarkReport {
     cloneUrl?: string;
     branch?: string;
     pinnedHead?: string;
+    useRepoRuntime?: boolean;
     rationale?: string;
   };
   env: {
@@ -228,7 +231,7 @@ async function runSingleRepoCli(args: BenchmarkArgs): Promise<void> {
   const cases = selectCases(DEFAULT_CASES, args, "ad-hoc repo");
   await fs.mkdir(outDir, { recursive: true });
 
-  const engine = new RagCodeEngine({ cwd: args.cwd, env: process.env });
+  const engine = createBenchmarkEngine(args.cwd, repoRoot, true);
   try {
     const report = await runRepoBenchmark(engine, {
       args,
@@ -280,14 +283,14 @@ async function runMatrixCli(args: BenchmarkArgs): Promise<void> {
   }
 
   await fs.mkdir(outDir, { recursive: true });
-  const engine = new RagCodeEngine({ cwd: args.cwd, env: process.env });
-  try {
-    const reports: BenchmarkReport[] = [];
-    for (const repo of repos) {
-      const repoRoot = path.resolve(sampleRoot, repo.localPath);
-      await fs.access(repoRoot).catch(() => {
-        throw new Error(`Benchmark repo '${repo.name}' is missing at ${repoRoot}. Clone ${repo.cloneUrl ?? repo.name} or set RAGCODE_BENCHMARK_SAMPLE_ROOT.`);
-      });
+  const reports: BenchmarkReport[] = [];
+  for (const repo of repos) {
+    const repoRoot = path.resolve(sampleRoot, repo.localPath);
+    await fs.access(repoRoot).catch(() => {
+      throw new Error(`Benchmark repo '${repo.name}' is missing at ${repoRoot}. Clone ${repo.cloneUrl ?? repo.name} or set RAGCODE_BENCHMARK_SAMPLE_ROOT.`);
+    });
+    const engine = createBenchmarkEngine(args.cwd, repoRoot, repo.useRepoRuntime ?? false);
+    try {
       reports.push(await runRepoBenchmark(engine, {
         args,
         cases: selectCases(repo.cases, args, repo.name),
@@ -298,22 +301,22 @@ async function runMatrixCli(args: BenchmarkArgs): Promise<void> {
         configPath,
         startedAtMs: Date.now()
       }));
+    } finally {
+      engine.close();
     }
-
-    const matrix = matrixReport(started, configPath, sampleRoot, suite, reports);
-    const written = await writeReportFiles(outDir, started, matrix, renderMatrixMarkdown(matrix), "matrix");
-    console.log(JSON.stringify({
-      ok: matrix.summary.gatePassed,
-      jsonPath: written.jsonPath,
-      mdPath: written.mdPath,
-      latestJson: written.latestJson,
-      latestMarkdown: written.latestMarkdown,
-      summary: matrix.summary
-    }, null, 2));
-    if (args.assert && !matrix.summary.gatePassed) process.exitCode = 1;
-  } finally {
-    engine.close();
   }
+
+  const matrix = matrixReport(started, configPath, sampleRoot, suite, reports);
+  const written = await writeReportFiles(outDir, started, matrix, renderMatrixMarkdown(matrix), "matrix");
+  console.log(JSON.stringify({
+    ok: matrix.summary.gatePassed,
+    jsonPath: written.jsonPath,
+    mdPath: written.mdPath,
+    latestJson: written.latestJson,
+    latestMarkdown: written.latestMarkdown,
+    summary: matrix.summary
+  }, null, 2));
+  if (args.assert && !matrix.summary.gatePassed) process.exitCode = 1;
 }
 
 async function runRepoBenchmark(
@@ -364,6 +367,7 @@ async function runRepoBenchmark(
       cloneUrl: options.repoConfig.cloneUrl,
       branch: options.repoConfig.branch,
       pinnedHead: options.repoConfig.pinnedHead,
+      useRepoRuntime: options.repoConfig.useRepoRuntime,
       rationale: options.repoConfig.rationale
     } : undefined,
     env: {
@@ -572,6 +576,7 @@ function renderMarkdown(report: BenchmarkReport): string {
       `- cloneUrl: ${report.config.cloneUrl ?? "<none>"}`,
       `- branch: ${report.config.branch ?? "<none>"}`,
       `- pinnedHead: ${report.config.pinnedHead ?? "<none>"}`,
+      `- useRepoRuntime: ${report.config.useRepoRuntime ?? false}`,
       `- rationale: ${report.config.rationale ?? "<none>"}`,
       ""
     );
@@ -777,6 +782,21 @@ function resolveSampleRoot(cwd: string, config: BenchmarkConfig): string {
   return path.isAbsolute(sampleRoot) ? sampleRoot : path.resolve(cwd, sampleRoot);
 }
 
+function createBenchmarkEngine(cwd: string, repoRoot: string, useRepoRuntime: boolean): RagCodeEngine {
+  if (!useRepoRuntime) return new RagCodeEngine({ cwd, env: process.env });
+  const components = createRuntimeComponentsForRepo({
+    cwd: repoRoot,
+    env: process.env,
+    overrides: { repoRoot }
+  });
+  return new RagCodeEngine({
+    cwd: repoRoot,
+    graphStore: components.graphStore,
+    semanticStore: components.semanticStore,
+    embeddingProvider: components.embeddingProvider
+  });
+}
+
 function defaultRepoRoot(cwd: string): string {
   const sibling = path.resolve(cwd, "..", "ragcode-samples", "vite");
   return process.env.RAGCODE_BENCHMARK_REPO ?? sibling;
@@ -812,8 +832,8 @@ function parseArgs(argv: string[]): BenchmarkArgs {
 }
 
 function parseSuite(value: string): BenchmarkSuiteSelection {
-  if (value === "core" || value === "observation" || value === "all") return value;
-  throw new Error(`Invalid --suite value: ${value}. Expected core, observation, or all.`);
+  if (value === "core" || value === "observation" || value === "project" || value === "all") return value;
+  throw new Error(`Invalid --suite value: ${value}. Expected core, observation, project, or all.`);
 }
 
 function requireValue(argv: string[], index: number, flag: string): string {
