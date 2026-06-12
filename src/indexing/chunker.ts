@@ -21,10 +21,12 @@ export interface ChunkOptions {
 
 export async function chunkFiles(repoRoot: string, files: CodeFile[], options: ChunkOptions = {}): Promise<ChunkingResult> {
   const analyzed = await analyzeFiles(repoRoot, files);
+  const chunks = uniqueById(analyzed.chunks);
+  const symbols = uniqueById(analyzed.symbols);
   return {
-    chunks: analyzed.chunks,
-    symbols: analyzed.symbols,
-    edges: resolveChunkEdges(repoRoot, files, analyzed.sources, analyzed.symbols, analyzed.edges)
+    chunks,
+    symbols,
+    edges: resolveChunkEdges(repoRoot, files, analyzed.sources, symbols, analyzed.edges)
   };
 }
 
@@ -49,13 +51,14 @@ export async function chunkFilesIncremental(
     ...currentCached.symbols,
     ...analyzed.symbols
   ];
-  const refreshedEdges = resolveChunkEdges(repoRoot, files, analyzed.sources, symbols, analyzed.edges, routeCatalogEdges(cached.edges, currentPaths, analyzedPaths))
+  const uniqueSymbols = uniqueById(symbols);
+  const refreshedEdges = resolveChunkEdges(repoRoot, files, analyzed.sources, uniqueSymbols, analyzed.edges, routeCatalogEdges(cached.edges, currentPaths, analyzedPaths))
     .filter((edge) => {
       const sourceFile = edgeSourceFile(edge);
       return sourceFile ? analyzedPaths.has(sourceFile) : false;
     });
 
-  return { chunks, symbols, edges: dedupeEdges([...currentCached.edges, ...refreshedEdges]) };
+  return { chunks: uniqueById(chunks), symbols: uniqueSymbols, edges: dedupeEdges([...currentCached.edges, ...refreshedEdges]) };
 }
 
 interface AnalyzedFiles {
@@ -196,4 +199,8 @@ function bindingsMetadata(metadata: GraphEdge["metadata"]): string {
 
 function escapeKeyPart(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll("\u001f", "\\u001f");
+}
+
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+  return [...new Map(items.map((item) => [item.id, item])).values()];
 }

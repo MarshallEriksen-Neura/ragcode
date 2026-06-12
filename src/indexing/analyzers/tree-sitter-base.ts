@@ -1,7 +1,7 @@
 import Parser from "tree-sitter";
 import type { CodeChunk, CodeFile, GraphEdge, SymbolKind, SymbolNode } from "../../core/types.js";
 import { sha256, stableId } from "../../utils/hash.js";
-import { createFileSymbol } from "./fallback-analyzer.js";
+import { createFileSymbol, fallbackFileAnalysis } from "./fallback-analyzer.js";
 import type { FileAnalysis } from "./types.js";
 
 export interface TreeSitterNodePattern {
@@ -38,7 +38,8 @@ export function analyzeWithTreeSitter(
   file: CodeFile,
   content: string
 ): FileAnalysis {
-  const tree = parser.parse(content);
+  const tree = parseTreeSitterFile(parser, repoRoot, file, content);
+  if (!tree) return fallbackFileAnalysis(repoRoot, file, content);
   const lines = content.split(/\r?\n/);
   const fileSymbol = createFileSymbol(repoRoot, file, lines.length);
   const symbols: SymbolNode[] = [fileSymbol];
@@ -98,6 +99,16 @@ export function analyzeWithTreeSitter(
   visit(tree.rootNode);
 
   return { chunks, symbols, edges };
+}
+
+function parseTreeSitterFile(parser: Parser, repoRoot: string, file: CodeFile, content: string): Parser.Tree | undefined {
+  try {
+    return parser.parse(content);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[ragcode] tree-sitter ${file.language} analysis skipped for ${file.path}: ${message}`);
+    return undefined;
+  }
 }
 
 function extractSymbol(

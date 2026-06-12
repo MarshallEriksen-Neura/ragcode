@@ -13,6 +13,34 @@ vi.mock("../src/indexing/ast-analyzer.js", async (importOriginal) => {
     ...actual,
     analyzeFile: ((repoRoot, file, content) => {
       analyzerProbe.filePaths.push(file.path);
+      if (content.includes("DUPLICATE_ANALYSIS_MARKER")) {
+        const symbol = {
+          id: "duplicate-symbol-id",
+          projectId: file.projectId,
+          filePath: file.path,
+          name: "duplicateSymbol",
+          kind: "function" as const,
+          language: file.language,
+          startLine: 1,
+          endLine: 3,
+          signature: "export function duplicateSymbol()",
+          exported: true
+        };
+        const chunk = {
+          id: "duplicate-chunk-id",
+          projectId: file.projectId,
+          repoRoot,
+          filePath: file.path,
+          language: file.language,
+          kind: "function" as const,
+          symbolName: "duplicateSymbol",
+          startLine: 1,
+          endLine: 3,
+          content,
+          contentHash: "duplicate-content-hash"
+        };
+        return { chunks: [chunk, chunk], symbols: [symbol, symbol], edges: [] };
+      }
       return actual.analyzeFile(repoRoot, file, content);
     }) satisfies typeof actual.analyzeFile
   };
@@ -102,6 +130,24 @@ describe("incremental indexing", () => {
     expect(index.affectedFiles).toBeUndefined();
     expect(index.scannedFiles).toEqual(["src/auth.ts", "src/profile.ts", "src/unrelated.ts"]);
     expect(index.files.map((file) => file.path).sort()).toEqual(["src/auth.ts", "src/profile.ts", "src/unrelated.ts"]);
+  });
+
+  it("deduplicates analyzer output before graph persistence", async () => {
+    await writeRepoFile("src/duplicate.ts", [
+      "export function duplicateSymbol() {",
+      "  return 'DUPLICATE_ANALYSIS_MARKER';",
+      "}"
+    ].join("\n"));
+
+    const engine = new RagCodeEngine();
+    const index = await engine.indexRepo(tempRoot);
+
+    expect(index.symbols.filter((symbol) => symbol.id === "duplicate-symbol-id")).toHaveLength(1);
+    expect(index.chunks.filter((chunk) => chunk.id === "duplicate-chunk-id")).toHaveLength(1);
+    expect(await engine.explainFile(tempRoot, "src/duplicate.ts")).toEqual(expect.objectContaining({
+      symbols: [expect.objectContaining({ id: "duplicate-symbol-id" })],
+      chunks: [expect.objectContaining({ id: "duplicate-chunk-id" })]
+    }));
   });
 
   it("refreshes importers when a changed target file can alter resolved cross-file edges", async () => {

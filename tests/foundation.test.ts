@@ -43,6 +43,8 @@ beforeEach(async () => {
     ].join("\n")
   );
   await fs.writeFile(path.join(tempRoot, ".env"), "SECRET_TOKEN=do-not-index\n");
+  await fs.mkdir(path.join(tempRoot, ".venv", "Lib", "site-packages"), { recursive: true });
+  await fs.writeFile(path.join(tempRoot, ".venv", "Lib", "site-packages", "vendor.py"), "def vendor_only():\n    return 1\n");
 });
 
 afterEach(async () => {
@@ -57,6 +59,7 @@ describe("RagCode foundation", () => {
     expect(index.files.map((file) => file.path)).toEqual(["src/auth.test.ts", "src/auth.ts", "src/profile.ts"]);
     expect(index.files.every((file) => file.projectId === index.projectId)).toBe(true);
     expect(index.skippedFiles).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: ".env", reason: "sensitive file policy" })]));
+    expect(index.skippedFiles).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: ".venv", reason: "ignored directory: .venv" })]));
     expect(index.chunks.length).toBeGreaterThan(0);
     expect(index.symbols.some((symbol) => symbol.name === "loginUser" && symbol.kind === "function")).toBe(true);
     expect(index.edges.some((edge) => edge.kind === "imports")).toBe(true);
@@ -199,4 +202,3 @@ describe("RagCode foundation", () => {
     expect(ownerResult).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: "src/auth.ts" })]));
   });
 });
-

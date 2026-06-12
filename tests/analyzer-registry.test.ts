@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   analyzerFor,
   analyzeFile,
@@ -9,6 +9,7 @@ import {
   rustTreeSitterAnalyzer,
   typescriptAnalyzer
 } from "../src/index.js";
+import { analyzeWithTreeSitter } from "../src/indexing/analyzers/tree-sitter-base.js";
 import type { CodeFile } from "../src/index.js";
 
 describe("language analyzer registry", () => {
@@ -168,5 +169,33 @@ describe("language analyzer registry", () => {
 
   it("keeps unsupported languages explicit through the fallback analyzer", () => {
     expect(analyzerFor("markdown").capabilities).toEqual([]);
+  });
+
+  it("falls back to block chunks when tree-sitter rejects one file", () => {
+    const file: CodeFile = {
+      projectId: "project",
+      path: "vendor/broken.py",
+      absolutePath: "vendor/broken.py",
+      language: "python",
+      sizeBytes: 23,
+      contentHash: "hash",
+      modifiedAtMs: 1
+    };
+    const parser = {
+      parse: () => {
+        throw new Error("Invalid argument");
+      }
+    };
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const analysis = analyzeWithTreeSitter(parser as never, { symbolPatterns: [], importPatterns: [], callPatterns: [] }, "repo", file, "def still_searchable():\n    return 1\n");
+
+      expect(analysis.symbols).toEqual([expect.objectContaining({ filePath: "vendor/broken.py", kind: "file" })]);
+      expect(analysis.chunks).toEqual([expect.objectContaining({ filePath: "vendor/broken.py", kind: "block", content: expect.stringContaining("still_searchable") })]);
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("tree-sitter python analysis skipped for vendor/broken.py: Invalid argument"));
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
