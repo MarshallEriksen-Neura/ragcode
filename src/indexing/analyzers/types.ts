@@ -1,9 +1,10 @@
-import type { CodeChunk, CodeFile, GraphEdge, LanguageId, SymbolNode } from "../../core/types.js";
+import type { CodeChunk, CodeFile, GraphEdge, IndexAnalysisWarning, LanguageId, SymbolNode } from "../../core/types.js";
 
 export interface FileAnalysis {
   chunks: CodeChunk[];
   symbols: SymbolNode[];
   edges: GraphEdge[];
+  warnings?: IndexAnalysisWarning[];
 }
 
 export interface AnalyzeFileInput {

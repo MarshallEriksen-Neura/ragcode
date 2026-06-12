@@ -45,6 +45,10 @@ beforeEach(async () => {
   await fs.writeFile(path.join(tempRoot, ".env"), "SECRET_TOKEN=do-not-index\n");
   await fs.mkdir(path.join(tempRoot, ".venv", "Lib", "site-packages"), { recursive: true });
   await fs.writeFile(path.join(tempRoot, ".venv", "Lib", "site-packages", "vendor.py"), "def vendor_only():\n    return 1\n");
+  await fs.mkdir(path.join(tempRoot, "out", "_next", "static", "chunks"), { recursive: true });
+  await fs.writeFile(path.join(tempRoot, "out", "_next", "static", "chunks", "app.js"), "let t=1;let t=2;\n");
+  await fs.mkdir(path.join(tempRoot, "src", "generated"), { recursive: true });
+  await fs.writeFile(path.join(tempRoot, "src", "generated", "client.generated.ts"), "export const generatedClient = true;\n");
 });
 
 afterEach(async () => {
@@ -58,8 +62,11 @@ describe("RagCode foundation", () => {
 
     expect(index.files.map((file) => file.path)).toEqual(["src/auth.test.ts", "src/auth.ts", "src/profile.ts"]);
     expect(index.files.every((file) => file.projectId === index.projectId)).toBe(true);
+    expect(index.files.find((file) => file.path === "src/auth.test.ts")?.classification?.role).toBe("test");
     expect(index.skippedFiles).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: ".env", reason: "sensitive file policy" })]));
-    expect(index.skippedFiles).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: ".venv", reason: "ignored directory: .venv" })]));
+    expect(index.skippedFiles).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: ".venv", reason: "ignored directory: .venv", classification: expect.objectContaining({ role: "vendor" }) })]));
+    expect(index.skippedFiles).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: "out", reason: "ignored directory: out", classification: expect.objectContaining({ role: "build" }) })]));
+    expect(index.skippedFiles).toEqual(expect.arrayContaining([expect.objectContaining({ filePath: "src/generated", reason: "ignored directory: generated", classification: expect.objectContaining({ role: "generated" }) })]));
     expect(index.chunks.length).toBeGreaterThan(0);
     expect(index.symbols.some((symbol) => symbol.name === "loginUser" && symbol.kind === "function")).toBe(true);
     expect(index.edges.some((edge) => edge.kind === "imports")).toBe(true);

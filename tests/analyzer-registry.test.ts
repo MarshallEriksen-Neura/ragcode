@@ -187,15 +187,12 @@ describe("language analyzer registry", () => {
       }
     };
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const analysis = analyzeWithTreeSitter(parser as never, { symbolPatterns: [], importPatterns: [], callPatterns: [] }, "repo", file, "def still_searchable():\n    return 1\n");
 
-    try {
-      const analysis = analyzeWithTreeSitter(parser as never, { symbolPatterns: [], importPatterns: [], callPatterns: [] }, "repo", file, "def still_searchable():\n    return 1\n");
-
-      expect(analysis.symbols).toEqual([expect.objectContaining({ filePath: "vendor/broken.py", kind: "file" })]);
-      expect(analysis.chunks).toEqual([expect.objectContaining({ filePath: "vendor/broken.py", kind: "block", content: expect.stringContaining("still_searchable") })]);
-      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("tree-sitter python analysis skipped for vendor/broken.py: Invalid argument"));
-    } finally {
-      consoleError.mockRestore();
-    }
+    expect(analysis.symbols).toEqual([expect.objectContaining({ filePath: "vendor/broken.py", kind: "file" })]);
+    expect(analysis.chunks).toEqual([expect.objectContaining({ filePath: "vendor/broken.py", kind: "block", content: expect.stringContaining("still_searchable") })]);
+    expect(analysis.warnings).toEqual([expect.objectContaining({ kind: "parser_fallback", count: 1, samples: ["vendor/broken.py"] })]);
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 });

@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { CodeFile } from "../core/types.js";
+import type { CodeFile, SkippedFile } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import { normalizeRepoPath } from "../utils/path.js";
 import { detectLanguage, isIndexableLanguage } from "./language.js";
-import { shouldIgnoreDirectory, shouldIgnoreFile } from "./ignore-policy.js";
+import { classifyRepoFile, shouldIgnoreDirectory, shouldIgnoreFile, skippedFile } from "./ignore-policy.js";
 
 export interface ScanOptions {
   maxFileBytes?: number;
@@ -13,14 +13,14 @@ export interface ScanOptions {
 
 export interface ScanResult {
   files: CodeFile[];
-  skippedFiles: Array<{ filePath: string; reason: string }>;
+  skippedFiles: SkippedFile[];
 }
 
 export async function scanRepo(repoRoot: string, projectId: string, options: ScanOptions = {}): Promise<ScanResult> {
   const absoluteRoot = path.resolve(repoRoot);
   const maxFileBytes = options.maxFileBytes ?? 512_000;
   const files: CodeFile[] = [];
-  const skippedFiles: Array<{ filePath: string; reason: string }> = [];
+  const skippedFiles: SkippedFile[] = [];
 
   if (options.filePaths?.length) {
     for (const filePath of [...new Set(options.filePaths.map((candidate) => candidate.replaceAll("\\", "/")))].sort()) {
@@ -39,7 +39,7 @@ export async function scanRepo(repoRoot: string, projectId: string, options: Sca
       if (entry.isDirectory()) {
         const decision = shouldIgnoreDirectory(entry.name);
         if (decision.ignored) {
-          skippedFiles.push({ filePath: normalizeRepoPath(absoluteRoot, absolutePath), reason: decision.reason ?? "ignored directory" });
+          skippedFiles.push(skippedFile(normalizeRepoPath(absoluteRoot, absolutePath), decision));
         } else {
           await walk(absolutePath);
         }
@@ -63,7 +63,7 @@ export async function scanRepo(repoRoot: string, projectId: string, options: Sca
     const parts = relativePath.split("/");
     const ignoredDirectory = parts.find((part) => shouldIgnoreDirectory(part).ignored);
     if (ignoredDirectory) {
-      skippedFiles.push({ filePath: relativePath, reason: shouldIgnoreDirectory(ignoredDirectory).reason ?? "ignored directory" });
+      skippedFiles.push(skippedFile(relativePath, shouldIgnoreDirectory(ignoredDirectory)));
       return;
     }
     await scanFile(path.join(absoluteRoot, relativePath), relativePath);
@@ -78,7 +78,7 @@ export async function scanRepo(repoRoot: string, projectId: string, options: Sca
 
     const fileDecision = shouldIgnoreFile(relativePath, maxFileBytes, stat.size);
     if (fileDecision.ignored) {
-      skippedFiles.push({ filePath: relativePath, reason: fileDecision.reason ?? "ignored file" });
+      skippedFiles.push(skippedFile(relativePath, fileDecision));
       return;
     }
 
@@ -93,7 +93,8 @@ export async function scanRepo(repoRoot: string, projectId: string, options: Sca
       language,
       sizeBytes: stat.size,
       contentHash: sha256(content),
-      modifiedAtMs: stat.mtimeMs
+      modifiedAtMs: stat.mtimeMs,
+      classification: classifyRepoFile(relativePath)
     });
   }
 }

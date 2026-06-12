@@ -38,7 +38,13 @@ program
     }
     await withEngine(repoRoot, async (engine) => {
       const result = await engine.indexRepo(repoRoot);
-      console.log(JSON.stringify({ repoRoot: result.repoRoot, files: result.files.length, chunks: result.chunks.length }, null, 2));
+      console.log(JSON.stringify({
+        repoRoot: result.repoRoot,
+        files: result.files.length,
+        chunks: result.chunks.length,
+        skippedFiles: result.skippedFiles.length,
+        analysisWarnings: result.analysisWarnings ?? []
+      }, null, 2));
     });
   });
 

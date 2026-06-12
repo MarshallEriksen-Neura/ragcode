@@ -23,7 +23,8 @@ describe("terminal status TUI", () => {
     expect(lastFrame()).toContain("Analyzing full repository");
     expect(lastFrame()).toContain("Writing graph index");
     expect(lastFrame()).toContain("Indexed 3 files, 4 chunks.");
-    expect(lastFrame()).toContain("changed 2, deleted 0, refreshed 2");
+    expect(lastFrame()).toContain("changed 2, deleted 0, refreshed 2, skipped 1");
+    expect(lastFrame()).toContain("parser_fallback: 2");
   });
 
   it("renders watch daemon and scheduler state", () => {
@@ -89,6 +90,7 @@ function repoIndex(counts: { files: number; chunks: number; changedFiles: number
     })),
     symbols: [],
     edges: [],
-    skippedFiles: []
+    skippedFiles: [{ filePath: "dist", reason: "ignored directory: dist", classification: { role: "build", reason: "build output" } }],
+    analysisWarnings: [{ kind: "parser_fallback", message: "tree-sitter rust analysis skipped: Invalid argument", count: 2, samples: ["src/a.rs", "src/b.rs"] }]
   };
 }

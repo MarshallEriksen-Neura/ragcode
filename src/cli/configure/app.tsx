@@ -31,11 +31,20 @@ export function ConfigureApp({ initialState, onFinish }: ConfigureAppProps): Rea
     exit();
   };
 
+  const answeredCount = state.steps.filter((s) => state.answers[s.key] !== undefined && !s.skip?.(state.answers)).length;
+  const totalCount = state.steps.filter((s) => !s.skip?.(state.answers)).length;
+  const progressPercent = totalCount > 0 ? Math.round((answeredCount / totalCount) * 100) : 0;
+
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Text bold color="cyan">
-        {state.mode === "first_run" ? "🧙 RagCode First-Run Setup" : "🛠  RagCode Configure"}
-      </Text>
+      <Box justifyContent="space-between">
+        <Text bold color="cyan">
+          {state.mode === "first_run" ? "🧙 RagCode First-Run Setup" : "🛠  RagCode Configure"}
+        </Text>
+        <Text dimColor>
+          {answeredCount}/{totalCount} ({progressPercent}%)
+        </Text>
+      </Box>
       <Text dimColor>repo: {state.repoRoot}   (Esc cancels)</Text>
       <AnsweredSummary state={state} />
       {step ? <StepView key={step.key} step={step} onSubmit={submit} onCancel={cancel} /> : null}
@@ -115,6 +124,8 @@ function TextStep({ step, onSubmit, onCancel }: { step: WizardStep; onSubmit: (v
   });
 
   const display = step.secret ? "*".repeat(value.length) : value;
+  const hint = getValidationHint(step, value);
+
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text bold>{step.title}</Text>
@@ -123,7 +134,31 @@ function TextStep({ step, onSubmit, onCancel }: { step: WizardStep; onSubmit: (v
         {display}
         <Text inverse> </Text>
       </Text>
-      {step.defaultValue ? <Text dimColor>Enter keeps: {step.secret ? "<existing>" : step.defaultValue}</Text> : <Text dimColor>Enter to skip</Text>}
+      {hint && <Text color="yellow">{hint}</Text>}
+      {step.defaultValue ? (
+        <Text dimColor>Enter keeps: {step.secret ? "<existing>" : step.defaultValue}</Text>
+      ) : (
+        <Text dimColor>{step.secret && value.length > 0 ? `${value.length} chars entered` : "Enter to skip"}</Text>
+      )}
     </Box>
   );
+}
+
+function getValidationHint(step: WizardStep, value: string): string | undefined {
+  if (!value) return undefined;
+
+  if (step.key === "embeddingBaseUrl") {
+    if (!value.startsWith("http://") && !value.startsWith("https://")) {
+      return "⚠️  URL should start with http:// or https://";
+    }
+  }
+
+  if (step.key === "embeddingDimensions") {
+    const num = Number(value);
+    if (Number.isNaN(num) || num <= 0 || !Number.isInteger(num)) {
+      return "⚠️  Should be a positive integer";
+    }
+  }
+
+  return undefined;
 }

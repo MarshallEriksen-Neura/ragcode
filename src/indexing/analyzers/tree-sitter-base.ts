@@ -38,8 +38,19 @@ export function analyzeWithTreeSitter(
   file: CodeFile,
   content: string
 ): FileAnalysis {
-  const tree = parseTreeSitterFile(parser, repoRoot, file, content);
-  if (!tree) return fallbackFileAnalysis(repoRoot, file, content);
+  const parsed = parseTreeSitterFile(parser, file, content);
+  if (!parsed.tree) {
+    return {
+      ...fallbackFileAnalysis(repoRoot, file, content),
+      warnings: [{
+        kind: "parser_fallback",
+        message: `tree-sitter ${file.language} analysis skipped: ${parsed.error}`,
+        count: 1,
+        samples: [file.path]
+      }]
+    };
+  }
+  const tree = parsed.tree;
   const lines = content.split(/\r?\n/);
   const fileSymbol = createFileSymbol(repoRoot, file, lines.length);
   const symbols: SymbolNode[] = [fileSymbol];
@@ -101,13 +112,12 @@ export function analyzeWithTreeSitter(
   return { chunks, symbols, edges };
 }
 
-function parseTreeSitterFile(parser: Parser, repoRoot: string, file: CodeFile, content: string): Parser.Tree | undefined {
+function parseTreeSitterFile(parser: Parser, file: CodeFile, content: string): { tree?: Parser.Tree; error?: string } {
   try {
-    return parser.parse(content);
+    return { tree: parser.parse(content) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[ragcode] tree-sitter ${file.language} analysis skipped for ${file.path}: ${message}`);
-    return undefined;
+    return { error: message };
   }
 }
 

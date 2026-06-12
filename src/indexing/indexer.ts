@@ -64,9 +64,10 @@ export class RepoIndexer implements Indexer {
       deletedFiles: deletedFiles.length,
       refreshedFiles: refreshedFiles.length
     });
-    const { chunks, symbols, edges } = cached
+    const chunking = cached
       ? await chunkFilesIncremental(absoluteRoot, files, filesToAnalyze, cached)
       : await chunkFiles(absoluteRoot, files);
+    const { chunks, symbols, edges } = chunking;
     const indexedAtMs = Date.now();
     const index: RepoIndex = {
       projectId,
@@ -84,7 +85,8 @@ export class RepoIndexer implements Indexer {
       chunks,
       symbols,
       edges,
-      skippedFiles
+      skippedFiles,
+      analysisWarnings: chunking.warnings
     };
 
     options.onProgress?.({
@@ -94,9 +96,11 @@ export class RepoIndexer implements Indexer {
       changedFiles: index.changedFiles.length,
       deletedFiles: index.deletedFiles.length,
       refreshedFiles: index.refreshedFiles?.length,
+      skippedFiles: index.skippedFiles.length,
       chunks: index.chunks.length,
       symbols: index.symbols.length,
-      edges: index.edges.length
+      edges: index.edges.length,
+      warnings: index.analysisWarnings?.length
     });
     await this.options.graphStore.upsertIndex(index);
     options.onProgress?.({
@@ -114,9 +118,11 @@ export class RepoIndexer implements Indexer {
       changedFiles: index.changedFiles.length,
       deletedFiles: index.deletedFiles.length,
       refreshedFiles: index.refreshedFiles?.length,
+      skippedFiles: index.skippedFiles.length,
       chunks: index.chunks.length,
       symbols: index.symbols.length,
-      edges: index.edges.length
+      edges: index.edges.length,
+      warnings: index.analysisWarnings?.length
     });
     return index;
   }

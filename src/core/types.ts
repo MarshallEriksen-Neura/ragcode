@@ -12,6 +12,28 @@ export type LanguageId =
 export type ChunkKind = "file" | "function" | "class" | "method" | "type" | "variable" | "block";
 export type ContextMode = "auto" | "debug" | "feature" | "refactor" | "review" | "explain";
 
+export type FileRole = "source" | "test" | "config" | "docs" | "generated" | "vendor" | "build" | "minified";
+
+export interface FileClassification {
+  role: FileRole;
+  reason: string;
+}
+
+export interface SkippedFile {
+  filePath: string;
+  reason: string;
+  classification?: FileClassification;
+}
+
+export type IndexAnalysisWarningKind = "parser_fallback" | "deduped_symbols" | "deduped_chunks";
+
+export interface IndexAnalysisWarning {
+  kind: IndexAnalysisWarningKind;
+  message: string;
+  count: number;
+  samples: string[];
+}
+
 export interface CodeFile {
   projectId: string;
   path: string;
@@ -20,6 +42,7 @@ export interface CodeFile {
   sizeBytes: number;
   contentHash: string;
   modifiedAtMs: number;
+  classification?: FileClassification;
 }
 
 export interface CodeChunk {
@@ -91,7 +114,8 @@ export interface RepoIndex {
   chunks: CodeChunk[];
   symbols: SymbolNode[];
   edges: GraphEdge[];
-  skippedFiles: Array<{ filePath: string; reason: string }>;
+  skippedFiles: SkippedFile[];
+  analysisWarnings?: IndexAnalysisWarning[];
 }
 
 export type IndexProgressPhase =
@@ -109,9 +133,11 @@ export interface IndexProgressEvent {
   changedFiles?: number;
   deletedFiles?: number;
   refreshedFiles?: number;
+  skippedFiles?: number;
   chunks?: number;
   symbols?: number;
   edges?: number;
+  warnings?: number;
 }
 
 export interface IndexRefreshOptions {

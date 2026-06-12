@@ -25,7 +25,12 @@ export function IndexProgressApp({ repoRoot, events, result, error }: IndexProgr
       {result ? (
         <Box flexDirection="column" marginTop={1}>
           <Text color="green">Indexed {result.files.length} files, {result.chunks.length} chunks.</Text>
-          <Text dimColor>changed {result.changedFiles.length}, deleted {result.deletedFiles.length}, refreshed {result.refreshedFiles?.length ?? 0}</Text>
+          <Text dimColor>changed {result.changedFiles.length}, deleted {result.deletedFiles.length}, refreshed {result.refreshedFiles?.length ?? 0}, skipped {result.skippedFiles.length}</Text>
+          {result.analysisWarnings?.slice(0, 3).map((warning) => (
+            <Text key={`${warning.kind}-${warning.message}`} color="yellow">
+              {warning.kind}: {warning.count} ({warning.samples.slice(0, 3).join(", ")})
+            </Text>
+          ))}
         </Box>
       ) : null}
       {error ? <Text color="red">Index failed: {error}</Text> : null}
@@ -69,8 +74,10 @@ function formatEventStats(event: IndexProgressEvent): string {
   if (event.changedFiles !== undefined) parts.push(`changed ${event.changedFiles}`);
   if (event.deletedFiles !== undefined) parts.push(`deleted ${event.deletedFiles}`);
   if (event.refreshedFiles !== undefined) parts.push(`refreshed ${event.refreshedFiles}`);
+  if (event.skippedFiles !== undefined) parts.push(`skipped ${event.skippedFiles}`);
   if (event.chunks !== undefined) parts.push(`chunks ${event.chunks}`);
   if (event.symbols !== undefined) parts.push(`symbols ${event.symbols}`);
   if (event.edges !== undefined) parts.push(`edges ${event.edges}`);
+  if (event.warnings !== undefined && event.warnings > 0) parts.push(`warnings ${event.warnings}`);
   return parts.length > 0 ? ` (${parts.join(", ")})` : "";
 }

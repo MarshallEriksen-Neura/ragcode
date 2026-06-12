@@ -144,6 +144,10 @@ describe("incremental indexing", () => {
 
     expect(index.symbols.filter((symbol) => symbol.id === "duplicate-symbol-id")).toHaveLength(1);
     expect(index.chunks.filter((chunk) => chunk.id === "duplicate-chunk-id")).toHaveLength(1);
+    expect(index.analysisWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "deduped_symbols", count: 1 }),
+      expect.objectContaining({ kind: "deduped_chunks", count: 1 })
+    ]));
     expect(await engine.explainFile(tempRoot, "src/duplicate.ts")).toEqual(expect.objectContaining({
       symbols: [expect.objectContaining({ id: "duplicate-symbol-id" })],
       chunks: [expect.objectContaining({ id: "duplicate-chunk-id" })]

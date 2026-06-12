@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import type { CodeChunk, CodeFile, GraphEdge, SymbolNode } from "../core/types.js";
+import type { CodeChunk, CodeFile, GraphEdge, IndexAnalysisWarning, SymbolNode } from "../core/types.js";
 import { resolveCallDefinitionsWithTypeScript } from "../lsp/definition-resolver.js";
 import type { TypeScriptSourceFile } from "../lsp/typescript-language-service.js";
 import { buildFrameworkTopologyEdges } from "../topology/framework-topology.js";
@@ -13,6 +13,7 @@ export interface ChunkingResult {
   chunks: CodeChunk[];
   symbols: SymbolNode[];
   edges: GraphEdge[];
+  warnings?: IndexAnalysisWarning[];
 }
 
 export interface ChunkOptions {
@@ -21,12 +22,15 @@ export interface ChunkOptions {
 
 export async function chunkFiles(repoRoot: string, files: CodeFile[], options: ChunkOptions = {}): Promise<ChunkingResult> {
   const analyzed = await analyzeFiles(repoRoot, files);
-  const chunks = uniqueById(analyzed.chunks);
-  const symbols = uniqueById(analyzed.symbols);
+  const chunkDedupe = uniqueById(analyzed.chunks, "deduped_chunks", "Duplicate chunk ids removed before graph persistence");
+  const symbolDedupe = uniqueById(analyzed.symbols, "deduped_symbols", "Duplicate symbol ids removed before graph persistence");
+  const chunks = chunkDedupe.items;
+  const symbols = symbolDedupe.items;
   return {
     chunks,
     symbols,
-    edges: resolveChunkEdges(repoRoot, files, analyzed.sources, symbols, analyzed.edges)
+    edges: resolveChunkEdges(repoRoot, files, analyzed.sources, symbols, analyzed.edges),
+    warnings: compactWarnings([...analyzed.warnings, ...definedWarnings([chunkDedupe.warning, symbolDedupe.warning])])
   };
 }
 
@@ -51,14 +55,21 @@ export async function chunkFilesIncremental(
     ...currentCached.symbols,
     ...analyzed.symbols
   ];
-  const uniqueSymbols = uniqueById(symbols);
+  const chunkDedupe = uniqueById(chunks, "deduped_chunks", "Duplicate chunk ids removed before graph persistence");
+  const symbolDedupe = uniqueById(symbols, "deduped_symbols", "Duplicate symbol ids removed before graph persistence");
+  const uniqueSymbols = symbolDedupe.items;
   const refreshedEdges = resolveChunkEdges(repoRoot, files, analyzed.sources, uniqueSymbols, analyzed.edges, routeCatalogEdges(cached.edges, currentPaths, analyzedPaths))
     .filter((edge) => {
       const sourceFile = edgeSourceFile(edge);
       return sourceFile ? analyzedPaths.has(sourceFile) : false;
     });
 
-  return { chunks: uniqueById(chunks), symbols: uniqueSymbols, edges: dedupeEdges([...currentCached.edges, ...refreshedEdges]) };
+  return {
+    chunks: chunkDedupe.items,
+    symbols: uniqueSymbols,
+    edges: dedupeEdges([...currentCached.edges, ...refreshedEdges]),
+    warnings: compactWarnings([...analyzed.warnings, ...definedWarnings([chunkDedupe.warning, symbolDedupe.warning])])
+  };
 }
 
 interface AnalyzedFiles {
@@ -66,6 +77,7 @@ interface AnalyzedFiles {
   symbols: SymbolNode[];
   edges: GraphEdge[];
   sources: TypeScriptSourceFile[];
+  warnings: IndexAnalysisWarning[];
 }
 
 async function analyzeFiles(repoRoot: string, files: CodeFile[]): Promise<AnalyzedFiles> {
@@ -73,6 +85,7 @@ async function analyzeFiles(repoRoot: string, files: CodeFile[]): Promise<Analyz
   const symbols: SymbolNode[] = [];
   const edges: GraphEdge[] = [];
   const sources: TypeScriptSourceFile[] = [];
+  const warnings: IndexAnalysisWarning[] = [];
 
   for (const file of files) {
     const content = await fs.readFile(file.absolutePath, "utf8");
@@ -83,9 +96,10 @@ async function analyzeFiles(repoRoot: string, files: CodeFile[]): Promise<Analyz
     chunks.push(...analysis.chunks);
     symbols.push(...analysis.symbols);
     edges.push(...analysis.edges);
+    warnings.push(...analysis.warnings ?? []);
   }
 
-  return { chunks, symbols, edges, sources };
+  return { chunks, symbols, edges, sources, warnings };
 }
 
 function resolveChunkEdges(
@@ -201,6 +215,39 @@ function escapeKeyPart(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll("\u001f", "\\u001f");
 }
 
-function uniqueById<T extends { id: string }>(items: T[]): T[] {
-  return [...new Map(items.map((item) => [item.id, item])).values()];
+function uniqueById<T extends { id: string; filePath?: string }>(items: T[], kind: IndexAnalysisWarning["kind"], message: string): { items: T[]; warning?: IndexAnalysisWarning } {
+  const seen = new Map<string, T>();
+  const duplicateSamples: string[] = [];
+  let duplicateCount = 0;
+  for (const item of items) {
+    if (seen.has(item.id)) {
+      duplicateCount += 1;
+      if (duplicateSamples.length < 8) duplicateSamples.push(item.filePath ?? item.id);
+    }
+    seen.set(item.id, item);
+  }
+  return {
+    items: [...seen.values()],
+    warning: duplicateCount > 0 ? { kind, message, count: duplicateCount, samples: duplicateSamples } : undefined
+  };
+}
+
+function definedWarnings(warnings: Array<IndexAnalysisWarning | undefined>): IndexAnalysisWarning[] {
+  return warnings.filter((warning): warning is IndexAnalysisWarning => Boolean(warning));
+}
+
+function compactWarnings(warnings: IndexAnalysisWarning[]): IndexAnalysisWarning[] | undefined {
+  if (warnings.length === 0) return undefined;
+  const compacted = new Map<string, IndexAnalysisWarning>();
+  for (const warning of warnings) {
+    const key = `${warning.kind}\0${warning.message}`;
+    const current = compacted.get(key);
+    if (!current) {
+      compacted.set(key, { ...warning, samples: warning.samples.slice(0, 8) });
+      continue;
+    }
+    current.count += warning.count;
+    current.samples = [...new Set([...current.samples, ...warning.samples])].slice(0, 8);
+  }
+  return [...compacted.values()];
 }
