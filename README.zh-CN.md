@@ -179,9 +179,9 @@ ragcode dashboard                   # Web 可观测后端（端口 3000）
 RagCode 可作为 MCP 服务运行，让 Claude 等智能体直接调用它的工具。按客户端自动注册：
 
 ```bash
-ragcode setup-mcp                       # Claude Desktop  (~/.../claude_desktop_config.json)
-ragcode setup-mcp --client claude-code  # Claude Code     (项目 ./.mcp.json)
-ragcode setup-mcp --client codex        # Codex CLI        (~/.codex/config.toml)
+ragcode setup-mcp                       # Claude Code     (项目 ./.mcp.json，默认)
+ragcode setup-mcp --client claude       # Claude Desktop  (~/.../claude_desktop_config.json)
+ragcode setup-mcp --client codex        # Codex CLI       (~/.codex/config.toml)
 ragcode setup-mcp --client codex --print # 仅打印配置，不写文件
 ```
 

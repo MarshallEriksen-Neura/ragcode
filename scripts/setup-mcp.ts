@@ -226,7 +226,7 @@ function hasExistingEntry(client: McpClient, raw: string | undefined): boolean {
 // ---------------------------------------------------------------------------
 
 export function setupMCP(options: SetupMcpOptions = {}): void {
-  const client: McpClient = options.client ?? 'claude';
+  const client: McpClient = options.client ?? 'claude-code';
   validateClient(client);
 
   if (options.print || client === 'generic') {
@@ -359,13 +359,13 @@ Options:
   --config <path>    Custom config path (overrides the client default)
   --print            Print config without writing
   --include-secrets  Include real secrets instead of redacted placeholders
-  --client <client>  Target client: claude, claude-code, codex, or generic (default: claude)
+  --client <client>  Target client: claude, claude-code, codex, or generic (default: claude-code)
   --force            Overwrite an existing ragcode entry without prompting
   --help, -h         Show this help
 
 Examples:
-  ragcode setup-mcp                          # Claude Desktop (default)
-  ragcode setup-mcp --client claude-code     # project .mcp.json for Claude Code
+  ragcode setup-mcp                          # Claude Code .mcp.json (default)
+  ragcode setup-mcp --client claude          # Claude Desktop (global)
   ragcode setup-mcp --client codex           # ~/.codex/config.toml
   ragcode setup-mcp --client codex --print   # print TOML, write nothing
   ragcode setup-mcp --config ~/custom.json   # custom path

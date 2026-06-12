@@ -181,9 +181,9 @@ Run `ragcode --help` or `ragcode <command> --help` for details.
 RagCode runs as an MCP server so agents like Claude can call its tools directly. Auto-register for your client:
 
 ```bash
-ragcode setup-mcp                       # Claude Desktop  (~/.../claude_desktop_config.json)
-ragcode setup-mcp --client claude-code  # Claude Code     (project ./.mcp.json)
-ragcode setup-mcp --client codex        # Codex CLI        (~/.codex/config.toml)
+ragcode setup-mcp                       # Claude Code     (project ./.mcp.json, default)
+ragcode setup-mcp --client claude       # Claude Desktop  (~/.../claude_desktop_config.json)
+ragcode setup-mcp --client codex        # Codex CLI       (~/.codex/config.toml)
 ragcode setup-mcp --client codex --print # print config, write nothing
 ```
 
