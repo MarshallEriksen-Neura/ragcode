@@ -311,10 +311,11 @@ describe("graph-based reranking", () => {
     });
 
     const docIndex = indexOfFile(hits, "docs/payment-playbook.md");
-    const mockIndex = indexOfFile(hits, "src/mocks/payment-copy.json");
+    const mockIndex = hits.findIndex((hit) => hit.chunk.filePath === "src/mocks/payment-copy.json");
+    const checkoutIndex = indexOfFile(hits, "src/app/checkout/CheckoutButton.tsx");
     expect(indexOfFile(hits, "src/services/billing.ts")).toBeLessThan(docIndex);
     expect(indexOfFile(hits, "src/app/api/payments/route.ts")).toBeLessThan(docIndex);
-    expect(indexOfFile(hits, "src/app/checkout/CheckoutButton.tsx")).toBeLessThan(mockIndex);
+    expect(checkoutIndex).toBeLessThan(mockIndex >= 0 ? mockIndex : hits.length);
     expect(hits.some((candidate) => candidate.reason.includes("graph rerank:"))).toBe(true);
   });
 

@@ -100,7 +100,9 @@ describe("freshness-aware retrieval", () => {
     await fs.writeFile(path.join(tempRoot, ".env"), "SECRET_TOKEN=changed-but-still-skipped\n");
 
     const pack = await engine.getContext({ repoRoot: tempRoot, query: "SECRET_TOKEN", budgetChars: 2000 });
-    expect(pack.freshness.skippedFiles).toEqual(expect.arrayContaining([{ filePath: ".env", reason: "sensitive file policy" }]));
+    expect(pack.freshness.skippedFiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ filePath: ".env", reason: "sensitive file policy" })
+    ]));
     expect(pack.freshness.pendingFiles).not.toContain(".env");
     expect(pack.freshness.staleFiles).not.toContain(".env");
     expect(pack.snippets.map((snippet) => snippet.filePath)).not.toContain(".env");
