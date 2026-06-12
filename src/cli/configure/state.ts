@@ -97,7 +97,9 @@ export function createWizardState(mode: WizardMode, repoRoot: string, current: R
     {
       key: "embeddingApiKey",
       kind: "text",
-      title: current.embeddingApiKey === "set" ? "Embedding API key (Enter keeps existing)" : "Embedding API key",
+      title: current.embeddingApiKey === "set"
+        ? "Embedding API key (Enter keeps existing, or type new key)"
+        : "Embedding API key (cloud: real key, Ollama/local: any non-empty string)",
       defaultValue: "",
       secret: true,
       skip: (answers) => answers.embeddingProvider !== "openai-compatible"

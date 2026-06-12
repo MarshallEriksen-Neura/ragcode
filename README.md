@@ -140,12 +140,22 @@ ragcode configure          # edit storage / provider / model / base URL / dimens
 ragcode configure --test   # verify the provider (classified failures; secrets never printed)
 ```
 
-To use an OpenAI-compatible provider, set the embedding provider and key:
+**OpenAI-compatible providers (OpenAI, Azure, Ollama, etc.):**
 
 ```bash
-export RAGCODE_EMBEDDING_PROVIDER=openai
-export OPENAI_API_KEY=your-api-key
+# Cloud (OpenAI)
+export RAGCODE_EMBEDDING_PROVIDER=openai-compatible
+export RAGCODE_EMBEDDING_API_KEY=sk-your-key
+
+# Local (Ollama) - recommended for privacy + quality
+ollama pull nomic-embed-text
+export RAGCODE_EMBEDDING_PROVIDER=openai-compatible
+export RAGCODE_EMBEDDING_BASE_URL=http://localhost:11434/v1
+export RAGCODE_EMBEDDING_MODEL=nomic-embed-text
+export RAGCODE_EMBEDDING_API_KEY=ollama  # any non-empty string works
 ```
+
+See [docs/EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md) for Azure, Ollama setup, troubleshooting, and performance comparison.
 
 `ragcode init` walks you through the full first-run flow; `ragcode <command> --help` documents each command's options.
 
