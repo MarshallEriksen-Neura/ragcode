@@ -365,6 +365,7 @@ npx vitest run tests/foundation.test.ts   # 单个套件
 - [docs/INDEX_SCHEMA.md](docs/INDEX_SCHEMA.md) — 索引 schema
 - [docs/DASHBOARD.md](docs/DASHBOARD.md) — Web 仪表盘
 - [docs/CODEX_SKILL.md](docs/CODEX_SKILL.md) — Codex/OMX 智能体技能
+认同 `真诚`、`友善`、`团结`、`专业`，欢迎加入 [LinuxDo](https://linux.do/latest)。
 
 ---
 

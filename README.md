@@ -369,6 +369,7 @@ For agent-assisted contribution, the Codex/OMX skill template in [integrations/c
 - [docs/DASHBOARD.md](docs/DASHBOARD.md) — web dashboard scope
 - [docs/CODEX_SKILL.md](docs/CODEX_SKILL.md) — Codex/OMX agent skill template
 
+认同 `真诚`、`友善`、`团结`、`专业`，欢迎加入 [LinuxDo](https://linux.do/latest)。
 ---
 
 ## License
