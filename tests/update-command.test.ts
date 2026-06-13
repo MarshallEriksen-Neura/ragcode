@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runUpdate, PACKAGE_NAME } from "../src/cli/update.js";
+import { packageManagerInvocation, runUpdate, PACKAGE_NAME } from "../src/cli/update.js";
 
 // These exercise the decision logic without hitting the network or a package manager: `checkOnly`
 // short-circuits before any install, and an explicit matching version is reported as up-to-date.
@@ -29,5 +29,21 @@ describe("ragcode update", () => {
 
   it("exposes the published package name used for global installs", () => {
     expect(PACKAGE_NAME).toBe("ragcode-context-engine");
+  });
+
+  it("runs package-manager shims through cmd on Windows", () => {
+    const invocation = packageManagerInvocation("npm", ["view", PACKAGE_NAME, "version"], "win32");
+    expect(invocation.file.toLowerCase()).toContain("cmd");
+    expect(invocation.args).toEqual([
+      "/d",
+      "/c",
+      `npm view ${PACKAGE_NAME} version`
+    ]);
+  });
+
+  it("rejects unsafe shell characters before using the Windows command shim", () => {
+    expect(() => packageManagerInvocation("npm", ["install", "ragcode-context-engine@latest&whoami"], "win32")).toThrow(
+      /Unsafe package-manager argument/
+    );
   });
 });

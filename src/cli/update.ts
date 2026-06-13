@@ -28,6 +28,11 @@ export interface UpdateResult {
   message: string;
 }
 
+interface CommandInvocation {
+  file: string;
+  args: string[];
+}
+
 // Auto-detect the package manager from the npm_config_user_agent the parent PM exposes, falling
 // back to npm. This keeps a pnpm-global install from being "updated" by npm into a broken state.
 function detectPackageManager(env: NodeJS.ProcessEnv = process.env): string {
@@ -41,7 +46,8 @@ async function fetchLatestVersion(): Promise<string | undefined> {
   // `npm view` works even under pnpm/yarn since npm is virtually always present; if it's not,
   // the catch downgrades us to a best-effort install without a pre-check.
   try {
-    const { stdout } = await execFileAsync("npm", ["view", PACKAGE_NAME, "version"]);
+    const { file, args } = packageManagerInvocation("npm", ["view", PACKAGE_NAME, "version"]);
+    const { stdout } = await execFileAsync(file, args);
     const version = stdout.trim();
     return version.length > 0 ? version : undefined;
   } catch {
@@ -49,7 +55,7 @@ async function fetchLatestVersion(): Promise<string | undefined> {
   }
 }
 
-function installArgv(pm: string, spec: string): { file: string; args: string[] } {
+function installArgv(pm: string, spec: string): CommandInvocation {
   switch (pm) {
     case "pnpm":
       return { file: "pnpm", args: ["add", "-g", spec] };
@@ -58,6 +64,25 @@ function installArgv(pm: string, spec: string): { file: string; args: string[] }
     default:
       return { file: "npm", args: ["install", "-g", spec] };
   }
+}
+
+export function packageManagerInvocation(file: string, args: string[], platform: NodeJS.Platform = process.platform): CommandInvocation {
+  if (platform !== "win32") return { file, args };
+  return {
+    file: process.env.ComSpec || "cmd.exe",
+    args: ["/d", "/c", cmdCommand([file, ...args])]
+  };
+}
+
+function cmdCommand(parts: string[]): string {
+  return parts.map(cmdArg).join(" ");
+}
+
+function cmdArg(arg: string): string {
+  if (!/^[A-Za-z0-9@._:/\\+=,~-]+$/.test(arg)) {
+    throw new Error(`Unsafe package-manager argument: ${arg}`);
+  }
+  return arg;
 }
 
 export async function runUpdate(options: UpdateOptions = {}): Promise<UpdateResult> {
@@ -95,7 +120,8 @@ export async function runUpdate(options: UpdateOptions = {}): Promise<UpdateResu
   }
 
   const spec = `${PACKAGE_NAME}@${target}`;
-  const { file, args } = installArgv(pm, spec);
+  const display = installArgv(pm, spec);
+  const { file, args } = packageManagerInvocation(display.file, display.args);
   try {
     await execFileAsync(file, args);
     return {
@@ -114,7 +140,7 @@ export async function runUpdate(options: UpdateOptions = {}): Promise<UpdateResu
       latestVersion: latest,
       upToDate: false,
       installed: false,
-      message: `Update via ${pm} failed: ${(err.stderr ?? err.message ?? "").trim()}. You can update manually with \`${file} ${args.join(" ")}\`.`
+      message: `Update via ${pm} failed: ${(err.stderr ?? err.message ?? "").trim()}. You can update manually with \`${display.file} ${display.args.join(" ")}\`.`
     };
   }
 }

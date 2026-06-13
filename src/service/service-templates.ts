@@ -107,9 +107,8 @@ export function launchdPlistPath(label: string, home = os.homedir()): string {
 }
 
 // ---------------------------------------------------------------------------
-// Task Scheduler (Windows) — onlogon trigger. schtasks has no native crash-restart, so we register
-// the task to also run on a repeating schedule as a liveness backstop: if the watcher died, the
-// next interval relaunches it, and the per-repo lock guarantees a still-alive watcher makes the
+// Task Scheduler (Windows) — repeat every few minutes as a liveness backstop. If the watcher died,
+// the next interval relaunches it, and the per-repo lock guarantees a still-alive watcher makes the
 // duplicate launch exit immediately. This is why the lock primitive (P0) is a hard prerequisite.
 // ---------------------------------------------------------------------------
 
@@ -119,18 +118,19 @@ export interface SchtasksCreateOptions {
 }
 
 export function schtasksCreateArgv(spec: ServiceLaunchSpec, taskName: string, options: SchtasksCreateOptions = {}): string[] {
-  // schtasks /tr takes a single string; quote each token so paths with spaces survive.
-  const command = [spec.execPath, ...watchArgv(spec)].map(windowsQuote).join(" ");
+  // schtasks /tr is limited to 261 chars on Windows. Keep it short and put the real hidden
+  // watcher invocation in a repo-local wscript wrapper written by the service manager. wscript is
+  // a GUI-subsystem host, so it avoids the visible console/Windows Terminal tab that direct
+  // node.exe or powershell.exe task actions can create.
+  const command = ["wscript.exe", "//B", "//Nologo", windowsWatcherScriptPath(spec.repoRoot)].map(windowsQuote).join(" ");
   const interval = options.restartIntervalMinutes ?? 5;
   return [
     "/create",
     "/tn", taskName,
     "/tr", command,
-    "/sc", "onlogon",
+    "/sc", "minute",
+    "/mo", String(interval),
     "/rl", "limited",
-    // Keep the task alive: repeat every N minutes indefinitely. The lock makes redundant launches no-ops.
-    "/ri", String(interval),
-    "/du", "9999:59",
     "/f"
   ];
 }
@@ -143,7 +143,35 @@ export function schtasksQueryArgv(taskName: string): string[] {
   return ["/query", "/tn", taskName];
 }
 
+export function windowsWatcherScriptPath(repoRoot: string): string {
+  return path.join(path.resolve(repoRoot), ".ragcode", "watch-service.vbs");
+}
+
+export function legacyWindowsWatcherScriptPath(repoRoot: string): string {
+  return path.join(path.resolve(repoRoot), ".ragcode", "watch-service.ps1");
+}
+
+export function renderWindowsWatcherScript(spec: ServiceLaunchSpec): string {
+  const command = [spec.execPath, ...watchArgv(spec)].map(windowsCommandQuote).join(" ");
+  return [
+    "Option Explicit",
+    "Dim shell",
+    "Set shell = CreateObject(\"WScript.Shell\")",
+    `shell.CurrentDirectory = ${vbscriptQuote(spec.repoRoot)}`,
+    `shell.Run ${vbscriptQuote(command)}, 0, False`,
+    ""
+  ].join("\n");
+}
+
 // schtasks /tr is a single command string; wrap tokens with spaces in double quotes.
 function windowsQuote(token: string): string {
-  return /\s/.test(token) ? `"${token}"` : token;
+  return /\s/.test(token) ? `"${token.replace(/"/g, '\\"')}"` : token;
+}
+
+function windowsCommandQuote(token: string): string {
+  return /[\s"]/u.test(token) ? `"${token.replace(/"/g, '\\"')}"` : token;
+}
+
+function vbscriptQuote(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
 }

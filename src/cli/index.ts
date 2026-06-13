@@ -18,7 +18,8 @@ import { DEFAULT_BOOTSTRAP_BATCH_FILES, indexRepoWithBootstrapBatch } from "../i
 import { createIndexProgressRecorder } from "../indexing/index-progress-state.js";
 import { normalizeServiceInstallOptions } from "./service-install-options.js";
 import { runInitConfig } from "../../scripts/init-config.js";
-import { setupMCP } from "../../scripts/setup-mcp.js";
+import { printInitOnboardingSummary, runInitOnboarding } from "./init-onboarding.js";
+import { parseSetupMcpArgs, setupMCP } from "../../scripts/setup-mcp.js";
 import { runUpdate } from "./update.js";
 
 loadDotEnv();
@@ -26,6 +27,28 @@ loadDotEnv();
 const program = new Command();
 
 program.name("ragcode").description("Local code intelligence context engine").version(getPackageVersion());
+
+const legacySetupIndex = process.argv.indexOf("--setup");
+if (legacySetupIndex >= 0) {
+  const setupTarget = process.argv[legacySetupIndex + 1];
+  if (setupTarget !== "mcp") {
+    console.error('Unsupported --setup target. Expected "mcp".');
+    process.exit(1);
+  }
+  const rawArgs = process.argv.slice(2);
+  const setupArgs = rawArgs.filter((arg, index) => index !== legacySetupIndex - 2 && index !== legacySetupIndex - 1);
+  try {
+    setupMCP({
+      ...parseSetupMcpArgs(setupArgs, { defaultClient: "all" }),
+      cwd: process.cwd(),
+      env: process.env
+    });
+  } catch (error) {
+    console.error(`MCP setup failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
 
 program
   .command("index")
@@ -424,10 +447,17 @@ program
   .argument("[directory]")
   .option("-y, --yes", "write offline-first defaults without interactive prompts")
   .option("--defaults", "write offline-first defaults without interactive prompts")
+  .option("--no-index", "skip the bounded initial index batch")
+  .option("--no-watch", "skip background watcher service installation")
+  .option("--poll", "install the watcher service with polling")
+  .option("--max-batch-files <number>", "maximum files in the initial onboarding index batch", parseNumber)
+  .option("--max-analysis-memory-mb <number>", "abort indexing before continuing when heap exceeds this many MB", parseNumber)
   .description("Initialize RagCode configuration (interactive first-run setup)")
-  .action(async (directory: string | undefined, options: { yes?: boolean; defaults?: boolean }) => {
+  .action(async (directory: string | undefined, options: { yes?: boolean; defaults?: boolean; index?: boolean; watch?: boolean; poll?: boolean; maxBatchFiles?: number; maxAnalysisMemoryMb?: number }) => {
     const targetDir = directory || process.cwd();
     const defaults = Boolean(options.yes || options.defaults);
+    assertPositive("--max-batch-files", options.maxBatchFiles);
+    assertPositive("--max-analysis-memory-mb", options.maxAnalysisMemoryMb);
     if (!defaults && process.stdin.isTTY) {
       // Interactive first-run goes through the Ink wizard (same app as `ragcode configure`,
       // first_run mode defaults index/setup-mcp to yes). Loaded lazily to keep --defaults light.
@@ -435,7 +465,23 @@ program
       await runInkConfigure({ repoRoot: targetDir, mode: "first_run" });
       return;
     }
-    await runInitConfig({ targetDir, defaults: true });
+    const init = await runInitConfig({ targetDir, defaults: true, printNextSteps: false });
+    const onboarding = await runInitOnboarding({
+      repoRoot: init.targetDir,
+      indexNow: options.index !== false,
+      installWatcher: options.watch !== false,
+      poll: options.poll ?? process.platform === "win32",
+      maxBatchFiles: options.maxBatchFiles,
+      maxAnalysisMemoryMb: options.maxAnalysisMemoryMb
+    });
+    printInitOnboardingSummary(onboarding);
+
+    console.log("\n🚀 Summary / next steps:");
+    if (options.index === false) console.log("  ragcode index .            # build the index");
+    console.log("  ragcode setup-mcp          # register the MCP server");
+    if (options.watch === false) console.log("  ragcode service install .  # keep the index fresh automatically");
+    console.log("  ragcode configure          # adjust storage/embedding later");
+    console.log("  ragcode dashboard          # observe graph/search/context/watch");
   });
 
 program

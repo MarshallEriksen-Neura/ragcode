@@ -14,12 +14,15 @@ import {
 } from "./service-identity.js";
 import {
   launchdPlistPath,
+  legacyWindowsWatcherScriptPath,
+  renderWindowsWatcherScript,
   renderLaunchdPlist,
   renderSystemdUnit,
   schtasksCreateArgv,
   schtasksDeleteArgv,
   schtasksQueryArgv,
   systemdUserUnitPath,
+  windowsWatcherScriptPath,
   type ServiceLaunchSpec
 } from "./service-templates.js";
 
@@ -143,6 +146,10 @@ export async function installWatcherService(repoRoot: string, options: ServiceMa
     }
     case "schtasks": {
       const taskName = scheduledTaskNameForRepo(repoRoot);
+      const scriptPath = windowsWatcherScriptPath(identity.repoRoot);
+      await fs.mkdir(path.dirname(scriptPath), { recursive: true });
+      await fs.writeFile(scriptPath, renderWindowsWatcherScript(spec), "utf8");
+      await fs.rm(legacyWindowsWatcherScriptPath(identity.repoRoot), { force: true }).catch(() => undefined);
       const create = await run("schtasks", schtasksCreateArgv(spec, taskName));
       // schtasks creates the task but doesn't run it immediately for onlogon; kick it once now.
       if (create.ok) await run("schtasks", ["/run", "/tn", taskName]);
@@ -151,6 +158,7 @@ export async function installWatcherService(repoRoot: string, options: ServiceMa
         platform: kind,
         serviceName: identity.serviceName,
         repoRoot: identity.repoRoot,
+        unitPath: scriptPath,
         message: create.ok
           ? `Registered scheduled task ${taskName}. It runs on logon and relaunches every few minutes as a liveness backstop (the per-repo lock makes redundant launches no-ops).`
           : `\`schtasks /create\` failed: ${create.stderr.trim() || create.stdout.trim()}`
@@ -200,11 +208,15 @@ export async function uninstallWatcherService(repoRoot: string, options: Service
     case "schtasks": {
       const taskName = scheduledTaskNameForRepo(repoRoot);
       const del = await run("schtasks", schtasksDeleteArgv(taskName));
+      const scriptPath = windowsWatcherScriptPath(identity.repoRoot);
+      await fs.rm(scriptPath, { force: true }).catch(() => undefined);
+      await fs.rm(legacyWindowsWatcherScriptPath(identity.repoRoot), { force: true }).catch(() => undefined);
       return {
         ok: del.ok,
         platform: kind,
         serviceName: identity.serviceName,
         repoRoot: identity.repoRoot,
+        unitPath: scriptPath,
         message: del.ok ? `Removed scheduled task ${taskName}.` : `\`schtasks /delete\` failed (it may not exist): ${del.stderr.trim() || del.stdout.trim()}`
       };
     }

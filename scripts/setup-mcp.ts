@@ -7,6 +7,7 @@
  *   - claude-code  Claude Code (repo)  JSON  <cwd>/.mcp.json                    (mcpServers.ragcode)
  *   - codex        Codex CLI           TOML  ~/.codex/config.toml               (mcp_servers.ragcode)
  *   - generic      print only          JSON  (paste into any MCP client)
+ *   - all          multi-client        JSON+TOML  Claude Code .mcp.json + Codex config.toml
  *
  * Merge strategy: existing config is parsed, the `ragcode` entry is upserted, and the
  * file is rewritten. Other servers and unrelated keys are preserved. The previous file
@@ -21,7 +22,8 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { loadRuntimeConfig, runtimeConfigToEnv } from '../src/config/runtime-config.js';
 
-export type McpClient = 'claude' | 'claude-code' | 'codex' | 'generic';
+export type McpClient = 'claude' | 'claude-code' | 'codex' | 'generic' | 'all';
+const DEFAULT_ALL_CLIENTS: Exclude<McpClient, 'generic' | 'all'>[] = ['claude-code', 'codex'];
 
 interface MCPServerConfig {
   command: string;
@@ -86,8 +88,11 @@ function resolveConfigPath(client: McpClient, options: SetupMcpOptions): string 
     case 'claude-code':
       return getClaudeCodeMCPConfigPath(cwd);
     case 'claude':
-    default:
       return getClaudeMCPConfigPath();
+    case 'all':
+    case 'generic':
+    default:
+      throw new Error(`Client ${client} does not have a single writable config path.`);
   }
 }
 
@@ -234,6 +239,16 @@ export function setupMCP(options: SetupMcpOptions = {}): void {
     return;
   }
 
+  if (client === 'all') {
+    if (options.configPath) {
+      throw new Error('--config cannot be used with --client all because each client has a different config path.');
+    }
+    for (const targetClient of DEFAULT_ALL_CLIENTS) {
+      setupMCP({ ...options, client: targetClient });
+    }
+    return;
+  }
+
   const configPath = resolveConfigPath(client, options);
   const server = buildMcpServerConfig(options);
   const raw = readFileSafe(configPath);
@@ -308,6 +323,14 @@ function printConfig(options: SetupMcpOptions = {}): void {
   const client: McpClient = options.client ?? 'generic';
   const server = buildMcpServerConfig(options);
 
+  if (client === 'all') {
+    console.log('Claude Code / generic MCP JSON config:\n');
+    console.log(JSON.stringify({ mcpServers: { [SERVER_KEY]: server } }, null, 2));
+    console.log('\nCodex TOML config:\n');
+    console.log(mergeCodexToml('', server));
+    return;
+  }
+
   if (client === 'codex') {
     console.log('Add this to your Codex config (~/.codex/config.toml):\n');
     console.log(mergeCodexToml('', server));
@@ -326,6 +349,8 @@ function clientLabel(client: McpClient): string {
       return 'Claude Code';
     case 'codex':
       return 'Codex';
+    case 'all':
+      return 'Claude Code and Codex';
     case 'generic':
       return 'generic MCP client';
   }
@@ -359,23 +384,25 @@ Options:
   --config <path>    Custom config path (overrides the client default)
   --print            Print config without writing
   --include-secrets  Include real secrets instead of redacted placeholders
-  --client <client>  Target client: claude, claude-code, codex, or generic (default: claude-code)
+  --client <client>  Target client: claude, claude-code, codex, generic, or all (default: claude-code)
   --force            Overwrite an existing ragcode entry without prompting
   --help, -h         Show this help
 
 Examples:
   ragcode setup-mcp                          # Claude Code .mcp.json (default)
+  ragcode --setup mcp                        # Claude Code .mcp.json + Codex config.toml
   ragcode setup-mcp --client claude          # Claude Desktop (global)
   ragcode setup-mcp --client codex           # ~/.codex/config.toml
+  ragcode setup-mcp --client all             # Claude Code .mcp.json + Codex config.toml
   ragcode setup-mcp --client codex --print   # print TOML, write nothing
   ragcode setup-mcp --config ~/custom.json   # custom path
   `);
 }
 
-function parseOptions(args: string[]): SetupMcpOptions {
+export function parseSetupMcpArgs(args: string[], options: { defaultClient?: McpClient } = {}): SetupMcpOptions {
   const configIndex = args.indexOf('--config');
   const clientIndex = args.indexOf('--client');
-  const client = clientIndex >= 0 ? args[clientIndex + 1] : undefined;
+  const client = clientIndex >= 0 ? args[clientIndex + 1] : options.defaultClient;
   validateClient(client);
   return {
     print: args.includes('--print'),
@@ -387,8 +414,8 @@ function parseOptions(args: string[]): SetupMcpOptions {
 }
 
 function validateClient(client: string | undefined): void {
-  if (client && !['claude', 'claude-code', 'codex', 'generic'].includes(client)) {
-    throw new Error(`Unsupported MCP client: ${client} (expected claude, claude-code, codex, or generic)`);
+  if (client && !['claude', 'claude-code', 'codex', 'generic', 'all'].includes(client)) {
+    throw new Error(`Unsupported MCP client: ${client} (expected claude, claude-code, codex, generic, or all)`);
   }
 }
 
@@ -401,7 +428,7 @@ if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
   }
 
   try {
-    setupMCP(parseOptions(args));
+    setupMCP(parseSetupMcpArgs(args));
   } catch (error) {
     console.error(`❌ MCP setup failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);

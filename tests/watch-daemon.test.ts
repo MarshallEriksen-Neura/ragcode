@@ -31,6 +31,7 @@ import type {
 import { FileEventJournal, type WatchEventJournalEntry } from "../src/watch/event-journal.js";
 import { WatchIndexScheduler } from "../src/watch/index-scheduler.js";
 import { FileWatchDaemon } from "../src/watch/watch-daemon.js";
+import { readWatcherLiveness } from "../src/watch/watcher-liveness.js";
 
 const tempRoots: string[] = [];
 
@@ -112,6 +113,47 @@ describe("file watch daemon", () => {
     await daemon.stop();
 
     expect(engine.recordedBatches.flat()).toContain("watched.ts");
+  });
+
+  it("starts the native watcher without an explicit polling interval", async () => {
+    const root = await createTempRepo("ragcode-watch-native-default-");
+    await fs.writeFile(path.join(root, "watched.ts"), "export const value = 1;\n");
+    const engine = new FakeEngine(root);
+    const daemon = new FileWatchDaemon(engine, root, {
+      autoIndex: false,
+      indexOnStart: false,
+      flushEventsMs: 20,
+      awaitWriteFinishMs: 10
+    });
+
+    await daemon.start();
+    await waitFor(async () => (await daemon.status()).ready);
+    await fs.writeFile(path.join(root, "watched.ts"), "export const value = 2;\n");
+    await waitFor(() => engine.recordedBatches.some((batch) => batch.includes("watched.ts")), 3_000);
+    await daemon.stop();
+
+    expect(engine.recordedBatches.flat()).toContain("watched.ts");
+  });
+
+  it("publishes a heartbeat even when startup status reads are slow", async () => {
+    const root = await createTempRepo("ragcode-watch-start-heartbeat-");
+    await fs.writeFile(path.join(root, "watched.ts"), "export const value = 1;\n");
+    const engine = new FakeEngine(root);
+    engine.blockIndexStatus = true;
+    const daemon = new FileWatchDaemon(engine, root, {
+      autoIndex: false,
+      indexOnStart: false,
+      heartbeatIntervalMs: 20,
+      awaitWriteFinishMs: 10
+    });
+
+    const startPromise = daemon.start();
+    await waitFor(async () => (await readWatcherLiveness(root)).state === "running", 1_000);
+    engine.releaseIndexStatus();
+    await startPromise;
+    await daemon.stop();
+
+    expect((await readWatcherLiveness(root)).state).toBe("not_running");
   });
 
   it("bootstraps an unindexed repo with one bounded batch and queues the remainder", async () => {
@@ -383,6 +425,8 @@ class FakeEngine implements ContextEngine {
   failRecordCount = 0;
   recordFailures = 0;
   failRefresh = false;
+  blockIndexStatus = false;
+  private readonly releaseBlockedIndexStatus: Array<() => void> = [];
   private dirty = new Map<string, { status: "pending" | "indexing" | "dead_letter"; reason?: string; lastSeenAtMs: number; eventCount: number }>();
 
   constructor(private readonly root: string) {}
@@ -415,6 +459,11 @@ class FakeEngine implements ContextEngine {
   }
 
   async indexStatus(repoRoot: string | undefined): Promise<IndexStatus> {
+    if (this.blockIndexStatus) {
+      await new Promise<void>((resolve) => {
+        this.releaseBlockedIndexStatus.push(resolve);
+      });
+    }
     if (this.missingUntilIndexed) throw new Error("Workspace is not indexed");
     const dirtyFiles = [...this.dirty.entries()].map(([filePath, state]) => ({
       projectId: "project",
@@ -464,6 +513,11 @@ class FakeEngine implements ContextEngine {
       semanticRebuildNeeded: freshness.semanticRebuildNeeded,
       freshness
     };
+  }
+
+  releaseIndexStatus(): void {
+    this.blockIndexStatus = false;
+    for (const release of this.releaseBlockedIndexStatus.splice(0)) release();
   }
 
   async recordFileEvents(_repoRoot: string | undefined, filePaths: string[], _options?: WatcherEventOptions): Promise<WatcherState> {

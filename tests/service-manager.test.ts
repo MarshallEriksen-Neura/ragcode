@@ -11,11 +11,13 @@ import {
 } from "../src/service/service-identity.js";
 import {
   launchdPlistPath,
+  renderWindowsWatcherScript,
   renderLaunchdPlist,
   renderSystemdUnit,
   schtasksCreateArgv,
   systemdUserUnitPath,
   watchArgv,
+  windowsWatcherScriptPath,
   type ServiceLaunchSpec
 } from "../src/service/service-templates.js";
 import {
@@ -119,12 +121,34 @@ describe("service templates", () => {
     expect(plist).toContain("<string>--no-index-on-start</string>");
   });
 
-  it("builds an onlogon schtasks create argv with a liveness repeat interval", () => {
+  it("builds a repeating schtasks create argv with a liveness interval", () => {
     const argv = schtasksCreateArgv(spec("/r/api"), "RagCode\\task", { restartIntervalMinutes: 7 });
     expect(argv).toContain("/create");
-    expect(argv).toContain("onlogon");
-    expect(argv[argv.indexOf("/ri") + 1]).toBe("7");
+    expect(argv[argv.indexOf("/sc") + 1]).toBe("minute");
+    expect(argv[argv.indexOf("/mo") + 1]).toBe("7");
     expect(argv).toContain("/f");
+  });
+
+  it("launches Windows scheduled watchers through a short console-free wrapper", () => {
+    const argv = schtasksCreateArgv(spec("/r/api"), "RagCode\\task");
+    const taskRun = argv[argv.indexOf("/tr") + 1];
+
+    expect(taskRun).toContain("wscript.exe");
+    expect(taskRun).toContain("//B");
+    expect(taskRun).toContain("//Nologo");
+    expect(taskRun).toContain("watch-service.vbs");
+    expect(taskRun.length).toBeLessThanOrEqual(261);
+  });
+
+  it("renders the Windows wrapper with a hidden watcher process", () => {
+    const script = renderWindowsWatcherScript(spec("/r/api"));
+
+    expect(windowsWatcherScriptPath("/r/api")).toBe(path.join(path.resolve("/r/api"), ".ragcode", "watch-service.vbs"));
+    expect(script).toContain("WScript.Shell");
+    expect(script).toContain(", 0, False");
+    expect(script).toContain("/opt/ragcode/dist/src/cli/index.js");
+    expect(script).toContain("watch");
+    expect(script).toContain("/r/api");
   });
 
   it("places unit/plist files under user config dirs", () => {

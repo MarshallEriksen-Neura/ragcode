@@ -1,13 +1,24 @@
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseToml } from "smol-toml";
 import {
   getClaudeCodeMCPConfigPath,
   getCodexConfigPath,
   mergeCodexToml,
-  mergeMcpServersJson
+  mergeMcpServersJson,
+  parseSetupMcpArgs,
+  setupMCP
 } from "../scripts/setup-mcp.js";
+
+const tempRoots: string[] = [];
+
+afterEach(async () => {
+  for (const root of tempRoots.splice(0)) {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 const SERVER = {
   command: "ragcode",
@@ -132,3 +143,34 @@ describe("config path resolution", () => {
     expect(getCodexConfigPath({})).toBe(path.join(os.homedir(), ".codex", "config.toml"));
   });
 });
+
+describe("setup MCP command options", () => {
+  it("supports legacy --setup mcp by defaulting the setup parser to all clients", () => {
+    expect(parseSetupMcpArgs(["--setup", "mcp"], { defaultClient: "all" })).toMatchObject({
+      client: "all"
+    });
+  });
+
+  it("writes both Claude Code and Codex configs for --client all", async () => {
+    const repoRoot = await tempDir("ragcode-mcp-all-repo-");
+    const codexHome = await tempDir("ragcode-mcp-all-codex-");
+
+    setupMCP({ cwd: repoRoot, env: { CODEX_HOME: codexHome }, client: "all", force: true });
+
+    const claudeCodeConfig = JSON.parse(await fs.readFile(path.join(repoRoot, ".mcp.json"), "utf8")) as {
+      mcpServers?: Record<string, unknown>;
+    };
+    const codexConfig = parseToml(await fs.readFile(path.join(codexHome, "config.toml"), "utf8")) as {
+      mcp_servers?: Record<string, unknown>;
+    };
+
+    expect(claudeCodeConfig.mcpServers?.ragcode).toBeDefined();
+    expect(codexConfig.mcp_servers?.ragcode).toBeDefined();
+  });
+});
+
+async function tempDir(prefix: string): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempRoots.push(root);
+  return root;
+}

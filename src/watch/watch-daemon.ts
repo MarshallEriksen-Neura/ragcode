@@ -74,6 +74,8 @@ export class FileWatchDaemon {
   private ready = false;
   private lockHandle: WatcherLockHandle | undefined;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly heartbeatWrites = new Set<Promise<void>>();
+  private heartbeatEpoch = 0;
   private lastIndexedAtMs: number | undefined;
 
   constructor(
@@ -96,7 +98,7 @@ export class FileWatchDaemon {
         });
         // Refresh the heartbeat on every scheduler tick so an actively-indexing daemon publishes
         // freshness faster than the idle interval, and so pending/indexing counts stay current.
-        if (this.running && this.options.manageLifecycleFiles !== false) void this.publishHeartbeat();
+        if (this.running && this.options.manageLifecycleFiles !== false) this.queueHeartbeat();
       }
     });
   }
@@ -109,17 +111,22 @@ export class FileWatchDaemon {
       this.lockHandle = acquireWatcherLock(this.repoRoot);
     }
     this.running = true;
+    this.heartbeatEpoch += 1;
+    this.startHeartbeat();
     await this.ensureIndexed();
     await this.replayJournal();
     this.scheduler.start();
-    this.startHeartbeat();
     this.watcher = chokidar.watch(this.repoRoot, {
       cwd: this.repoRoot,
       persistent: true,
       ignoreInitial: true,
       followSymlinks: false,
       usePolling: this.options.usePolling,
-      interval: this.options.usePolling ? this.options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS : this.options.pollIntervalMs,
+      ...(this.options.usePolling
+        ? { interval: this.options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS }
+        : this.options.pollIntervalMs !== undefined
+          ? { interval: this.options.pollIntervalMs }
+          : {}),
       atomic: true,
       awaitWriteFinish: {
         stabilityThreshold: this.options.awaitWriteFinishMs ?? DEFAULT_AWAIT_WRITE_FINISH_MS,
@@ -159,6 +166,7 @@ export class FileWatchDaemon {
 
   async stop(): Promise<void> {
     this.running = false;
+    this.heartbeatEpoch += 1;
     if (this.flushTimer) clearTimeout(this.flushTimer);
     if (this.maxFlushTimer) clearTimeout(this.maxFlushTimer);
     if (this.flushRetryTimer) clearTimeout(this.flushRetryTimer);
@@ -185,6 +193,7 @@ export class FileWatchDaemon {
       // lock (start() threw) reaches stop() via the CLI's shutdown path with lockHandle undefined —
       // it must NOT clear the live watcher's heartbeat or release its lock.
       if (this.options.manageLifecycleFiles !== false && this.lockHandle) {
+        await Promise.allSettled([...this.heartbeatWrites]);
         await clearHeartbeat(this.repoRoot).catch(() => undefined);
         this.lockHandle.release();
         this.lockHandle = undefined;
@@ -208,23 +217,48 @@ export class FileWatchDaemon {
   // so an actively-indexing daemon heartbeats more often than the interval.
   private startHeartbeat(): void {
     if (this.options.manageLifecycleFiles === false) return;
-    void this.publishHeartbeat();
+    this.queueHeartbeat();
     const interval = this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.heartbeatTimer = setInterval(() => {
-      void this.publishHeartbeat();
+      this.queueHeartbeat();
     }, interval);
     this.heartbeatTimer.unref?.();
   }
 
-  private async publishHeartbeat(): Promise<void> {
-    if (this.options.manageLifecycleFiles === false || !this.lockHandle) return;
-    const scheduler = await this.scheduler.status().catch(() => undefined);
+  private queueHeartbeat(): void {
+    const epoch = this.heartbeatEpoch;
+    const write = this.publishHeartbeat(epoch).finally(() => {
+      this.heartbeatWrites.delete(write);
+    });
+    this.heartbeatWrites.add(write);
+  }
+
+  private async publishHeartbeat(epoch: number): Promise<void> {
+    const lockHandle = this.lockHandle;
+    if (this.options.manageLifecycleFiles === false || !lockHandle || !this.running || epoch !== this.heartbeatEpoch) return;
+    const baseHeartbeat: WatcherHeartbeat = {
+      pid: lockHandle.info.pid,
+      hostname: lockHandle.info.hostname,
+      repoRoot: this.repoRoot,
+      startedAtMs: lockHandle.info.startedAtMs,
+      lastHeartbeatMs: Date.now(),
+      lastIndexedAtMs: this.lastIndexedAtMs,
+      pendingFiles: 0,
+      indexingFiles: 0,
+      ready: this.ready,
+      lastError: this.lastError
+    };
+    await writeHeartbeat(this.repoRoot, baseHeartbeat).catch((error: unknown) => {
+      this.setLastError(error);
+    });
+    const scheduler = await withTimeout(this.scheduler.status(), 500).catch(() => undefined);
+    if (!this.running || epoch !== this.heartbeatEpoch || this.lockHandle !== lockHandle) return;
     if (scheduler?.lastIndexedAtMs) this.lastIndexedAtMs = scheduler.lastIndexedAtMs;
     const heartbeat: WatcherHeartbeat = {
-      pid: this.lockHandle.info.pid,
-      hostname: this.lockHandle.info.hostname,
+      pid: lockHandle.info.pid,
+      hostname: lockHandle.info.hostname,
       repoRoot: this.repoRoot,
-      startedAtMs: this.lockHandle.info.startedAtMs,
+      startedAtMs: lockHandle.info.startedAtMs,
       lastHeartbeatMs: Date.now(),
       lastIndexedAtMs: this.lastIndexedAtMs,
       pendingFiles: scheduler?.pendingFiles ?? 0,
@@ -416,4 +450,20 @@ function normalizeWatchPath(repoRoot: string, rawPath: string): string | undefin
     : normalizeUserPath(candidate);
   if (!relative || relative === "." || relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
   return relative;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(undefined), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }

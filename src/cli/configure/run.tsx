@@ -1,12 +1,12 @@
 import path from "node:path";
 import { render } from "ink";
-import { createRuntimeComponentsForRepo, loadRuntimeConfig, redactRuntimeConfig } from "../../config/runtime-config.js";
-import { RagCodeEngine } from "../../core/engine.js";
+import { loadRuntimeConfig, redactRuntimeConfig } from "../../config/runtime-config.js";
 import { runEmbeddingTest } from "../../diagnostics/embedding-test.js";
 import { setupMCP } from "../../../scripts/setup-mcp.js";
 import { applyConfigureUpdates } from "../configure.js";
 import { ConfigureApp } from "./app.js";
 import { createWizardState, wizardResult, type WizardMode, type WizardState } from "./state.js";
+import { printInitOnboardingSummary, runInitOnboarding } from "../init-onboarding.js";
 
 // Orchestrates the Ink wizard: render the UI, then execute the collected actions in PRD
 // order (test embedding -> save -> index -> setup MCP -> summary). All config IO stays in
@@ -51,37 +51,16 @@ export async function runInkConfigure(options: { repoRoot: string; mode: WizardM
   const saved = await applyConfigureUpdates({ repoRoot, updates: result.updates });
   console.log(`✅ Configuration saved to: ${saved.configPath}`);
 
-  if (result.actions.indexNow) {
-    console.log("📦 Indexing repository...");
-    const components = createRuntimeComponentsForRepo({ cwd: repoRoot, overrides: { repoRoot } });
-    const engine = new RagCodeEngine({
-      cwd: repoRoot,
-      graphStore: components.graphStore,
-      semanticStore: components.semanticStore,
-      embeddingProvider: components.embeddingProvider
-    });
-    try {
-      const index = await engine.indexRepo(repoRoot);
-      console.log(`✅ Indexed ${index.files.length} files, ${index.chunks.length} chunks.`);
-    } finally {
-      engine.close();
-    }
-  }
+  const onboarding = await runInitOnboarding({
+    repoRoot,
+    indexNow: result.actions.indexNow,
+    installWatcher: result.actions.installWatcherService,
+    poll: process.platform === "win32"
+  });
+  printInitOnboardingSummary(onboarding);
 
   if (result.actions.setupMcp) {
     setupMCP({ cwd: repoRoot, env: process.env, client: result.actions.mcpClient as 'claude' | 'claude-code' | 'codex' });
-  }
-
-  if (result.actions.installWatcherService) {
-    // Loaded lazily so the wizard doesn't pull in the service layer unless the user opts in.
-    const { installWatcherService } = await import("../../service/service-manager.js");
-    try {
-      const service = await installWatcherService(repoRoot);
-      console.log(service.ok ? `👁  ${service.message}` : `⚠️  ${service.message}`);
-    } catch (error) {
-      console.log(`⚠️  Could not install the background watcher service: ${error instanceof Error ? error.message : String(error)}`);
-      console.log("   You can still keep the index fresh by running `ragcode watch .` manually.");
-    }
   }
 
   console.log("\n🚀 Summary / next steps:");

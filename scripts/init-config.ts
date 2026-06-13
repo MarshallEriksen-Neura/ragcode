@@ -21,6 +21,7 @@ interface ConfigOptions {
 export interface InitConfigOptions {
   targetDir?: string;
   defaults?: boolean;
+  printNextSteps?: boolean;
 }
 
 export interface InitConfigResult {
@@ -178,7 +179,7 @@ export async function runInitConfig(options: InitConfigOptions = {}): Promise<In
   const config = options.defaults ? { ...DEFAULT_INIT_CONFIG } : await runWizard();
   const configPath = writeConfigFile(targetDir, config);
   writeEnvExample(targetDir, config);
-  printNextSteps(config);
+  if (options.printNextSteps !== false) printNextSteps(config);
 
   return { targetDir, configPath, config: toRuntimeConfigFile(config) };
 }
