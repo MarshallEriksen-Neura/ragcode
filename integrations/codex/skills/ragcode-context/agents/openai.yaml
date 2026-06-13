@@ -1,4 +1,0 @@
-interface:
-  display_name: "RagCode Context"
-  short_description: "Use RagCode MCP and CLI for code context"
-  default_prompt: "Use $ragcode-context to inspect code ownership, freshness, watcher status, or related tests before editing."
