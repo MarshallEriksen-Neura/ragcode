@@ -115,7 +115,7 @@ npm install -g ragcode-context-engine
 
 cd my-project
 ragcode init          # offline-first config: sqlite + lancedb + deterministic embeddings
-ragcode index .       # build the structural + semantic index
+ragcode index .       # build the index; large first runs use a bounded bootstrap batch
 ragcode setup-mcp     # register the MCP server for your agent client
 ```
 
@@ -131,6 +131,24 @@ Working from source (no global install)? Run any command through the dev script 
 ```bash
 npm run dev -- index .
 npm run dev -- setup-mcp --client codex --print
+```
+
+### Large repositories and first bootstrap
+
+`ragcode index <repoRoot>` is safe for large repositories by default. On an empty index it writes the first bounded structural batch, records the remaining files as pending, and lets later `index`, `watch`, or service runs continue from persisted state. Semantic vectors are deferred during this first partial bootstrap so graph search and ownership queries become available without forcing one huge embedding pass.
+
+```bash
+ragcode index . --max-batch-files 2000 --max-analysis-memory-mb 4096
+ragcode index . --semantic-on-bootstrap   # also write vectors for the first partial batch
+ragcode index . --full                    # force the legacy all-at-once index
+```
+
+Progress is durable under `.ragcode/index-state.json` and `.ragcode/index-progress.jsonl`. `ragcode status .` reports `graphFresh`, `pendingFileCount`, `indexingFileCount`, `semanticFresh`, `semanticCoverage`, and `semanticRebuildNeeded` so agents can tell whether retrieval covers the whole repo or only the indexed graph slice.
+
+For background freshness, `ragcode service install <repoRoot>` now registers and starts the watcher service without blocking on a full index. Add `--index-now` to run one bounded pre-install batch:
+
+```bash
+ragcode service install . --index-now --bootstrap-batch-size 2000 --max-analysis-memory-mb 4096
 ```
 
 ### Upgrade semantic recall (optional, never a blocker)
@@ -163,7 +181,7 @@ See [docs/EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md) for Azure, Ollama
 
 ```bash
 ragcode init [directory]            # Initialize configuration (interactive wizard)
-ragcode index <repoRoot>            # Index a repository
+ragcode index <repoRoot>            # Index a repository; empty indexes use bounded bootstrap by default
 ragcode search <repoRoot> <query>   # Search code
 ragcode status <repoRoot>           # Check index status
 ragcode context <repoRoot> <query>  # Build a context pack
@@ -171,6 +189,7 @@ ragcode mcp                         # Start the MCP server (stdio)
 ragcode setup-mcp                   # Register MCP for Claude Desktop
 ragcode doctor [repoRoot]           # Runtime diagnostics
 ragcode watch <repoRoot>            # File-watcher daemon
+ragcode service install <repoRoot>  # Install the background watcher service
 ragcode dashboard                   # Web observability backend (port 3000)
 ```
 

@@ -12,9 +12,14 @@ ragcode status <repoRoot>                          # persisted index + dirty wat
 ## Indexing
 
 ```bash
-ragcode index <repoRoot>          # full/incremental index
-ragcode watch <repoRoot>          # long-lived watcher daemon with background refresh
+ragcode index <repoRoot> [--max-batch-files N] [--max-analysis-memory-mb N]
+ragcode index <repoRoot> --semantic-on-bootstrap  # also write vectors for first partial bootstrap batch
+ragcode index <repoRoot> --full                   # force legacy all-at-once index
+ragcode watch <repoRoot> [--max-batch-files N] [--max-analysis-memory-mb N]
+ragcode service install <repoRoot> [--index-now] [--bootstrap-batch-size N]
 ```
+
+Empty indexes use a bounded bootstrap batch by default. Remaining files are persisted as pending dirty state and progress is written to `.ragcode/index-state.json` / `.ragcode/index-progress.jsonl`. `service install` does not block on a full index unless `--index-now` is provided.
 
 ## Retrieval
 

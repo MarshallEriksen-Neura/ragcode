@@ -1,6 +1,6 @@
 # Index Schema
 
-This is the target shape for the local code intelligence core. The current store is in-memory; the medium-term store should persist this shape in SQLite + FTS and LanceDB.
+This is the production shape for the local code intelligence core. Structural graph state is persisted in SQLite + FTS, semantic chunks live in LanceDB, and tests can still swap in in-memory stores through the same contracts.
 
 ## Structural Graph
 
@@ -14,6 +14,12 @@ This is the target shape for the local code intelligence core. The current store
 - `gitHead`
 - `createdAtMs`
 - `lastIndexedAtMs`
+- `indexGeneration`
+- `semanticGeneration`
+- `semanticFresh`
+- `semanticRebuildNeeded`
+- `semanticLastError`
+- `semanticUpdatedAtMs`
 
 `projectId` is the storage namespace. It is required for every graph, chunk, and vector row. Raw `repoRoot` is an input path, not a sufficient isolation boundary.
 
@@ -97,9 +103,9 @@ LanceDB table: `code_chunks`.
 - `contentHash`
 - `vector`
 
-## Incremental Indexing Target
+## Incremental And Bootstrap Indexing
 
-The target incremental algorithm is:
+The incremental algorithm is:
 
 1. resolve `repoRoot` to `projectId`;
 2. scan files with ignore rules;
@@ -110,6 +116,15 @@ The target incremental algorithm is:
 7. upsert structural rows;
 8. upsert semantic chunks with `projectId`;
 9. mark stale files while watcher debounce is pending.
+
+For an empty large repository, CLI bootstrap does not force a full all-at-once index. It scans the inventory, indexes the first bounded file batch, writes structural rows with incremental upsert semantics, and records the remaining files as pending dirty state. The first partial bootstrap defaults to semantic deferral, so graph retrieval can become usable before a complete vector rebuild. Progress is persisted under `.ragcode/index-state.json` and `.ragcode/index-progress.jsonl`.
+
+Freshness surfaces must distinguish:
+
+- `graphFresh`: whether the structural graph has pending/stale/indexing files;
+- `semanticFresh`: whether vector rows match the graph generation;
+- `semanticCoverage`: `complete_repo` or `indexed_graph`;
+- `semanticRebuildNeeded` / `semanticLastError`: whether semantic recall should be treated as degraded while graph search remains usable.
 
 ## Isolation Rules
 

@@ -115,7 +115,7 @@ npm install -g ragcode-context-engine
 
 cd my-project
 ragcode init          # 离线优先配置：sqlite + lancedb + 确定性嵌入
-ragcode index .       # 构建结构化 + 语义索引
+ragcode index .       # 构建索引；大仓库首轮默认使用有界批处理
 ragcode setup-mcp     # 为你的智能体客户端注册 MCP 服务
 ```
 
@@ -131,6 +131,24 @@ npx ragcode-context-engine search . "query"
 ```bash
 npm run dev -- index .
 npm run dev -- setup-mcp --client codex --print
+```
+
+### 大仓库与首轮索引
+
+`ragcode index <repoRoot>` 默认适合大仓库。空索引首轮会先写入一个有界结构化批次，把剩余文件记录为 pending，后续 `index`、`watch` 或服务运行会从持久化状态继续推进。首个部分 bootstrap 默认暂缓语义向量写入，因此图检索和归属查询可以先可用，而不会强制一次性跑完整嵌入。
+
+```bash
+ragcode index . --max-batch-files 2000 --max-analysis-memory-mb 4096
+ragcode index . --semantic-on-bootstrap   # 首个部分批次也写入向量
+ragcode index . --full                    # 强制旧的一次性全量索引
+```
+
+进度会持久化到 `.ragcode/index-state.json` 和 `.ragcode/index-progress.jsonl`。`ragcode status .` 会报告 `graphFresh`、`pendingFileCount`、`indexingFileCount`、`semanticFresh`、`semanticCoverage` 和 `semanticRebuildNeeded`，让智能体能判断检索覆盖的是完整仓库，还是当前已索引的图切片。
+
+后台保鲜方面，`ragcode service install <repoRoot>` 现在只注册并启动 watcher 服务，不会阻塞等待一次完整索引。需要安装前先跑一个有界批次时，显式加 `--index-now`：
+
+```bash
+ragcode service install . --index-now --bootstrap-batch-size 2000 --max-analysis-memory-mb 4096
 ```
 
 ### 升级语义召回能力（可选，永不阻塞）
@@ -161,7 +179,7 @@ export RAGCODE_EMBEDDING_API_KEY=ollama  # 任意非空字符串即可
 
 ```bash
 ragcode init [directory]            # 初始化配置（交互式向导）
-ragcode index <repoRoot>            # 索引一个仓库
+ragcode index <repoRoot>            # 索引仓库；空索引默认使用有界 bootstrap
 ragcode search <repoRoot> <query>   # 搜索代码
 ragcode status <repoRoot>           # 检查索引状态
 ragcode context <repoRoot> <query>  # 构建上下文包
@@ -169,6 +187,7 @@ ragcode mcp                         # 启动 MCP 服务（stdio）
 ragcode setup-mcp                   # 为 Claude Desktop 注册 MCP
 ragcode doctor [repoRoot]           # 运行时诊断
 ragcode watch <repoRoot>            # 文件监听守护进程
+ragcode service install <repoRoot>  # 安装后台 watcher 服务
 ragcode dashboard                   # Web 可观测后端（端口 3000）
 ```
 

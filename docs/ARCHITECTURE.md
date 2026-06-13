@@ -27,7 +27,8 @@ All external surfaces should depend on these contracts, not on concrete stores.
 - apply ignore rules;
 - compute hashes;
 - chunk files;
-- write graph and semantic records.
+- write graph and semantic records;
+- split empty-index bootstraps into bounded batches and persist progress.
 
 This layer must not know about MCP.
 
@@ -42,7 +43,7 @@ This layer must not know about MCP.
 - file explanation;
 - future callers/callees/impact queries.
 
-The first implementation is in-memory. The target implementation is SQLite + FTS + graph traversal inspired by CodeGraph.
+Production graph storage is SQLite + FTS, with an in-memory implementation kept for tests and isolated runs. Graph writes support both full replacements and scoped incremental upserts so large repositories can bootstrap in batches.
 
 ### Semantic
 
@@ -52,7 +53,7 @@ The first implementation is in-memory. The target implementation is SQLite + FTS
 - `LanceSemanticStore` for production storage;
 - deterministic placeholder embedding for local smoke tests.
 
-The embedding provider is deliberately an interface so OpenAI, local models, or cached embeddings can be swapped later.
+The embedding provider is deliberately an interface so OpenAI, local models, or cached embeddings can be swapped later. Semantic state is tracked separately from graph state (`semanticGeneration`, `semanticFresh`, rebuild-needed/error fields) because a large first graph bootstrap may deliberately defer vector writes.
 
 ### Retrieval
 
@@ -86,7 +87,7 @@ MCP tools should return context packs, not raw vector hits.
 - `WatchIndexScheduler` batches quiet dirty files, marks them `indexing`, and triggers `refreshIndex` in the background;
 - `file-event-coalescer` bounds bursty event sets before they enter graph-store watcher state.
 
-The watch layer depends only on the `ContextEngine` contract. It does not know about SQLite tables, semantic storage, MCP transport, or CLI formatting. Failed dirty-state flushes keep journal entries recoverable, and failed refreshes requeue `indexing` files back to pending dirty state.
+The watch layer depends only on the `ContextEngine` contract. It does not know about SQLite tables, semantic storage, MCP transport, or CLI formatting. Failed dirty-state flushes keep journal entries recoverable, failed refreshes requeue `indexing` files back to pending dirty state, and scheduler batches share the same memory guardrails as foreground indexing.
 
 ### MCP
 
@@ -101,18 +102,12 @@ MCP must remain thin. It should not implement search logic.
 
 ## Target Storage Shape
 
-Short term:
+Current production shape:
 
-- graph: in-memory;
-- semantic: in-memory or LanceDB;
-- metadata: generated in process.
-
-Medium term:
-
-- graph: SQLite tables for files, nodes, edges, unresolved refs, FTS;
-- semantic: LanceDB table for chunks and summaries;
-- sync: file watcher + hash-based incremental rebuild;
-- state: `.ragcode/` under each indexed repository.
+- graph: SQLite tables for projects, files, chunks, symbols, edges, FTS, dirty state, and semantic freshness metadata;
+- semantic: LanceDB table for chunks, with an in-memory store for tests;
+- sync: file watcher + hash-based incremental rebuild + bounded bootstrap batches;
+- state: `.ragcode/` under each indexed repository, including config, watcher state, `index-state.json`, and `index-progress.jsonl`.
 
 ## Stop Condition For The Foundation
 
