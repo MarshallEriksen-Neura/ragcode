@@ -1,0 +1,3 @@
+[submodule "integrations/codex/skills/ragcode-context"]
+	path = integrations/codex/skills/ragcode-context
+	url = https://github.com/MarshallEriksen-Neura/ragcode-skills.git
