@@ -240,6 +240,177 @@ Or add it manually to your MCP client config:
 
 `watch_status` is read-only: it reports whether a live watcher is keeping the index fresh, but never starts one (that belongs to `ragcode watch` or the OS service).
 
+---
+
+## MCP Tool Usage
+
+### `get_context` — Agent-Ready Context Packs
+
+The `get_context` tool is RagCode's primary interface for AI agents. It returns verified, budget-controlled context with explicit reasoning and completeness signals.
+
+#### Output Format (New in v0.1.6)
+
+**Format parameter** controls output structure:
+
+```typescript
+// JSON format (default, backward compatible)
+{
+  tool: "get_context",
+  input: {
+    query: "authentication flow",
+    format: "json",        // Returns ContextPack structure
+    budgetChars: 15000
+  }
+}
+
+// Markdown format (AI-friendly, recommended)
+{
+  tool: "get_context",
+  input: {
+    query: "authentication flow",
+    format: "markdown",    // Returns formatted markdown string
+    budgetChars: 15000
+  }
+}
+```
+
+**Markdown output** includes:
+- **Primary files section** with relevance scores and reasoning
+- **Code snippets** with syntax highlighting, grouped by file
+- **Call graph** visualization showing function relationships
+- **Completeness metrics** (index freshness, coverage)
+- **Budget usage statistics** (characters used, snippets included)
+
+#### Budget Enforcement (Fixed in v0.1.6)
+
+The `budgetChars` parameter is now **strictly enforced**:
+
+- ✅ Output size guaranteed **≤ budgetChars × 1.2**
+- ✅ Individual snippets capped at **150 lines** or **8000 characters**
+- ✅ Smart truncation at natural boundaries (functions, classes)
+- ✅ Truncation warnings included in `missingEvidence`
+
+**Real-world impact:** Typical outputs reduced from 3.3MB to ≤18KB (99%+ compression).
+
+**Example:**
+```typescript
+// Before v0.1.6: could return 3.3MB
+// After v0.1.6: guaranteed ≤18KB
+await mcp.callTool('get_context', {
+  query: 'login implementation',
+  budgetChars: 15000  // Now enforced!
+});
+```
+
+#### Reasoning Transparency (New in v0.1.6)
+
+Every search result includes a **`reason` field** explaining relevance:
+
+```json
+{
+  "filePath": "src/auth/login.ts",
+  "score": 9.2,
+  "reason": "🎯 Keyword match: login, authentication • Symbol match: registerLoginCommand (0.95 confidence) • Graph position: 0 hops from query"
+}
+```
+
+This helps agents understand:
+- **Why** a file was selected (keyword vs semantic match)
+- **What** symbols matched the query
+- **How** the file relates to other code (graph distance)
+
+#### Completeness Metrics (New in v0.1.6)
+
+The response includes **freshness and coverage signals**:
+
+```json
+{
+  "freshness": {
+    "freshnessScore": 0.95,    // 0.0 = stale, 1.0 = fresh
+    "coverageScore": 1.0,      // 0.0 = incomplete, 1.0 = complete
+    "graphFresh": true,
+    "semanticFresh": true,
+    "pendingFiles": [],        // Files not yet indexed
+    "staleFiles": []           // Files changed since last index
+  }
+}
+```
+
+**Use these signals** to know when results might be incomplete:
+- `freshnessScore < 0.8` → Run `ragcode index <repoRoot>` to refresh
+- `pendingFiles.length > 100` → Large portions of the repo not yet indexed
+- `staleFiles.length > 10` → Recent changes not reflected in results
+
+#### Known Limitations
+
+⚠️ **Chinese semantic search quality is limited**
+
+Chinese queries may return translation files (locales/*.json) instead of code implementations.
+
+**Workaround — Use English or exact symbol names:**
+
+```typescript
+// ❌ Avoid: Generic Chinese query
+await mcp.callTool('get_context', {
+  query: '登录功能的实现'  // May return locales/auth.json
+});
+
+// ✅ Use: English query
+await mcp.callTool('get_context', {
+  query: 'login implementation'  // Returns src/auth/login.ts
+});
+
+// ✅ Use: Exact symbol name
+await mcp.callTool('get_context', {
+  query: 'registerLoginCommand'  // Precise match
+});
+```
+
+**Root cause:** The semantic embedding model has limited Chinese language support. This is tracked as a P1 enhancement for future releases.
+
+⚠️ **Large repositories with incomplete indexes**
+
+When `pendingFileCount` is high, results may not cover the entire codebase:
+- Check `freshness.pendingFiles` count in the response
+- Run `ragcode index <repoRoot>` to continue indexing
+- Use `ragcode status <repoRoot>` to monitor progress
+
+#### Complete Example
+
+```typescript
+// MCP client calling get_context
+const result = await mcp.callTool('get_context', {
+  query: 'authentication flow',
+  format: 'markdown',
+  budgetChars: 15000,
+  mode: 'debug'  // Optional: debug, feature, refactor, review, explain
+});
+
+// Markdown format returns
+{
+  content: "## Authentication Flow (high confidence)\n\n### Primary Files\n...",
+  metadata: {
+    confidence: "high",
+    totalSnippets: 5,
+    budgetUsed: 14500,
+    freshnessScore: 0.95
+  }
+}
+
+// JSON format returns ContextPack (unchanged from v0.1.5)
+{
+  query: "authentication flow",
+  brief: "...",
+  confidence: "high",
+  snippets: [...],
+  ownerChain: [...],
+  freshness: {...},
+  missingEvidence: [...]
+}
+```
+
+---
+
 ### Web dashboard (observation and debugging)
 
 The dashboard is RagCode's observability surface — graph visualization, search debugging, context-pack inspection, watcher monitoring, and a runtime-config view with per-field source labels and redacted secrets. Setup and configuration stay in the terminal.

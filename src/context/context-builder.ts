@@ -1,4 +1,5 @@
 import type { ContextPack, ContextRequest, ContextSnippet, DirtyFile, FreshnessReport, GraphEdge, OwnerNode, RelationshipEvidence, SearchHit, TopologyEdge } from "../core/types.js";
+import type { CompletenessAssessment } from "./completeness-scorer.js";
 import { nextQueriesForMode, resolveContextMode } from "../retrieval/query-planner.js";
 import { classifyEvidencePath, isExplicitSupportingEvidenceQuery } from "../retrieval/path-classification.js";
 import { renderSnippet } from "./snippet-renderer.js";
@@ -23,6 +24,7 @@ export interface ContextBuildMetadata {
   dirtyFiles?: DirtyFile[];
   burstMode?: boolean;
   droppedEvents?: number;
+  completeness?: CompletenessAssessment;
 }
 
 export class ContextBuilder {
@@ -109,11 +111,31 @@ function missingEvidenceFor(snippets: ContextSnippet[], metadata: ContextBuildMe
   if (metadata.staleFiles?.length) missing.push(`Stale indexed files excluded: ${metadata.staleFiles.slice(0, 8).join(", ")}.`);
   if (metadata.pendingFiles?.length) missing.push(`Pending files need indexing: ${metadata.pendingFiles.slice(0, 8).join(", ")}.`);
   if (metadata.burstMode) missing.push(`Watcher burst mode is active; ${metadata.droppedEvents ?? 0} event(s) were dropped or compressed.`);
+
+  // Add completeness assessment
+  if (metadata.completeness) {
+    const { score, recommendations, explanation } = metadata.completeness;
+    if (score < 1.0 && recommendations.length > 0) {
+      missing.push(`📊 ${explanation}`);
+    }
+  }
+
   return missing;
 }
 
 function estimateSnippetCost(snippet: ContextSnippet): number {
-  return snippet.filePath.length + snippet.reason.length + snippet.content.length + 80;
+  // JSON serialization adds ~30% overhead (quotes, escapes, field names)
+  const JSON_OVERHEAD = 1.3;
+  const FIELD_OVERHEAD = 200; // JSON field names + braces
+
+  const baseSize = (
+    snippet.filePath.length +
+    snippet.reason.length +
+    snippet.content.length +
+    (snippet.role?.length ?? 0)
+  );
+
+  return Math.ceil(baseSize * JSON_OVERHEAD) + FIELD_OVERHEAD;
 }
 
 function maxSnippetsForFile(filePath: string, query: string): number {

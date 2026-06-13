@@ -215,6 +215,18 @@ export interface SearchHit {
   scoreBreakdown?: SearchScoreBreakdown;
   source: "exact" | "graph" | "semantic" | "keyword";
   reason: string;
+  reasoning?: {
+    matchedTerms?: string[];
+    symbolMatches?: Array<{
+      symbol: string;
+      confidence: number;
+      matchType: 'exact' | 'fuzzy' | 'semantic';
+    }>;
+    graphPosition?: {
+      hops: number;
+      relationship: string;
+    };
+  };
 }
 
 export interface SearchScoreBreakdown {

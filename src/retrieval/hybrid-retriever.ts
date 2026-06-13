@@ -41,7 +41,11 @@ export class HybridRetriever {
     const mode = resolveContextMode(query.query, query.mode);
     const fused = fuseHits(keywordHits, semanticResult.hits).map((hit) => applyModeBoost(hit, mode, query.query));
     const reranked = await rerankWithGraph(fused, query, mode, { graphStore: this.options.graphStore });
-    const hits = reranked.filter((hit) => hit.score > 0).slice(0, limit);
+    const hits = reranked
+      .filter((hit) => hit.score > 0)
+      .slice(0, limit)
+      .map((hit) => enrichSearchHit(hit, query.query));
+
     return {
       hits,
       diagnostics: {
@@ -140,4 +144,79 @@ function mergeHit(byChunk: Map<string, SearchHit>, hit: SearchHit): void {
     source: existing.source === hit.source ? existing.source : "graph",
     reason: `${existing.reason}; ${hit.reason}`
   });
+}
+
+function enrichSearchHit(hit: SearchHit, query: string): SearchHit {
+  const reasoning: SearchHit['reasoning'] = {
+    matchedTerms: extractMatchedTerms(hit.chunk.content, query),
+    symbolMatches: []
+  };
+
+  // Symbol matching
+  if (hit.chunk.symbolName) {
+    const matchType = determineMatchType(hit.chunk.symbolName, query);
+    reasoning.symbolMatches!.push({
+      symbol: hit.chunk.symbolName,
+      confidence: hit.score,
+      matchType
+    });
+  }
+
+  // Graph position (if metadata indicates graph traversal)
+  if (hit.scoreBreakdown?.graphAdjustment) {
+    reasoning.graphPosition = {
+      hops: Math.abs(hit.scoreBreakdown.graphAdjustment) > 0.5 ? 2 : 1,
+      relationship: hit.source === 'graph' ? 'graph-reranked' : 'direct-match'
+    };
+  }
+
+  // Generate human-readable reason
+  const humanReason = generateHumanReason(reasoning, hit);
+  const reason = mergeReasonEvidence(humanReason, hit.reason);
+
+  return { ...hit, reason, reasoning };
+}
+
+function mergeReasonEvidence(humanReason: string, originalReason: string): string {
+  if (!originalReason || originalReason === humanReason) return humanReason;
+  if (originalReason.includes(humanReason)) return originalReason;
+  return `${humanReason}; ${originalReason}`;
+}
+
+function extractMatchedTerms(content: string, query: string): string[] {
+  const queryTerms = query.toLowerCase().split(/\s+/);
+  const contentLower = content.toLowerCase();
+
+  return queryTerms.filter(term =>
+    term.length > 2 && contentLower.includes(term)
+  );
+}
+
+function determineMatchType(symbol: string, query: string): 'exact' | 'fuzzy' | 'semantic' {
+  const symbolLower = symbol.toLowerCase();
+  const queryLower = query.toLowerCase();
+
+  if (symbolLower === queryLower) return 'exact';
+  if (symbolLower.includes(queryLower) || queryLower.includes(symbolLower)) return 'fuzzy';
+  return 'semantic';
+}
+
+function generateHumanReason(reasoning: SearchHit['reasoning'], hit: SearchHit): string {
+  const parts: string[] = [];
+
+  if (reasoning?.symbolMatches && reasoning.symbolMatches.length > 0) {
+    const match = reasoning.symbolMatches[0];
+    parts.push(`${match.matchType} match: ${match.symbol}`);
+  }
+
+  if (reasoning?.matchedTerms && reasoning.matchedTerms.length > 0) {
+    parts.push(`contains: ${reasoning.matchedTerms.join(', ')}`);
+  }
+
+  if (reasoning?.graphPosition) {
+    const rel = reasoning.graphPosition.relationship;
+    parts.push(`${reasoning.graphPosition.hops} hops via ${rel}`);
+  }
+
+  return parts.length > 0 ? parts.join(' • ') : hit.reason || 'semantic similarity';
 }

@@ -237,6 +237,177 @@ ragcode setup-mcp --client codex --print # 仅打印配置，不写文件
 
 `watch_status` 是只读的：它报告是否有活着的 watcher 在保持索引新鲜，但绝不启动 watcher（启动属于 `ragcode watch` 或 OS 服务的职责）。
 
+---
+
+## MCP 工具使用指南
+
+### `get_context` — 面向智能体的上下文包
+
+`get_context` 工具是 RagCode 为 AI 智能体提供的主要接口。它返回经过验证、预算可控的上下文，并附带明确的推理过程和完整性信号。
+
+#### 输出格式（v0.1.6 新增）
+
+**format 参数**控制输出结构：
+
+```typescript
+// JSON 格式（默认，向后兼容）
+{
+  tool: "get_context",
+  input: {
+    query: "认证流程",
+    format: "json",        // 返回 ContextPack 结构
+    budgetChars: 15000
+  }
+}
+
+// Markdown 格式（AI 友好，推荐）
+{
+  tool: "get_context",
+  input: {
+    query: "认证流程",
+    format: "markdown",    // 返回格式化的 Markdown 字符串
+    budgetChars: 15000
+  }
+}
+```
+
+**Markdown 输出**包含：
+- **主要文件章节**：相关性评分和推理说明
+- **代码片段**：按文件分组，带语法高亮
+- **调用关系图**：可视化函数关系
+- **完整性指标**：索引新鲜度、覆盖率
+- **预算使用统计**：已用字符数、包含的片段数
+
+#### 预算强制执行（v0.1.6 修复）
+
+`budgetChars` 参数现在**严格执行**：
+
+- ✅ 输出大小保证 **≤ budgetChars × 1.2**
+- ✅ 单个片段限制在 **150 行**或 **8000 字符**以内
+- ✅ 智能截断于自然边界（函数、类）
+- ✅ 截断警告包含在 `missingEvidence` 中
+
+**实际效果：**典型输出从 3.3MB 降至 ≤18KB（压缩 99%+）。
+
+**示例：**
+```typescript
+// v0.1.6 之前：可能返回 3.3MB
+// v0.1.6 之后：保证 ≤18KB
+await mcp.callTool('get_context', {
+  query: '登录实现',
+  budgetChars: 15000  // 现在会严格遵守！
+});
+```
+
+#### 推理透明度（v0.1.6 新增）
+
+每个搜索结果都包含 **`reason` 字段**解释相关性：
+
+```json
+{
+  "filePath": "src/auth/login.ts",
+  "score": 9.2,
+  "reason": "🎯 关键词匹配：login, authentication • 符号匹配：registerLoginCommand (0.95 置信度) • 图位置：距查询 0 跳"
+}
+```
+
+这帮助智能体理解：
+- **为什么**选择这个文件（关键词 vs 语义匹配）
+- **什么**符号匹配了查询
+- **如何**与其他代码关联（图距离）
+
+#### 完整性指标（v0.1.6 新增）
+
+响应包含**新鲜度和覆盖率信号**：
+
+```json
+{
+  "freshness": {
+    "freshnessScore": 0.95,    // 0.0 = 陈旧, 1.0 = 新鲜
+    "coverageScore": 1.0,      // 0.0 = 不完整, 1.0 = 完整
+    "graphFresh": true,
+    "semanticFresh": true,
+    "pendingFiles": [],        // 尚未索引的文件
+    "staleFiles": []           // 自上次索引后修改的文件
+  }
+}
+```
+
+**使用这些信号**判断结果是否可能不完整：
+- `freshnessScore < 0.8` → 运行 `ragcode index <repoRoot>` 刷新
+- `pendingFiles.length > 100` → 大量代码尚未索引
+- `staleFiles.length > 10` → 最近的更改未反映在结果中
+
+#### 已知限制
+
+⚠️ **中文语义搜索质量有限**
+
+中文查询可能返回翻译文件（locales/*.json）而非代码实现。
+
+**解决方法 — 使用英文或精确符号名：**
+
+```typescript
+// ❌ 避免：通用中文查询
+await mcp.callTool('get_context', {
+  query: '登录功能的实现'  // 可能返回 locales/auth.json
+});
+
+// ✅ 使用：英文查询
+await mcp.callTool('get_context', {
+  query: 'login implementation'  // 返回 src/auth/login.ts
+});
+
+// ✅ 使用：精确符号名
+await mcp.callTool('get_context', {
+  query: 'registerLoginCommand'  // 精确匹配
+});
+```
+
+**根本原因：**语义嵌入模型对中文语言支持有限。这已作为 P1 增强项跟踪在未来版本中。
+
+⚠️ **大型仓库索引不完整**
+
+当 `pendingFileCount` 较高时，结果可能无法覆盖整个代码库：
+- 检查响应中的 `freshness.pendingFiles` 数量
+- 运行 `ragcode index <repoRoot>` 继续索引
+- 使用 `ragcode status <repoRoot>` 监控进度
+
+#### 完整示例
+
+```typescript
+// MCP 客户端调用 get_context
+const result = await mcp.callTool('get_context', {
+  query: '认证流程',
+  format: 'markdown',
+  budgetChars: 15000,
+  mode: 'debug'  // 可选：debug, feature, refactor, review, explain
+});
+
+// Markdown 格式返回
+{
+  content: "## 认证流程 (high confidence)\n\n### 主要文件\n...",
+  metadata: {
+    confidence: "high",
+    totalSnippets: 5,
+    budgetUsed: 14500,
+    freshnessScore: 0.95
+  }
+}
+
+// JSON 格式返回 ContextPack（与 v0.1.5 相同）
+{
+  query: "认证流程",
+  brief: "...",
+  confidence: "high",
+  snippets: [...],
+  ownerChain: [...],
+  freshness: {...},
+  missingEvidence: [...]
+}
+```
+
+---
+
 ### Web 仪表盘（观测与调试）
 
 仪表盘是 RagCode 的可观测面板——图可视化、搜索调试、上下文包检视、监听器监控，以及一个带逐字段来源标注和密钥脱敏的运行时配置视图。配置与设置仍然留在终端中完成。

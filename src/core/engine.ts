@@ -2,6 +2,7 @@ import path from "node:path";
 import type { ContextEngine, EmbeddingProvider, GraphStore, SemanticStore } from "./contracts.js";
 import type { ContextPack, ContextRequest, DiffReview, FreshnessReport, GraphEdge, ImpactAnalysis, IndexRefreshOptions, IndexStatus, OwnerCandidate, ProjectIdentity, RelatedTests, ReuseCandidateReport, ReuseCandidateRequest, RepoIndex, SearchHit, SearchQuery, SymbolNode, TopologyMap, TopologyMapRequest, TraceFlow, VerifiedCodeSubgraph, VerifiedSubgraphRequest, WatcherEventOptions, WatcherState, WorkspaceHint, WorkspaceSession } from "./types.js";
 import { ContextBuilder } from "../context/context-builder.js";
+import { assessCompleteness } from "../context/completeness-scorer.js";
 import { createGraphRuntimeFromEnv } from "../config/graph-runtime.js";
 import { createSemanticRuntimeFromEnv } from "../config/semantic-runtime.js";
 import { InMemoryGraphStore } from "../graph/in-memory-graph-store.js";
@@ -163,6 +164,10 @@ export class RagCodeEngine implements ContextEngine {
     const normalized = { ...request, repoRoot: scope.activeRepoRoot, projectId: scope.activeProjectId };
     const { hits, freshness } = await this.searchWithFreshness(normalized, scope);
     const edges = filterFreshEdges(await this.graphStore.getEdges(normalized.repoRoot), freshness);
+
+    // Assess index completeness
+    const completeness = await assessCompleteness(this.graphStore, scope.activeRepoRoot);
+
     return this.contextBuilder.build(normalized, hits, edges, {
       projectId: scope.activeProjectId,
       repoRoot: scope.activeRepoRoot,
@@ -180,7 +185,8 @@ export class RagCodeEngine implements ContextEngine {
       skippedFiles: freshness.skippedFiles,
       dirtyFiles: freshness.dirtyFiles,
       burstMode: freshness.burstMode,
-      droppedEvents: freshness.droppedEvents
+      droppedEvents: freshness.droppedEvents,
+      completeness
     });
   }
 

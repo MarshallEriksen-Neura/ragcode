@@ -21,6 +21,7 @@ import { runInitConfig } from "../../scripts/init-config.js";
 import { printInitOnboardingSummary, runInitOnboarding } from "./init-onboarding.js";
 import { parseSetupMcpArgs, setupMCP } from "../../scripts/setup-mcp.js";
 import { runUpdate } from "./update.js";
+import { truncateContextPack } from "../context/truncate-context-pack.js";
 
 loadDotEnv();
 
@@ -127,7 +128,17 @@ program
   .description("Build a context pack")
   .action(async (repoRoot: string, query: string, options: { budget?: number; mode?: "auto" | "debug" | "feature" | "refactor" | "review" | "explain" }) => {
     await withEngine(repoRoot, async (engine) => {
-      const context = await engine.getContext({ repoRoot, query, budgetChars: options.budget, mode: options.mode });
+      let context = await engine.getContext({ repoRoot, query, budgetChars: options.budget, mode: options.mode });
+
+      // Apply budget enforcement
+      const serialized = JSON.stringify(context);
+      const actualSize = serialized.length;
+      const budget = options.budget ?? 18_000;
+
+      if (actualSize > budget * 1.2) {
+        context = truncateContextPack(context, budget);
+      }
+
       console.log(JSON.stringify(context, null, 2));
     });
   });

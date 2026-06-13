@@ -4,6 +4,8 @@ import { buildExplainImpactReport } from "../subgraph/impact-explainer.js";
 import { expandNode, parseNodeRef } from "../subgraph/node-expander.js";
 import { applyExplainImpactOutputPreset, applySubgraphOutputPreset } from "../subgraph/output-preset.js";
 import { readWatcherLiveness } from "../watch/watcher-liveness.js";
+import { formatContextAsMarkdown } from "../context/markdown-formatter.js";
+import { truncateContextPack } from "../context/truncate-context-pack.js";
 
 export const ToolNameSchema = z.enum([
   "index_repo",
@@ -44,7 +46,10 @@ export const RecordFileEventsInput = z.object({
   maxDirtyFiles: z.number().int().positive().optional()
 });
 export const SearchCodeInput = z.object({ repoRoot: z.string().min(1).optional(), workspace: WorkspaceHintInput, query: z.string().min(1), limit: z.number().int().positive().optional(), mode: ContextModeSchema.optional() });
-export const GetContextInput = SearchCodeInput.extend({ budgetChars: z.number().int().positive().optional() });
+export const GetContextInput = SearchCodeInput.extend({
+  budgetChars: z.number().int().positive().optional(),
+  format: z.enum(['json', 'markdown']).optional().default('json')
+});
 export const TopologyMapInput = SearchCodeInput.extend({ budgetChars: z.number().int().positive().optional(), maxEdges: z.number().int().positive().optional() });
 export const FindSymbolInput = z.object({ repoRoot: z.string().min(1).optional(), workspace: WorkspaceHintInput, name: z.string().min(1) });
 export const ExplainFileInput = z.object({ repoRoot: z.string().min(1).optional(), workspace: WorkspaceHintInput, filePath: z.string().min(1) });
@@ -240,7 +245,31 @@ export async function callTool(engine: ContextEngine, name: ToolName, rawInput: 
     }
     case "get_context": {
       const input = GetContextInput.parse(rawInput);
-      return engine.getContext(input);
+      let pack = await engine.getContext(input);
+
+      // Validate final size and truncate if needed
+      const serialized = JSON.stringify(pack);
+      const actualSize = serialized.length;
+      const budget = input.budgetChars ?? 18_000; // DEFAULT_BUDGET_CHARS from context-builder
+
+      if (actualSize > budget * 1.2) {
+        pack = truncateContextPack(pack, budget);
+      }
+
+      // Format conversion
+      if (input.format === 'markdown') {
+        return {
+          content: formatContextAsMarkdown(pack),
+          metadata: {
+            query: pack.query,
+            confidence: pack.confidence,
+            snippetCount: pack.snippets.length,
+            format: 'markdown'
+          }
+        };
+      }
+
+      return pack;
     }
     case "topology_map": {
       const input = TopologyMapInput.parse(rawInput);
@@ -318,6 +347,8 @@ export async function callTool(engine: ContextEngine, name: ToolName, rawInput: 
     }
   }
 }
+
+// truncateContextPack moved to src/context/truncate-context-pack.ts for reuse across CLI and MCP
 
 function zodToJsonShape(schema: z.ZodType): Record<string, unknown> {
   // Keep this intentionally lightweight for the foundation. The SDK server can

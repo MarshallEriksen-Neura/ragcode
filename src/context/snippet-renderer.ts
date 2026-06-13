@@ -3,6 +3,8 @@ import { chooseExpansion } from "./expansion-policy.js";
 import { skeletonizeChunk } from "./skeletonizer.js";
 
 const FOCUS_WINDOW_LINES = 28;
+const MAX_SNIPPET_LINES = 150;
+const MAX_SNIPPET_CHARS = 8000;
 
 export function renderSnippet(hit: SearchHit, query: string, mode: Exclude<ContextMode, "auto">): ContextSnippet {
   const originalLineCount = lineCount(hit.chunk.content);
@@ -26,11 +28,47 @@ export function renderSnippet(hit: SearchHit, query: string, mode: Exclude<Conte
 }
 
 function renderContent(hit: SearchHit, expansionLevel: ContextSnippet["expansionLevel"], focusLine?: number): string {
-  if (expansionLevel === "full_body") return hit.chunk.content;
-  if (expansionLevel === "skeleton") return skeletonizeChunk(hit.chunk);
-  if (expansionLevel === "file_card") return fileCard(hit);
-  if (focusLine !== undefined) return focusedWindow(hit.chunk.content, focusLine);
-  return hit.chunk.content;
+  let content: string;
+  if (expansionLevel === "full_body") content = hit.chunk.content;
+  else if (expansionLevel === "skeleton") content = skeletonizeChunk(hit.chunk);
+  else if (expansionLevel === "file_card") content = fileCard(hit);
+  else if (focusLine !== undefined) content = focusedWindow(hit.chunk.content, focusLine);
+  else content = hit.chunk.content;
+
+  return truncateContent(content, MAX_SNIPPET_LINES, MAX_SNIPPET_CHARS);
+}
+
+function truncateContent(content: string, maxLines: number, maxChars: number): string {
+  // Check character limit first
+  if (content.length > maxChars) {
+    return content.substring(0, maxChars) + '\n... [truncated: +' + (content.length - maxChars) + ' chars]';
+  }
+
+  // Check line limit
+  const lines = content.split(/\r?\n/);
+  if (lines.length <= maxLines) {
+    return content;
+  }
+
+  // Try smart truncation: find function/class boundaries within ±10 lines of limit
+  const targetLine = maxLines;
+  let bestCutLine = targetLine;
+
+  for (let i = Math.max(0, targetLine - 10); i <= Math.min(lines.length - 1, targetLine + 10); i++) {
+    const line = lines[i]?.trim() || '';
+    // Look for function/class/method endings (closing braces at start of line)
+    if (line === '}' || line.startsWith('} ') || line === '};') {
+      bestCutLine = i + 1;
+      break;
+    }
+  }
+
+  // If we found a better boundary, use it; otherwise use the limit
+  const cutLine = bestCutLine;
+  const truncatedLines = lines.slice(0, cutLine);
+  const omittedCount = lines.length - cutLine;
+
+  return truncatedLines.join('\n') + '\n... [truncated: +' + omittedCount + ' lines]';
 }
 
 function focusedWindow(content: string, focusLine: number): string {

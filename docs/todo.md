@@ -1,166 +1,485 @@
-# TODO: Large-Repository Indexing Hardening
+# RagCode 优化实施计划
 
-This list records issues exposed while trying to start RagCode for `D:\20260302170616\jizhichuangsi`, a repository root that recursively included the large `lobehub` tree.
+> 基于实际使用场景的改进建议与代码现状分析
+> 创建时间: 2026-06-13
+> 代码审查: 2026-06-13
 
-## Observed Evidence
+---
 
-- `jizhichuangsi` had roughly 11.6k RagCode-indexable files, with about 11.5k under `lobehub`.
-- The repository started from an empty RagCode index: `fileCount: 0`, `chunkCount: 0`, `symbolCount: 0`, `edgeCount: 0`, and about 11.5k pending files.
-- `ragcode index` and watcher-triggered indexing hit Node heap failures around the default 4 GB heap limit.
-- Directly launching Node with `--max-old-space-size=8192` allowed the process to exceed the default limit, but the first full index still made no durable progress in `graph.sqlite` before stalling.
-- Non-TTY logs were mostly empty, making it hard to tell whether indexing was in scan, analysis, graph write, or semantic write.
-- OOM watcher attempts left stale watcher state files (`.ragcode/watcher.lock`, `.ragcode/watcher-heartbeat.json`).
+## 📊 现状分析（Code Review）
 
-## Validated Corrections
+### 当前架构
 
-- The empty-index batch failure is real: `src/indexing/indexer.ts` sets `fullReindex = existingFiles.length === 0` and then drops `affectedFiles`, so watcher `maxBatchFiles` cannot help during first bootstrap.
-- The memory problem is broader than SQLite writes. `src/indexing/indexer.ts` builds a full `RepoIndex` in memory before `graphStore.upsertIndex(index)`. `src/graph/sqlite-graph-store.ts` then writes that full index in one transaction, which is another risk, but the observed run did not prove SQLite write was the only OOM point.
-- Existing `upsertIndex` already has an incremental path for `fullReindex: false` plus affected/refreshed files. First implementation should try to reuse that path before adding new graph-store batch APIs.
-- `watch --poll` has a concrete low-cost bug: `src/watch/watch-daemon.ts` passes `pollIntervalMs` to chokidar without guaranteeing a numeric value.
-- Watcher liveness is partially hardened already: `acquireWatcherLock(...)` can reclaim dead locks on next acquisition, but read-only status does not clean stale state and normal `stop()` is not reached after OOM/fatal exits.
+**数据流**:
+```
+MCP Tool (tools.ts)
+  → Engine.getContext() (engine.ts:161)
+    → ContextBuilder.build() (context-builder.ts:29)
+      → selectDiverseSnippets() (context-builder.ts:60)
+        → 返回 ContextPack
+  → 直接返回给 MCP 客户端（无截断保护）
+```
 
-## Revised Implementation Order
+**关键发现**:
 
-| Order | Task | Rationale |
-| --- | --- | --- |
-| 1 | Fix watcher polling defaults and stale-state diagnostics | Small, high-confidence fix; makes watcher usable and status less misleading. |
-| 2 | Implement batch bootstrap MVP for empty indexes | Core fix: empty indexes must honor file batches instead of forcing full reindex. |
-| 3 | Add memory guardrails and JSONL progress | Makes batch bootstrap observable and prevents silent OOM loops. |
-| 4 | Decouple service install from full indexing | Avoids turning service setup into a blocking large-repo bootstrap. |
-| 5 | Add `ragcode estimate` and root-selection warnings | Prevents bad root choices; useful UX, but not the crash root cause. |
-| 6 | Decouple graph and semantic generations | Important robustness follow-up after batch graph bootstrap is stable. |
-| 7 | Add configurable include/exclude policy | Useful once bootstrap and status semantics are solid. |
+1. **budgetChars 有实现但不完整**（context-builder.ts:30-84）
+   ```typescript
+   const budgetChars = request.budgetChars ?? DEFAULT_BUDGET_CHARS; // 默认 18,000
+   if (usedChars + candidate.cost > budgetChars) return; // 只控制 snippet 数量
+   ```
 
-## P0: Fix Watcher Polling And Stale-State Diagnostics
+   ✅ **做了**: 控制选择多少个 snippet
+   ❌ **没做**:
+   - 单个 `snippet.content` 可以无限大（整个文件）
+   - `estimateSnippetCost()` 只是简单字符串长度，未考虑 JSON 序列化开销
+   - 元数据（ownerChain, topology, relationships）不计入 budget
+   - MCP 层直接返回，无二次检查
 
-- Give polling mode a numeric default interval instead of passing `undefined` to chokidar.
-- Validate `pollIntervalMs`, `awaitWriteFinishMs`, and related timing options at the CLI/options boundary.
-- Keep `watch_status` read-only, but surface actionable stale-state diagnostics:
-  - live watcher
-  - stale heartbeat
-  - dead lock holder
-  - heartbeat without lock
-  - next acquisition will reclaim stale lock
-- Consider a separate explicit cleanup command for stale watcher state; do not mutate status reads unexpectedly.
-- Ensure OOM/fatal exits leave a useful death reason or last progress record when possible.
+2. **snippet 内容渲染**（snippet-renderer.ts:7-34）
+   ```typescript
+   function renderContent(hit, expansionLevel, focusLine) {
+     if (expansionLevel === "full_body") return hit.chunk.content; // 可能几万行
+     if (expansionLevel === "skeleton") return skeletonizeChunk(hit.chunk);
+     if (expansionLevel === "file_card") return fileCard(hit);
+     if (focusLine !== undefined) return focusedWindow(content, focusLine); // 28行窗口
+     return hit.chunk.content; // 默认返回全部
+   }
+   ```
 
-Owner notes:
+   ✅ **做了**: 支持多种 expansion level
+   ❌ **问题**:
+   - `full_body` 和默认分支返回完整内容
+   - 没有单个 snippet 的大小上限
+   - `focusedWindow` 只在有 focusLine 时生效
 
-- `src/watch/watch-daemon.ts` passes `interval: this.options.pollIntervalMs` directly to chokidar.
-- `src/watch/watch-daemon.ts` clears heartbeat/lock only on normal `stop()` with an owned `lockHandle`.
-- `src/watch/watcher-liveness.ts` has stale lock reclaim logic in `acquireWatcherLock(...)`, but `readWatcherLiveness(...)` is read-only.
+3. **ContextPack 结构**（types.ts:269-286）
+   ```typescript
+   interface ContextPack {
+     snippets: ContextSnippet[];      // 主要数据
+     ownerChain: OwnerNode[];         // 元数据
+     topology: TopologyEdge[];        // 元数据（最多12条）
+     relationships: RelationshipEvidence[]; // 元数据（最多12条）
+     budgetChars: number;             // 输入预算
+     usedChars: number;               // 只计算了 snippet 选择时的成本
+   }
+   ```
 
-## P0: Batch Bootstrap MVP For Empty Indexes
+   `usedChars` **只反映了 snippet 选择阶段的累计**，不是最终 JSON 大小。
 
-- Allow `affectedFiles` to work even when `existingFiles.length === 0`.
-- Introduce an explicit partial-bootstrap mode instead of treating empty indexes as all-or-nothing full reindex.
-- Bootstrap flow should be batch-scoped end to end:
-  - scan or select a file inventory
-  - split file paths into bounded batches
-  - scan/analyze/chunk one batch
-  - write that batch with existing incremental `upsertIndex` semantics where possible
-  - leave unprocessed files pending
-- First try reusing `graphStore.upsertIndex(...)` with `fullReindex: false` and batch `affectedFiles`; add new graph-store batch APIs only if current semantics are insufficient.
-- Define status semantics for partial bootstrap so retrieval can know what is trustworthy.
+### 根本原因
 
-Owner notes:
+**为什么会 3.3MB**:
+1. 单个 `snippet.content` 没有大小限制（可能是整个 10,000 行的文件）
+2. `estimateSnippetCost()` 低估了实际大小（未考虑 JSON 开销）
+3. 多个大文件的 snippet 累加后超过预算
+4. MCP 工具层无二次检查，直接序列化返回
 
-- `src/indexing/indexer.ts` currently sets `affectedPaths = fullReindex ? undefined : normalizedAffectedFiles(...)`.
-- `src/watch/index-scheduler.ts` already chooses dirty batches via `dirtyFilesForBatch(...)`, but the indexer discards the batch during empty-index bootstrap.
-- Do not merely slice `files` after full `chunkFiles(...)`; the scan/analyze/chunk stages must also be batch-scoped or memory pressure remains.
+---
 
-## P0: Memory Guardrails And Durable Progress
+## 🚨 P0 - 必须立即修复（影响可用性）
 
-- Track heap and RSS during scan, analyze, graph write, and semantic write phases.
-- Abort gracefully before OOM with an actionable error and a resumable checkpoint.
-- Emit JSONL progress in non-TTY mode for `ragcode index`, watcher, and service contexts.
-- Persist last progress to `.ragcode/index-state.json` so crashed background runs can be diagnosed after exit.
-- Support graph-only bootstrap or semantic deferral when semantic indexing would exceed memory limits.
+### 1. 严格遵守 budgetChars 限制
 
-Candidate settings:
+**实现方案**（3个文件修改）:
 
-- `RAGCODE_MAX_INDEX_FILES_PER_BATCH`
-- `RAGCODE_MAX_ANALYSIS_MEMORY_MB`
-- `RAGCODE_DISABLE_SEMANTIC_ON_BOOTSTRAP`
-- `RAGCODE_BOOTSTRAP_GRAPH_ONLY`
+#### A. snippet-renderer.ts - 添加内容截断
+```typescript
+// 新增：单个 snippet 最大限制
+const MAX_SNIPPET_LINES = 150;
+const MAX_SNIPPET_CHARS = 8000;
 
-Suggested progress phases:
+function renderContent(hit, expansionLevel, focusLine): string {
+  let content = /* ...现有逻辑... */;
 
-- `loading_existing_index`
-- `scanning_inventory`
-- `scanning_batch`
-- `analyzing_batch`
-- `writing_graph_batch`
-- `writing_semantic_batch`
-- `complete`
-- `failed`
+  // 新增：强制截断过大内容
+  return truncateContent(content, MAX_SNIPPET_LINES, MAX_SNIPPET_CHARS);
+}
 
-## P1: Decouple Service Install From Full Indexing
+function truncateContent(content: string, maxLines: number, maxChars: number): string {
+  if (content.length <= maxChars) {
+    const lines = content.split(/\r?\n/);
+    if (lines.length <= maxLines) return content;
+    return lines.slice(0, maxLines).join('\n') + '\n... [truncated]';
+  }
+  return content.substring(0, maxChars) + '\n... [truncated]';
+}
+```
 
-- `ragcode service install` should register/start the service without synchronously doing a full index by default.
-- Add explicit flags such as `--index-now`, `--no-index-now`, and `--bootstrap-batch-size <n>`.
-- Start the service quickly, then let watcher bootstrap batches run in the background.
-- Preserve `--no-index-on-start` for boot safety, but do not make install depend on a successful full index.
+#### B. context-builder.ts - 更准确的成本估算
+```typescript
+function estimateSnippetCost(snippet: ContextSnippet): number {
+  // 考虑 JSON 序列化开销（引号、转义、字段名）
+  const jsonOverhead = 1.3; // 约增加 30%
+  const baseSize = snippet.filePath.length + snippet.reason.length + snippet.content.length;
+  const fieldOverhead = 200;
 
-Owner notes:
+  return Math.ceil(baseSize * jsonOverhead) + fieldOverhead;
+}
+```
 
-- `src/cli/index.ts` currently indexes once up front during service installation so the service can start with `--no-index-on-start`.
+#### C. tools.ts - 添加最终输出验证
+```typescript
+case "get_context": {
+  const input = GetContextInput.parse(rawInput);
+  const pack = await engine.getContext(input);
 
-## P1: Add Preflight Estimation And Root Selection
+  // 新增：验证最终大小
+  const serialized = JSON.stringify(pack);
+  const actualSize = serialized.length;
+  const budget = input.budgetChars ?? 18000;
 
-- Add a read-only command such as `ragcode estimate <repoRoot>`.
-- Report indexable file count, extension distribution, top directories, largest files, nested git roots, and whether the selected root looks suspicious.
-- Warn when the selected root has no tracked files but contains a large nested project.
-- Suggest safer roots or exclude patterns before starting a large first index.
+  if (actualSize > budget * 1.2) {
+    return truncateContextPack(pack, budget);
+  }
 
-Useful output fields:
+  return pack;
+}
 
-- `indexableFiles`
-- `skippedFiles`
-- `topDirectories`
-- `extensions`
-- `nestedGitRoots`
-- `estimatedChunks`
-- `recommendedMode`
-- `recommendedCommand`
+function truncateContextPack(pack: ContextPack, budget: number): ContextPack {
+  const truncated = { ...pack };
+  let currentSize = JSON.stringify({ ...pack, snippets: [] }).length;
 
-## P2: Decouple Graph And Semantic Generations
+  const sortedSnippets = [...pack.snippets].sort((a, b) => b.score - a.score);
+  truncated.snippets = [];
 
-- Treat graph index as the durable source of truth.
-- Treat semantic index as a rebuildable cache with its own generation, freshness, and last error.
-- Write semantic rebuilds to temporary tables/directories and atomically swap on success.
-- Keep graph search usable when semantic indexing fails.
+  for (const snippet of sortedSnippets) {
+    const snippetSize = JSON.stringify(snippet).length;
+    if (currentSize + snippetSize > budget * 0.9) break;
 
-Status fields to add:
+    truncated.snippets.push(snippet);
+    currentSize += snippetSize;
+  }
 
-- `graphFresh`
-- `semanticFresh`
-- `semanticGeneration`
-- `semanticRebuildNeeded`
-- `semanticLastError`
+  truncated.missingEvidence = [
+    ...pack.missingEvidence,
+    `Output truncated: ${truncated.snippets.length}/${pack.snippets.length} snippets to fit ${budget} char budget.`
+  ];
 
-## P2: Add Project-Level Include/Exclude Configuration
+  return truncated;
+}
+```
 
-- Support project-local ignore rules in `.ragcode/config.json`.
-- Allow excluding large generated, locale, snapshot, migration-meta, fixture, or documentation-heavy subtrees.
-- Allow separate switches for tests, docs, JSON, generated files, and max file size.
+**验证标准**:
+- [ ] `JSON.stringify(result).length ≤ budgetChars * 1.2`
+- [ ] 单个 `snippet.content ≤ 8000 chars` 或 `150 lines`
+- [ ] 超出时 `missingEvidence` 包含截断说明
+- [ ] 添加测试：`tests/budget-enforcement.test.ts`
 
-Candidate config fields:
+**预计工时**: 1.5 天
 
-- `includeGlobs`
-- `excludeGlobs`
-- `excludeDirs`
-- `maxFileBytes`
-- `indexTests`
-- `indexDocs`
-- `indexJson`
+---
 
-## Acceptance Criteria
+### 2. 添加 Markdown 输出格式
 
-- A repository with 10k+ indexable files can complete first bootstrap without exceeding configured memory limits.
-- Empty-index bootstrap can index in batches and produce usable partial results before the whole repo is complete.
-- `watch --max-batch-files` works for both empty and non-empty indexes.
-- Existing incremental `upsertIndex` is reused where possible; new graph-store batch APIs are introduced only if the existing contract cannot represent partial bootstrap safely.
-- Background indexing emits enough progress to identify the failing phase.
-- Service install returns quickly and does not hide a long full-index operation.
-- OOM/fatal exits leave clear diagnostic state and no misleading live watcher status.
+**实现方案**:
+
+#### A. 新增 src/context/markdown-formatter.ts
+```typescript
+import type { ContextPack } from "../core/types.js";
+
+export function formatContextAsMarkdown(pack: ContextPack): string {
+  const sections: string[] = [];
+
+  // Header
+  sections.push(`## ${pack.query}`);
+  sections.push(`**Confidence**: ${pack.confidence} | **Mode**: ${pack.mode}`);
+  sections.push('');
+  sections.push(pack.brief);
+  sections.push('');
+
+  // Primary Files
+  if (pack.ownerChain.length > 0) {
+    sections.push(`### 📁 Primary Files (${pack.ownerChain.length})`);
+    sections.push('');
+    pack.ownerChain.slice(0, 5).forEach((owner, i) => {
+      sections.push(`${i + 1}. **[${owner.filePath}](${owner.filePath})** (score: ${owner.score.toFixed(1)})`);
+      sections.push(`   ${owner.reason}`);
+      if (owner.symbols.length > 0) {
+        const symbolNames = owner.symbols.slice(0, 3).map(s => s.name).join(', ');
+        sections.push(`   Symbols: ${symbolNames}${owner.symbols.length > 3 ? '...' : ''}`);
+      }
+      sections.push('');
+    });
+  }
+
+  // Code Snippets
+  if (pack.snippets.length > 0) {
+    sections.push(`### 💻 Code Snippets (${pack.snippets.length})`);
+    sections.push('');
+
+    const byFile = groupByFile(pack.snippets);
+    for (const [filePath, snippets] of byFile.entries()) {
+      sections.push(`#### [${filePath}](${filePath})`);
+      sections.push('');
+
+      snippets.forEach(snippet => {
+        const lang = detectLanguage(filePath);
+        sections.push(`**${snippet.role}** (L${snippet.startLine}-L${snippet.endLine})`);
+        sections.push(`\`\`\`${lang}`);
+        sections.push(snippet.content);
+        sections.push('```');
+        sections.push('');
+      });
+    }
+  }
+
+  // Topology
+  if (pack.topology.length > 0) {
+    sections.push('### 🔗 Call Graph');
+    sections.push('');
+    sections.push('```');
+    pack.topology.slice(0, 10).forEach(edge => {
+      sections.push(`${edge.from} --${edge.edge}--> ${edge.to}`);
+    });
+    sections.push('```');
+    sections.push('');
+  }
+
+  // Warnings
+  if (pack.missingEvidence.length > 0) {
+    sections.push('### ⚠️ Limitations');
+    sections.push('');
+    pack.missingEvidence.forEach(msg => sections.push(`- ${msg}`));
+    sections.push('');
+  }
+
+  // Footer
+  sections.push('---');
+  sections.push(`*${pack.usedChars.toLocaleString()}/${pack.budgetChars.toLocaleString()} chars used*`);
+
+  return sections.join('\n');
+}
+```
+
+#### B. 修改 tools.ts
+```typescript
+export const GetContextInput = SearchCodeInput.extend({
+  budgetChars: z.number().int().positive().optional(),
+  format: z.enum(['json', 'markdown']).optional()
+});
+
+case "get_context": {
+  const input = GetContextInput.parse(rawInput);
+  const pack = await engine.getContext(input);
+
+  if (input.format === 'markdown') {
+    return {
+      format: 'markdown',
+      content: formatContextAsMarkdown(pack),
+      metadata: {
+        query: pack.query,
+        confidence: pack.confidence,
+        snippetCount: pack.snippets.length
+      }
+    };
+  }
+
+  return truncateIfNeeded(pack, input.budgetChars);
+}
+```
+
+**验证标准**:
+- [ ] Markdown 正确渲染
+- [ ] 代码块语法高亮
+- [ ] 文件路径可点击
+- [ ] 保持 JSON 向后兼容
+
+**预计工时**: 1 天
+
+---
+
+## 🔥 P1 - 重要改进（提升体验）
+
+### 3. 增强相关性推理链
+
+**扩展 SearchHit 类型**:
+```typescript
+export interface SearchHit {
+  // ...现有字段
+  reasoning?: {
+    matchedTerms?: string[];
+    symbolMatches?: Array<{
+      symbol: string;
+      confidence: number;
+      matchType: 'exact' | 'fuzzy' | 'semantic';
+    }>;
+    graphPosition?: {
+      hops: number;
+      relationship: string;
+    };
+  };
+}
+```
+
+**在 HybridRetriever 中生成**:
+```typescript
+function enrichReason(hit: SearchHit, query: string): SearchHit {
+  const reasoning = {
+    matchedTerms: extractMatchedTerms(hit.chunk.content, query),
+    symbolMatches: hit.chunk.symbolName ? [{
+      symbol: hit.chunk.symbolName,
+      confidence: calculateConfidence(hit),
+      matchType: determineMatchType(hit)
+    }] : []
+  };
+
+  const humanReason = generateHumanReason(reasoning, hit);
+
+  return { ...hit, reason: humanReason, reasoning };
+}
+```
+
+**预计工时**: 2 天
+
+---
+
+### 4. 索引覆盖率指标
+
+**新增 completeness-scorer.ts**:
+```typescript
+export function assessCompleteness(
+  freshness: FreshnessReport,
+  snippets: ContextSnippet[],
+  query: string
+): CompletenessAssessment {
+  const likelyRelevantPending = freshness.pendingFiles.filter(path =>
+    isLikelyRelevant(path, query)
+  ).length;
+
+  if (freshness.graphFresh && freshness.pendingFiles.length === 0) {
+    return {
+      level: 'high',
+      explanation: '✅ All files indexed. Results complete.'
+    };
+  } else if (likelyRelevantPending > 5) {
+    return {
+      level: 'low',
+      explanation: `🔴 ${likelyRelevantPending} relevant files pending.`,
+      recommendation: 'Run `ragcode refresh` and retry.'
+    };
+  }
+  // ...
+}
+```
+
+**集成到 ContextBuilder**:
+```typescript
+const completeness = assessCompleteness(freshness, snippets, request.query);
+
+return {
+  // ...现有字段
+  completeness,
+  missingEvidence: [
+    ...missingEvidenceFor(snippets, metadata),
+    completeness.explanation
+  ]
+};
+```
+
+**预计工时**: 1 天
+
+---
+
+## 💡 P2 - 加分项（提升质量）
+
+### 5. 智能代码片段提取
+
+**改进 expansion-policy.ts**:
+```typescript
+export function chooseExpansion(chunk: CodeChunk, query: string, mode: ContextMode) {
+  const lineCount = chunk.content.split(/\r?\n/).length;
+
+  // 超大文件强制 skeleton 或 focused
+  if (lineCount > 200) {
+    const focusLine = findBestFocusLine(chunk, query);
+    return focusLine
+      ? { expansionLevel: "focused_body", focusLine }
+      : { expansionLevel: "skeleton" };
+  }
+
+  // 中等文件优先 focused
+  if (lineCount > 80) {
+    const focusLine = findBestFocusLine(chunk, query);
+    if (focusLine) {
+      return { expansionLevel: "focused_body", focusLine };
+    }
+  }
+
+  // ...原有逻辑
+}
+```
+
+**预计工时**: 1.5 天
+
+---
+
+## 🚀 P3 - 长期规划
+
+### 6. 分页与扩展接口
+
+新增 `expand_context` MCP 工具，支持查看完整结果或深入特定文件。
+
+**预计工时**: 3 天
+
+---
+
+## 📊 优先级总结
+
+| 优先级 | 任务 | 工时 | 依赖 | ROI |
+|--------|------|------|------|-----|
+| **P0.1** | budgetChars 强制 | 1.5d | 无 | ⭐⭐⭐⭐⭐ |
+| **P0.2** | Markdown 格式 | 1d | 无 | ⭐⭐⭐⭐⭐ |
+| **P1.3** | 推理链 | 2d | 无 | ⭐⭐⭐⭐ |
+| **P1.4** | 覆盖率指标 | 1d | 无 | ⭐⭐⭐⭐ |
+| **P2.5** | 智能片段 | 1.5d | 无 | ⭐⭐⭐ |
+| **P3.6** | 分页接口 | 3d | P0.1 | ⭐⭐ |
+
+**建议迭代**:
+1. **Sprint 1 (1周)**: P0 - 修复可用性
+2. **Sprint 2 (1周)**: P1 - 提升透明度
+3. **Sprint 3 (可选)**: P2/P3 - 长期优化
+
+---
+
+## 🧪 验收标准
+
+```typescript
+// 测试 1: Budget 控制
+const result = await getContext({ query: "login", budgetChars: 15000 });
+assert(JSON.stringify(result).length < 15000 * 1.2);
+
+// 测试 2: Markdown 格式
+const md = await getContext({ query: "login", format: "markdown" });
+assert(md.content.includes("```typescript"));
+
+// 测试 3: 推理链
+const detailed = await getContext({ query: "auth" });
+assert(detailed.snippets[0].reasoning?.matchedTerms.length > 0);
+```
+
+---
+
+## 📝 开发日志
+
+### 2026-06-13
+- ✅ 代码审查完成
+- ✅ 识别根本原因
+- 📋 待实施
+
+---
+
+## 🔍 相关文件
+
+**需修改**:
+- `src/context/snippet-renderer.ts`
+- `src/context/context-builder.ts`
+- `src/mcp/tools.ts`
+- `src/core/types.ts`
+
+**需新增**:
+- `src/context/markdown-formatter.ts`
+- `src/context/completeness-scorer.ts`
+
+**需测试**:
+- `tests/budget-enforcement.test.ts`
+- `tests/markdown-format.test.ts`

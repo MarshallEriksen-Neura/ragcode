@@ -1,0 +1,35 @@
+{
+  "mcpServers": {
+    "ragcode": {
+      "command": "npx",
+      "args": [
+        "ragcode-context-engine",
+        "mcp"
+      ],
+      "cwd": "D:\\20260302170616\\ragcode",
+      "env": {
+        "RAGCODE_GRAPH_STORE": "sqlite",
+        "RAGCODE_SQLITE_PATH": "D:\\20260302170616\\ragcode\\.ragcode\\graph.sqlite",
+        "RAGCODE_SEMANTIC_STORE": "lancedb",
+        "RAGCODE_LANCEDB_URI": "D:\\20260302170616\\ragcode\\.ragcode\\lancedb",
+        "RAGCODE_LANCEDB_TABLE": "code_chunks",
+        "RAGCODE_EMBEDDING_PROVIDER": "openai-compatible",
+        "RAGCODE_EMBEDDING_BASE_URL": "http://localhost:11434/v1",
+        "RAGCODE_EMBEDDING_BATCH_SIZE": "64",
+        "RAGCODE_EMBEDDING_CONCURRENCY": "1",
+        "RAGCODE_EMBEDDING_MODEL": "qwen3-embedding:latest",
+        "RAGCODE_EMBEDDING_DIMENSIONS": "4096",
+        "RAGCODE_SEMANTIC_MAX_CHUNKS": "256",
+        "RAGCODE_EMBEDDING_API_KEY": "<redacted>"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "${workspaceFolder}"
+      ]
+    }
+  }
+}
