@@ -1,6 +1,6 @@
 ---
 name: ragcode-context
-description: Route code-understanding, debugging, editing, review, ownership, impact, and test questions through RagCode. Prefer MCP tools (get_context, find_owner, impact_analysis, related_tests, trace_flow, review_diff); fall back to the ragcode CLI when MCP is unavailable. Covers index recovery, embedding configuration, and dashboard-only-for-observation guidance.
+description: Route code-understanding, debugging, editing, review, ownership, impact, and test questions through RagCode. Prefer MCP tools (get_context, find_owner, impact_analysis, related_tests, trace_flow, review_diff); fall back to the ragcode CLI when MCP is unavailable. Covers index recovery, watcher freshness, embedding configuration, service setup, CLI updates, and dashboard-only-for-observation guidance.
 ---
 
 # RagCode Context
@@ -14,7 +14,7 @@ RagCode is a local code-intelligence engine exposed to agents through MCP tools 
 - "What breaks if I change X?" → impact analysis
 - "Which tests cover X?" → related tests
 - "Review this diff" → diff review
-- Index is missing/stale, or embedding/config questions → recovery/config flow below
+- Index is missing/stale, watcher freshness is suspect, or embedding/config questions → recovery/config flow below
 
 ## MCP-first routing
 
@@ -29,6 +29,7 @@ Prefer these MCP tools (server name: `ragcode`):
 | Request/data flow from an entry point | `trace_flow` |
 | Review a diff | `review_diff` |
 | Check index freshness | `index_status` |
+| Check watcher liveness | `watch_status` |
 | (Re)build the index | `index_repo` |
 
 Read `references/mcp-tools.md` for argument details.
@@ -38,6 +39,7 @@ Read `references/mcp-tools.md` for argument details.
 ```bash
 ragcode doctor <repoRoot> --query "smoke query"   # health + config check
 ragcode status <repoRoot>                          # index freshness
+ragcode service status <repoRoot>                  # background watcher service/liveness status
 ragcode context <repoRoot> "<query>"               # context pack
 ragcode owner <repoRoot> "<query>"                 # ownership
 ragcode impact <repoRoot> <fileOrSymbol>           # impact analysis
@@ -57,6 +59,8 @@ Read `references/cli.md` for the full command list.
 - First run: `ragcode init` (offline-first defaults: sqlite + lancedb + deterministic embeddings; no API key needed).
 - Change storage/embedding provider/model/base URL/dimensions: `ragcode configure` (add `--test` to verify the provider).
 - Agent/MCP client config: `ragcode setup-mcp --print` (secrets redacted by default).
+- Background freshness: `ragcode service install <repoRoot>` for a persistent watcher, or `ragcode watch <repoRoot>` for a foreground watcher.
+- CLI update: `ragcode update` when the local RagCode CLI is globally installed.
 
 Never route configuration through the Web dashboard.
 

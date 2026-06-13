@@ -7,6 +7,7 @@ Server name: `ragcode` (stdio). All tools accept `repoRoot` (optional when a wor
 - `index_repo` `{ repoRoot }` — build/refresh the index. Run this first on a new repo.
 - `refresh_index` `{ repoRoot? }` — incremental refresh of dirty files.
 - `index_status` `{ repoRoot? }` — counts, freshness, dirty/pending files. Check before trusting stale answers.
+- `watch_status` `{ repoRoot? }` — read-only watcher liveness and backlog. It never starts a watcher.
 
 ## Primary retrieval tools (prefer these)
 
@@ -23,7 +24,7 @@ Server name: `ragcode` (stdio). All tools accept `repoRoot` (optional when a wor
 - `find_symbol` `{ repoRoot?, name }` — exact symbol lookup.
 - `explain_file` `{ repoRoot?, filePath }` — file card with chunks and symbols.
 - `find_reuse_candidates` `{ repoRoot?, query, limit?, reuseGuard? }` — existing implementations to reuse before writing new code; `reuseGuard: true` hard-blocks confirmed duplicates.
-- `verified_subgraph` / `expand_node` / `topology_map` — verified graph evidence and node expansion under budget.
+- `trace_request_flow` / `explain_impact` / `verified_subgraph` / `expand_node` / `topology_map` — verified graph evidence and node expansion under budget.
 
 ## Recommended flows
 
@@ -31,3 +32,4 @@ Server name: `ragcode` (stdio). All tools accept `repoRoot` (optional when a wor
 - "Where do I fix X?": `find_owner` → `get_context` on the owner.
 - Risky refactor: `impact_analysis` → `verified_subgraph` (mode `impact`) → `related_tests`.
 - Stale/no data: `index_status` → `index_repo` → retry original tool.
+- Auto-refresh concern: `watch_status`; if not running, use/suggest `ragcode service install <repoRoot>` for persistent freshness or `ragcode watch <repoRoot>` for a foreground watcher.
