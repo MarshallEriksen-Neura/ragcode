@@ -23,13 +23,13 @@ describe("init onboarding", () => {
         indexRepoWithBootstrapBatch: async (receivedEngine, repoRoot, options) => {
           expect(receivedEngine).toBe(engine);
           expect(repoRoot).toBe(path.resolve("/repo"));
-          expect(options.maxBatchFiles).toBe(25);
-          expect(options.maxAnalysisMemoryMb).toBe(512);
-          expect(options.disableSemanticOnBootstrap).toBe(true);
+          expect(options?.maxBatchFiles).toBe(25);
+          expect(options?.maxAnalysisMemoryMb).toBe(512);
+          expect(options?.disableSemanticOnBootstrap).toBe(true);
           return engine.indexRepo(repoRoot, { affectedFiles: ["src/a.ts"] });
         },
         installWatcherService: async (repoRoot, options) => {
-          installed.push({ repoRoot, extraArgs: options.extraArgs, indexOnStart: options.indexOnStart });
+          installed.push({ repoRoot, extraArgs: options?.extraArgs, indexOnStart: options?.indexOnStart });
           return { ok: true, platform: "schtasks", serviceName: "svc", repoRoot, message: "started" };
         },
         readWatcherLiveness: async (repoRoot) => ({
@@ -93,8 +93,27 @@ class FakeOnboardingEngine implements Pick<ContextEngine, "indexStatus" | "index
       deletedFiles: [],
       affectedFiles: options?.affectedFiles,
       fullReindex: false,
-      files: [{ path: "src/a.ts", language: "typescript", sizeBytes: 1, contentHash: "hash", indexedAtMs: 1 }],
-      chunks: [{ id: "chunk", filePath: "src/a.ts", startLine: 1, endLine: 1, content: "export const a = 1;", tokenCount: 4, symbols: [] }],
+      files: [{
+        projectId: "project",
+        path: "src/a.ts",
+        absolutePath: path.join(repoRoot, "src", "a.ts"),
+        language: "typescript",
+        sizeBytes: 1,
+        contentHash: "hash",
+        modifiedAtMs: 1
+      }],
+      chunks: [{
+        id: "chunk",
+        projectId: "project",
+        repoRoot,
+        filePath: "src/a.ts",
+        language: "typescript",
+        kind: "file",
+        startLine: 1,
+        endLine: 1,
+        content: "export const a = 1;",
+        contentHash: "hash"
+      }],
       symbols: [],
       edges: [],
       skippedFiles: [],
