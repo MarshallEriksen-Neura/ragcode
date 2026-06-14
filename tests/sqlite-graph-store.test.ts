@@ -233,6 +233,53 @@ describe("SQLiteGraphStore", () => {
       store.close();
     }
   });
+
+  it("accepts a stale project id when it belongs to the same canonical root", async () => {
+    const repoRoot = await createRepo("sqlite-stale-project-id", {
+      "src/scratch.ts": "export function scratchOwner() { return 'scratch-owner-marker'; }\n"
+    });
+    const dbPath = await tempDbPath();
+    const store = new SQLiteGraphStore(dbPath);
+    const engine = new RagCodeEngine({ graphStore: store });
+
+    try {
+      const current = await engine.indexRepo(repoRoot);
+      const staleProjectId = "stale-same-root-project";
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.prepare(`
+          INSERT INTO projects(
+            project_id,
+            repo_root,
+            canonical_root,
+            display_name,
+            created_at_ms,
+            last_indexed_at_ms,
+            indexed_at_ms,
+            index_generation
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          staleProjectId,
+          repoRoot,
+          repoRoot,
+          "stale-same-root",
+          current.indexedAtMs - 2,
+          current.indexedAtMs - 2,
+          current.indexedAtMs - 2,
+          Math.max(1, current.indexGeneration - 1)
+        );
+      } finally {
+        db.close();
+      }
+
+      const hits = await store.searchText({ repoRoot, projectId: staleProjectId, query: "scratch-owner-marker", limit: 5 });
+
+      expect(hits[0]?.chunk.projectId).toBe(current.projectId);
+      expect(hits[0]?.chunk.filePath).toBe("src/scratch.ts");
+    } finally {
+      store.close();
+    }
+  });
 });
 
 async function createRepo(prefix: string, files: Record<string, string>): Promise<string> {

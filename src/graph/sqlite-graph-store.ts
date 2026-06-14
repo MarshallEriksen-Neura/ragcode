@@ -752,24 +752,41 @@ export class SQLiteGraphStore implements GraphStore {
     }
   }
 
-  private projectIdForRoot(repoRoot: string): string | undefined {
+  private projectForRoot(repoRoot: string): ProjectIdentity | undefined {
     const root = normalizeRepoRoot(repoRoot);
     const row = this.sql.selectProjectByRoot.get(root, root);
-    return row ? String(row.project_id) : undefined;
+    return row ? projectFromRow(row) : undefined;
+  }
+
+  private projectIdForRoot(repoRoot: string): string | undefined {
+    return this.projectForRoot(repoRoot)?.projectId;
+  }
+
+  private projectForId(projectId: string): ProjectIdentity | undefined {
+    const row = this.db.prepare("SELECT * FROM projects WHERE project_id = ?").get(projectId) as Record<string, unknown> | undefined;
+    return row ? projectFromRow(row) : undefined;
+  }
+
+  private requireProject(repoRoot: string): ProjectIdentity {
+    const project = this.projectForRoot(repoRoot);
+    if (!project) throw new Error(`Repository is not indexed in SQLiteGraphStore: ${repoRoot}`);
+    return project;
   }
 
   private requireProjectId(repoRoot: string): string {
-    const projectId = this.projectIdForRoot(repoRoot);
-    if (!projectId) throw new Error(`Repository is not indexed in SQLiteGraphStore: ${repoRoot}`);
-    return projectId;
+    return this.requireProject(repoRoot).projectId;
   }
 
   private scopedProjectId(repoRoot: string, projectId?: string): string {
-    const resolvedProjectId = this.requireProjectId(repoRoot);
-    if (projectId && projectId !== resolvedProjectId) {
-      throw new Error(`Project scope mismatch: repoRoot resolves to ${resolvedProjectId}, but query requested ${projectId}.`);
+    const resolvedProject = this.requireProject(repoRoot);
+    if (!projectId || projectId === resolvedProject.projectId) return resolvedProject.projectId;
+
+    const requestedProject = this.projectForId(projectId);
+    if (requestedProject && isSameCanonicalProject(resolvedProject, requestedProject)) {
+      return resolvedProject.projectId;
     }
-    return resolvedProjectId;
+
+    throw new Error(`Project scope mismatch: repoRoot resolves to ${resolvedProject.projectId}, but query requested ${projectId}.`);
   }
 
   private chunksForProject(projectId: string): CodeChunk[] {
@@ -856,6 +873,12 @@ function fallbackProjectIdentity(projectId: string, repoRoot: string, indexedAtM
     createdAtMs: indexedAtMs,
     lastIndexedAtMs: indexedAtMs
   };
+}
+
+function isSameCanonicalProject(left: ProjectIdentity, right: ProjectIdentity): boolean {
+  const leftRoots = new Set([left.repoRoot, left.canonicalRoot].map(normalizeRepoRoot));
+  const rightRoots = [right.repoRoot, right.canonicalRoot].map(normalizeRepoRoot);
+  return rightRoots.some((root) => leftRoots.has(root));
 }
 
 function symbolFromRow(row: Record<string, unknown>): SymbolNode {
