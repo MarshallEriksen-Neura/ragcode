@@ -519,6 +519,7 @@ program
   .command("configure")
   .argument("[repoRoot]")
   .option("--show", "Print the effective runtime config (secrets redacted) and exit")
+  .option("--test", "Test the effective embedding provider without changing config")
   .option("--graph-store <store>", "Graph store: memory or sqlite")
   .option("--sqlite-path <path>", "SQLite graph database path")
   .option("--semantic-store <store>", "Semantic store: memory or lancedb")

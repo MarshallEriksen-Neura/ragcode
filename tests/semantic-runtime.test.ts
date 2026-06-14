@@ -104,6 +104,33 @@ describe("semantic runtime configuration", () => {
     expect(calls).toEqual([{ body: { model: "custom-embed", input: ["first", "second"] } }]);
   });
 
+  it("adds ModelScope's required float encoding format", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const provider = new OpenAICompatibleEmbeddingProvider({
+      apiKey: "test-key",
+      model: "custom-embed",
+      baseUrl: "https://api-inference.modelscope.cn/v1",
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ index: 0, embedding: [0.1, 0.2] }] })
+        } as Response;
+      }
+    });
+
+    await expect(provider.embed("modelscope probe")).resolves.toEqual([0.1, 0.2]);
+    expect(calls).toEqual([{
+      url: "https://api-inference.modelscope.cn/v1/embeddings",
+      body: {
+        model: "custom-embed",
+        input: "modelscope probe",
+        encoding_format: "float"
+      }
+    }]);
+  });
+
   it("passes configured vector dimensions to a new LanceDB table seed", async () => {
     const table = new SeedCaptureTable();
     const store = new LanceSemanticStore("memory://fake", {

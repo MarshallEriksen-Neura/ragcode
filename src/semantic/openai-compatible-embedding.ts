@@ -9,6 +9,10 @@ export interface OpenAICompatibleEmbeddingProviderOptions {
   fetch?: typeof fetch;
 }
 
+interface EmbeddingProviderProfile {
+  requestBody?: Record<string, unknown>;
+}
+
 interface EmbeddingResponse {
   data?: Array<{
     index?: number;
@@ -23,6 +27,7 @@ export class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions?: number;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly providerProfile: EmbeddingProviderProfile;
 
   constructor(private readonly options: OpenAICompatibleEmbeddingProviderOptions) {
     if (!options.apiKey) throw new Error("OpenAI-compatible embedding provider requires an API key.");
@@ -30,6 +35,7 @@ export class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
     this.baseUrl = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
     this.dimensions = options.dimensions;
     this.fetchImpl = options.fetch ?? fetch;
+    this.providerProfile = resolveEmbeddingProviderProfile(this.baseUrl);
   }
 
   async embed(text: string): Promise<number[]> {
@@ -66,7 +72,8 @@ export class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
   private async requestEmbeddings(input: string | string[]): Promise<EmbeddingResponse> {
     const body: Record<string, unknown> = {
       model: this.options.model,
-      input
+      input,
+      ...this.providerProfile.requestBody
     };
     if (this.options.requestDimensions && this.options.dimensions) {
       body.dimensions = this.options.dimensions;
@@ -93,4 +100,18 @@ export class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
     }
     return await response.json() as EmbeddingResponse;
   }
+}
+
+function resolveEmbeddingProviderProfile(baseUrl: string): EmbeddingProviderProfile {
+  let hostname: string;
+  try {
+    hostname = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return {};
+  }
+
+  if (hostname === "api-inference.modelscope.cn") {
+    return { requestBody: { encoding_format: "float" } };
+  }
+  return {};
 }
