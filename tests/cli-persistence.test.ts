@@ -87,6 +87,16 @@ describe("CLI persisted reads", () => {
 
     const staleRead = await runCli(["search", root, "new-file-marker", "--limit", "5"], env);
     expect(JSON.parse(staleRead.stdout)).toEqual([]);
+
+    const refreshed = await runCli(["refresh", root], env);
+    const refreshSummary = JSON.parse(refreshed.stdout) as { files: number; fullReindex: boolean; pendingFiles: number };
+    expect(refreshSummary.files).toBe(3);
+    expect(refreshSummary.fullReindex).toBe(false);
+    expect(refreshSummary.pendingFiles).toBe(0);
+
+    const refreshedRead = await runCli(["search", root, "new-file-marker", "--limit", "5"], env);
+    const refreshedHits = JSON.parse(refreshedRead.stdout) as Array<{ filePath: string }>;
+    expect(refreshedHits.map((hit) => hit.filePath)).toContain("src/new-file.ts");
   }, 90_000);
 
   it("defaults empty CLI indexes to a bounded graph-first bootstrap batch", async () => {

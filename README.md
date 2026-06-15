@@ -182,6 +182,7 @@ See [docs/EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md) for Azure, Ollama
 ```bash
 ragcode init [directory]            # Initialize configuration (interactive wizard)
 ragcode index <repoRoot>            # Index a repository; empty indexes use bounded bootstrap by default
+ragcode refresh <repoRoot>          # Refresh an already-indexed repository
 ragcode search <repoRoot> <query>   # Search code
 ragcode status <repoRoot>           # Check index status
 ragcode context <repoRoot> <query>  # Build a context pack
@@ -337,7 +338,7 @@ The response includes **freshness and coverage signals**:
 ```
 
 **Use these signals** to know when results might be incomplete:
-- `freshnessScore < 0.8` → Run `ragcode index <repoRoot>` to refresh
+- `freshnessScore < 0.8` → Run `ragcode refresh <repoRoot>` on an existing index, or `ragcode index <repoRoot>` if no index exists
 - `pendingFiles.length > 100` → Large portions of the repo not yet indexed
 - `staleFiles.length > 10` → Recent changes not reflected in results
 

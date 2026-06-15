@@ -180,6 +180,7 @@ export RAGCODE_EMBEDDING_API_KEY=ollama  # 任意非空字符串即可
 ```bash
 ragcode init [directory]            # 初始化配置（交互式向导）
 ragcode index <repoRoot>            # 索引仓库；空索引默认使用有界 bootstrap
+ragcode refresh <repoRoot>          # 刷新已索引仓库
 ragcode search <repoRoot> <query>   # 搜索代码
 ragcode status <repoRoot>           # 检查索引状态
 ragcode context <repoRoot> <query>  # 构建上下文包
@@ -334,7 +335,7 @@ await mcp.callTool('get_context', {
 ```
 
 **使用这些信号**判断结果是否可能不完整：
-- `freshnessScore < 0.8` → 运行 `ragcode index <repoRoot>` 刷新
+- `freshnessScore < 0.8` → 已有索引时运行 `ragcode refresh <repoRoot>`，没有索引时运行 `ragcode index <repoRoot>`
 - `pendingFiles.length > 100` → 大量代码尚未索引
 - `staleFiles.length > 10` → 最近的更改未反映在结果中
 

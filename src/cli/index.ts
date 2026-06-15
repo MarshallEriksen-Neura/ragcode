@@ -4,7 +4,7 @@ import { Command } from "commander";
 import { loadDotEnv } from "../config/dotenv.js";
 import { getPackageVersion } from "../config/package-info.js";
 import { createRuntimeComponentsForRepo } from "../config/runtime-config.js";
-import type { IndexProgressEvent } from "../core/types.js";
+import type { IndexProgressEvent, RepoIndex } from "../core/types.js";
 import { RagCodeEngine } from "../core/engine.js";
 import { runConfigureCommand } from "./configure.js";
 import { runDoctor } from "../diagnostics/doctor.js";
@@ -81,18 +81,43 @@ program
         throw error;
       });
       await progress.flush();
-      console.log(JSON.stringify({
-        repoRoot: result.repoRoot,
-        files: result.files.length,
-        fullReindex: result.fullReindex,
-        affectedFiles: result.affectedFiles,
-        partialBootstrap: result.partialBootstrap ?? false,
-        semanticDeferred: result.semanticDeferred ?? false,
-        pendingFiles: (await engine.indexStatus(repoRoot).catch(() => undefined))?.pendingFileCount,
-        chunks: result.chunks.length,
-        skippedFiles: result.skippedFiles.length,
-        analysisWarnings: result.analysisWarnings ?? []
-      }, null, 2));
+      await printIndexSummary(engine, repoRoot, result);
+    });
+  });
+
+program
+  .command("refresh")
+  .argument("<repoRoot>")
+  .option("--max-analysis-memory-mb <number>", "abort before continuing when heap exceeds this many MB", parseNumber)
+  .description("Refresh an already-indexed repository using the same path as the MCP refresh_index tool")
+  .action(async (repoRoot: string, options: { maxAnalysisMemoryMb?: number }) => {
+    assertPositive("--max-analysis-memory-mb", options.maxAnalysisMemoryMb);
+    if (process.stdout.isTTY) {
+      const { runIndexProgressTui } = await import("./tui/index-progress.js");
+      await runIndexProgressTui({
+        repoRoot,
+        run: async (onProgress) => withEngine(repoRoot, (engine) => engine.refreshIndex(repoRoot, {
+          onProgress,
+          maxAnalysisMemoryMb: options.maxAnalysisMemoryMb ?? envPositiveNumber("RAGCODE_MAX_ANALYSIS_MEMORY_MB")
+        }))
+      });
+      return;
+    }
+    await withEngine(repoRoot, async (engine) => {
+      const progress = createIndexProgressRecorder(repoRoot);
+      const onProgress = (event: Parameters<typeof progress.onProgress>[0]): void => {
+        console.error(JSON.stringify({ index: event }));
+        progress.onProgress(event);
+      };
+      const result = await engine.refreshIndex(repoRoot, {
+        onProgress,
+        maxAnalysisMemoryMb: options.maxAnalysisMemoryMb ?? envPositiveNumber("RAGCODE_MAX_ANALYSIS_MEMORY_MB")
+      }).catch(async (error: unknown) => {
+        await progress.recordFailure(error);
+        throw error;
+      });
+      await progress.flush();
+      await printIndexSummary(engine, repoRoot, result);
     });
   });
 
@@ -617,7 +642,7 @@ function indexRepoForCli(
   repoRoot: string,
   options: { maxBatchFiles?: number; maxAnalysisMemoryMb?: number; semanticOnBootstrap?: boolean; full?: boolean },
   onProgress: (event: IndexProgressEvent) => void
-): Promise<import("../core/types.js").RepoIndex> {
+): Promise<RepoIndex> {
   const indexOptions = {
     onProgress,
     maxAnalysisMemoryMb: options.maxAnalysisMemoryMb ?? envPositiveNumber("RAGCODE_MAX_ANALYSIS_MEMORY_MB"),
@@ -628,6 +653,21 @@ function indexRepoForCli(
     ...indexOptions,
     maxBatchFiles: options.maxBatchFiles ?? envPositiveNumber("RAGCODE_MAX_INDEX_FILES_PER_BATCH") ?? DEFAULT_BOOTSTRAP_BATCH_FILES
   });
+}
+
+async function printIndexSummary(engine: RagCodeEngine, repoRoot: string, result: RepoIndex): Promise<void> {
+  console.log(JSON.stringify({
+    repoRoot: result.repoRoot,
+    files: result.files.length,
+    fullReindex: result.fullReindex,
+    affectedFiles: result.affectedFiles,
+    partialBootstrap: result.partialBootstrap ?? false,
+    semanticDeferred: result.semanticDeferred ?? false,
+    pendingFiles: (await engine.indexStatus(repoRoot).catch(() => undefined))?.pendingFileCount,
+    chunks: result.chunks.length,
+    skippedFiles: result.skippedFiles.length,
+    analysisWarnings: result.analysisWarnings ?? []
+  }, null, 2));
 }
 
 function envPositiveNumber(name: string): number | undefined {
