@@ -5,6 +5,23 @@ All notable changes to RagCode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-06-16
+
+### Added
+- **CLI refresh command**: Added `ragcode refresh <repoRoot>` so the CLI can refresh an already-indexed workspace through the same engine path as MCP `refresh_index`.
+- **Windows watcher service entrypoint**: Added a lightweight `watch-service-entry` for Task Scheduler launches. It acquires the per-repo watcher lock before loading the full CLI/runtime stack.
+- **Heartbeat keepalive worker**: Added a worker-thread heartbeat keepalive so liveness remains fresh even when the watcher main thread is busy opening stores or indexing a large dirty batch.
+
+### Fixed
+- **Duplicate Windows watcher processes**: Windows scheduled-task backstop launches now fail fast when another live watcher already owns the repo lock, preventing multiple `ragcode watch` processes from writing the same SQLite/LanceDB stores.
+- **Stale watcher self-retirement**: A watcher that loses lock ownership now shuts itself down instead of continuing to index as a stale writer.
+- **Lifecycle cleanup safety**: Stale or duplicate watcher shutdown no longer clears the heartbeat for a newer live owner.
+- **Project identity matching**: SQLite graph-store project lookup now handles canonical repo-root matching more robustly, avoiding mismatches across equivalent path forms.
+
+### Changed
+- **Service watcher defaults**: Windows watcher service wrappers can launch with bounded batch and memory flags, reducing large-repo background refresh pressure.
+- **Documentation alignment**: README and Codex skill docs now document the CLI refresh surface alongside existing indexing and service workflows.
+
 ## [0.1.6] - 2026-06-13
 
 ### Added
