@@ -11,6 +11,8 @@ export interface ServiceLaunchSpec {
   execPath: string;
   /** Absolute path to the ragcode CLI entry (dist/src/cli/index.js) or a resolvable bin name. */
   cliEntry: string;
+  /** Lightweight watcher-only entry used by Windows scheduled tasks to acquire locks early. */
+  serviceEntry?: string;
   repoRoot: string;
   serviceName: string;
   indexOnStart?: boolean;
@@ -152,7 +154,9 @@ export function legacyWindowsWatcherScriptPath(repoRoot: string): string {
 }
 
 export function renderWindowsWatcherScript(spec: ServiceLaunchSpec): string {
-  const command = [spec.execPath, ...watchArgv(spec)].map(windowsCommandQuote).join(" ");
+  const command = [spec.execPath, ...(spec.serviceEntry ? watchArgv({ ...spec, cliEntry: spec.serviceEntry }) : watchArgv(spec))]
+    .map(windowsCommandQuote)
+    .join(" ");
   return [
     "Option Explicit",
     "Dim shell",

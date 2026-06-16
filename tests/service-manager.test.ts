@@ -39,6 +39,7 @@ function spec(repoRoot: string): ServiceLaunchSpec {
   return {
     execPath: "/usr/bin/node",
     cliEntry: "/opt/ragcode/dist/src/cli/index.js",
+    serviceEntry: "/opt/ragcode/dist/src/cli/watch-service-entry.js",
     repoRoot,
     serviceName: serviceNameForRepo(repoRoot)
   };
@@ -146,7 +147,7 @@ describe("service templates", () => {
     expect(windowsWatcherScriptPath("/r/api")).toBe(path.join(path.resolve("/r/api"), ".ragcode", "watch-service.vbs"));
     expect(script).toContain("WScript.Shell");
     expect(script).toContain(", 0, False");
-    expect(script).toContain("/opt/ragcode/dist/src/cli/index.js");
+    expect(script).toContain("/opt/ragcode/dist/src/cli/watch-service-entry.js");
     expect(script).toContain("watch");
     expect(script).toContain("/r/api");
   });

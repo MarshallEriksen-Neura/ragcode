@@ -75,10 +75,16 @@ function resolveCliEntry(options: ServiceManagerOptions): string {
   return fileURLToPath(new URL("../cli/index.js", import.meta.url));
 }
 
+function resolveServiceEntry(options: ServiceManagerOptions): string {
+  if (options.cliEntry) return options.cliEntry;
+  return fileURLToPath(new URL("../cli/watch-service-entry.js", import.meta.url));
+}
+
 function buildSpec(repoRoot: string, options: ServiceManagerOptions): ServiceLaunchSpec {
   return {
     execPath: options.execPath ?? process.execPath,
     cliEntry: resolveCliEntry(options),
+    serviceEntry: resolveServiceEntry(options),
     repoRoot: path.resolve(repoRoot),
     serviceName: serviceNameForRepo(repoRoot),
     indexOnStart: options.indexOnStart,

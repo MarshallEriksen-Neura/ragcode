@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Worker } from "node:worker_threads";
 
 // Cross-process liveness for the watch daemon. Two files under <repo>/.ragcode/:
 //
@@ -96,6 +97,17 @@ function readLockSync(repoRoot: string): WatcherLockInfo | undefined {
   }
 }
 
+export function isWatcherLockOwner(repoRoot: string, owner: WatcherLockInfo): boolean {
+  const current = readLockSync(repoRoot);
+  return Boolean(
+    current &&
+      current.pid === owner.pid &&
+      current.hostname === owner.hostname &&
+      path.resolve(current.repoRoot) === path.resolve(owner.repoRoot) &&
+      current.startedAtMs === owner.startedAtMs
+  );
+}
+
 export class WatcherLockError extends Error {
   constructor(
     message: string,
@@ -109,6 +121,10 @@ export class WatcherLockError extends Error {
 export interface WatcherLockHandle {
   readonly info: WatcherLockInfo;
   release(): void;
+}
+
+export interface HeartbeatKeepaliveHandle {
+  stop(): void;
 }
 
 // Acquire the per-repo watcher lock. Throws WatcherLockError if a live watcher already holds it.
@@ -160,8 +176,7 @@ export function acquireWatcherLock(repoRoot: string): WatcherLockHandle {
       released = true;
       // Only remove the lock if we still own it — guards against deleting a lock a newer
       // watcher reclaimed after we were declared stale.
-      const current = readLockSync(resolvedRoot);
-      if (current && current.pid === info.pid && current.startedAtMs === info.startedAtMs) {
+      if (isWatcherLockOwner(resolvedRoot, info)) {
         try {
           fs.rmSync(lockPath, { force: true });
         } catch {
@@ -176,6 +191,85 @@ export async function writeHeartbeat(repoRoot: string, heartbeat: WatcherHeartbe
   const heartbeatPath = watcherHeartbeatPath(repoRoot);
   await fsp.mkdir(path.dirname(heartbeatPath), { recursive: true });
   await fsp.writeFile(heartbeatPath, `${JSON.stringify(heartbeat, null, 2)}\n`, "utf8");
+}
+
+export function writeHeartbeatSync(repoRoot: string, heartbeat: WatcherHeartbeat): void {
+  const heartbeatPath = watcherHeartbeatPath(repoRoot);
+  fs.mkdirSync(path.dirname(heartbeatPath), { recursive: true });
+  fs.writeFileSync(heartbeatPath, `${JSON.stringify(heartbeat, null, 2)}\n`, "utf8");
+}
+
+export function startHeartbeatKeepalive(
+  repoRoot: string,
+  owner: WatcherLockInfo,
+  intervalMs = 10_000
+): HeartbeatKeepaliveHandle {
+  const worker = new Worker(`
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const { parentPort, workerData } = require("node:worker_threads");
+
+    function readJson(filePath) {
+      try {
+        return JSON.parse(fs.readFileSync(filePath, "utf8"));
+      } catch {
+        return undefined;
+      }
+    }
+
+    function ownsLock() {
+      const current = readJson(workerData.lockPath);
+      return Boolean(
+        current &&
+          current.pid === workerData.owner.pid &&
+          current.hostname === workerData.owner.hostname &&
+          path.resolve(current.repoRoot) === path.resolve(workerData.owner.repoRoot) &&
+          current.startedAtMs === workerData.owner.startedAtMs
+      );
+    }
+
+    function heartbeat() {
+      if (!ownsLock()) return;
+      const current = readJson(workerData.heartbeatPath) || {};
+      const next = {
+        ...current,
+        pid: workerData.owner.pid,
+        hostname: workerData.owner.hostname,
+        repoRoot: workerData.owner.repoRoot,
+        startedAtMs: workerData.owner.startedAtMs,
+        lastHeartbeatMs: Date.now(),
+        pendingFiles: typeof current.pendingFiles === "number" ? current.pendingFiles : 0,
+        indexingFiles: typeof current.indexingFiles === "number" ? current.indexingFiles : 0,
+        ready: typeof current.ready === "boolean" ? current.ready : false
+      };
+      fs.mkdirSync(path.dirname(workerData.heartbeatPath), { recursive: true });
+      fs.writeFileSync(workerData.heartbeatPath, JSON.stringify(next, null, 2) + "\\n", "utf8");
+    }
+
+    heartbeat();
+    const timer = setInterval(heartbeat, workerData.intervalMs);
+    parentPort.on("message", (message) => {
+      if (message === "stop") {
+        clearInterval(timer);
+        process.exit(0);
+      }
+    });
+  `, {
+    eval: true,
+    workerData: {
+      heartbeatPath: watcherHeartbeatPath(repoRoot),
+      lockPath: watcherLockPath(repoRoot),
+      owner,
+      intervalMs
+    }
+  });
+  worker.unref();
+  return {
+    stop(): void {
+      worker.postMessage("stop");
+      void worker.terminate().catch(() => undefined);
+    }
+  };
 }
 
 export async function clearHeartbeat(repoRoot: string): Promise<void> {

@@ -31,7 +31,14 @@ import type {
 import { FileEventJournal, type WatchEventJournalEntry } from "../src/watch/event-journal.js";
 import { WatchIndexScheduler } from "../src/watch/index-scheduler.js";
 import { FileWatchDaemon } from "../src/watch/watch-daemon.js";
-import { readWatcherLiveness } from "../src/watch/watcher-liveness.js";
+import {
+  readWatcherLiveness,
+  watcherHeartbeatPath,
+  watcherLockPath,
+  writeHeartbeat,
+  type WatcherHeartbeat,
+  type WatcherLockInfo
+} from "../src/watch/watcher-liveness.js";
 
 const tempRoots: string[] = [];
 
@@ -154,6 +161,52 @@ describe("file watch daemon", () => {
     await daemon.stop();
 
     expect((await readWatcherLiveness(root)).state).toBe("not_running");
+  });
+
+  it("stops itself when it loses ownership of the watcher lock", async () => {
+    const root = await createTempRepo("ragcode-watch-lock-lost-");
+    const engine = new FakeEngine(root);
+    const daemon = new FileWatchDaemon(engine, root, {
+      autoIndex: false,
+      indexOnStart: false,
+      heartbeatIntervalMs: 20,
+      awaitWriteFinishMs: 10
+    });
+
+    await daemon.start();
+    await waitFor(async () => (await readWatcherLiveness(root)).state === "running", 1_000);
+
+    const replacement = replacementLockInfo(root);
+    await fs.writeFile(watcherLockPath(root), `${JSON.stringify(replacement, null, 2)}\n`, "utf8");
+
+    await waitFor(async () => !(await daemon.status()).running, 1_000);
+
+    expect((await daemon.status()).running).toBe(false);
+  });
+
+  it("does not clear the replacement watcher's heartbeat after losing lock ownership", async () => {
+    const root = await createTempRepo("ragcode-watch-lock-lost-heartbeat-");
+    const engine = new FakeEngine(root);
+    const daemon = new FileWatchDaemon(engine, root, {
+      autoIndex: false,
+      indexOnStart: false,
+      heartbeatIntervalMs: 20,
+      awaitWriteFinishMs: 10
+    });
+
+    await daemon.start();
+    await waitFor(async () => (await readWatcherLiveness(root)).state === "running", 1_000);
+
+    const replacement = replacementLockInfo(root);
+    await fs.writeFile(watcherLockPath(root), `${JSON.stringify(replacement, null, 2)}\n`, "utf8");
+    await writeHeartbeat(root, heartbeatForReplacement(root, replacement));
+
+    await waitFor(async () => !(await daemon.status()).running, 1_000);
+
+    const heartbeat = JSON.parse(await fs.readFile(watcherHeartbeatPath(root), "utf8")) as WatcherHeartbeat;
+    expect(heartbeat.pid).toBe(replacement.pid);
+    expect(heartbeat.startedAtMs).toBe(replacement.startedAtMs);
+    expect(heartbeat.ready).toBe(true);
   });
 
   it("bootstraps an unindexed repo with one bounded batch and queues the remainder", async () => {
@@ -410,6 +463,28 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error("Timed out waiting for condition.");
+}
+
+function replacementLockInfo(root: string): WatcherLockInfo {
+  return {
+    pid: process.pid,
+    hostname: os.hostname(),
+    repoRoot: path.resolve(root),
+    startedAtMs: Date.now() + 60_000
+  };
+}
+
+function heartbeatForReplacement(root: string, owner: WatcherLockInfo): WatcherHeartbeat {
+  return {
+    pid: owner.pid,
+    hostname: owner.hostname,
+    repoRoot: path.resolve(root),
+    startedAtMs: owner.startedAtMs,
+    lastHeartbeatMs: Date.now(),
+    pendingFiles: 0,
+    indexingFiles: 0,
+    ready: true
+  };
 }
 
 class FakeEngine implements ContextEngine {

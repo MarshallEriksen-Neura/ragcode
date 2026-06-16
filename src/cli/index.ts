@@ -12,7 +12,7 @@ import { startStdioMcpServer } from "../mcp/server.js";
 import { buildExplainImpactReport } from "../subgraph/impact-explainer.js";
 import { expandNode, parseNodeRef } from "../subgraph/node-expander.js";
 import { FileWatchDaemon } from "../watch/watch-daemon.js";
-import { WatcherLockError, readWatcherLiveness } from "../watch/watcher-liveness.js";
+import { WatcherLockError, acquireWatcherLock, readWatcherLiveness, startHeartbeatKeepalive, writeHeartbeatSync, type HeartbeatKeepaliveHandle, type WatcherLockHandle } from "../watch/watcher-liveness.js";
 import { installWatcherService, uninstallWatcherService, watcherServiceStatus, UnsupportedPlatformError } from "../service/service-manager.js";
 import { DEFAULT_BOOTSTRAP_BATCH_FILES, indexRepoWithBootstrapBatch } from "../indexing/batch-bootstrap.js";
 import { createIndexProgressRecorder } from "../indexing/index-progress-state.js";
@@ -317,16 +317,38 @@ program
     autoIndex?: boolean;
     indexOnStart?: boolean;
   }) => {
-    const engine = buildCliEngine(repoRoot);
+    const absoluteRoot = path.resolve(repoRoot);
+    let lifecycleLockHandle: WatcherLockHandle | undefined;
+    try {
+      lifecycleLockHandle = acquireWatcherLock(absoluteRoot);
+    } catch (error) {
+      if (error instanceof WatcherLockError) {
+        console.error(error.message);
+        process.exit(1);
+      }
+      throw error;
+    }
+    const startupHeartbeat = startWatchStartupHeartbeat(absoluteRoot, lifecycleLockHandle);
+    let engine: RagCodeEngine;
+    try {
+      engine = buildCliEngine(repoRoot);
+    } catch (error) {
+      startupHeartbeat.stop();
+      lifecycleLockHandle.release();
+      throw error;
+    }
     const watchOptions = normalizeWatchOptions(options);
     if (process.stdout.isTTY) {
       const { createWatchStatusTui } = await import("./tui/watch-status.js");
-      const absoluteRoot = path.resolve(repoRoot);
       let tui: ReturnType<typeof createWatchStatusTui> | undefined;
       let shuttingDown = false;
       const daemon = new FileWatchDaemon(engine, repoRoot, {
         ...watchOptions,
-        onStatus: (status) => tui?.update(status)
+        lifecycleLockHandle,
+        onStatus: (status) => {
+          startupHeartbeat.stop();
+          tui?.update(status);
+        }
       });
       tui = createWatchStatusTui({
         repoRoot: absoluteRoot,
@@ -376,7 +398,9 @@ program
     }
     const daemon = new FileWatchDaemon(engine, repoRoot, {
       ...watchOptions,
+      lifecycleLockHandle,
       onStatus: (status) => {
+        startupHeartbeat.stop();
         console.error(JSON.stringify({ watcher: status }));
       }
     });
@@ -394,11 +418,16 @@ program
       await daemon.start();
     } catch (error) {
       if (error instanceof WatcherLockError) {
+        startupHeartbeat.stop();
+        await daemon.stop();
         engine.close();
         console.error(error.message);
         process.exitCode = 1;
         return;
       }
+      startupHeartbeat.stop();
+      await daemon.stop();
+      engine.close();
       throw error;
     }
     console.log(JSON.stringify(await daemon.status(), null, 2));
@@ -724,6 +753,25 @@ function parseNumber(value: string): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`Invalid number: ${value}`);
   return parsed;
+}
+
+function startWatchStartupHeartbeat(repoRoot: string, lockHandle: WatcherLockHandle): HeartbeatKeepaliveHandle {
+  const heartbeat = {
+      pid: lockHandle.info.pid,
+      hostname: lockHandle.info.hostname,
+      repoRoot: lockHandle.info.repoRoot,
+      startedAtMs: lockHandle.info.startedAtMs,
+      lastHeartbeatMs: Date.now(),
+      pendingFiles: 0,
+      indexingFiles: 0,
+      ready: false
+  };
+  try {
+    writeHeartbeatSync(repoRoot, heartbeat);
+  } catch {
+    // Best-effort startup visibility; lock ownership still protects single-instance behavior.
+  }
+  return startHeartbeatKeepalive(repoRoot, lockHandle.info, 5_000);
 }
 
 function formatCliError(error: unknown): string {

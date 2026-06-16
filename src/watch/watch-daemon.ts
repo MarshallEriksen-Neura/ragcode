@@ -10,7 +10,10 @@ import { WatchIndexScheduler, type WatchIndexSchedulerOptions, type WatchIndexSc
 import {
   acquireWatcherLock,
   clearHeartbeat,
+  isWatcherLockOwner,
+  startHeartbeatKeepalive,
   writeHeartbeat,
+  type HeartbeatKeepaliveHandle,
   type WatcherHeartbeat,
   type WatcherLockHandle
 } from "./watcher-liveness.js";
@@ -34,6 +37,11 @@ export interface FileWatchDaemonOptions extends Omit<WatchIndexSchedulerOptions,
    * no cross-process coordination is needed (e.g. the dashboard's observation daemon).
    */
   manageLifecycleFiles?: boolean;
+  /**
+   * Pre-acquired lifecycle lock. Used by CLI entrypoints that must reject duplicate launches
+   * before opening SQLite/LanceDB handles.
+   */
+  lifecycleLockHandle?: WatcherLockHandle;
   journal?: FileEventJournal;
   onEvent?: (event: WatchEventJournalEntry) => void;
   onStatus?: (status: WatchDaemonStatus) => void;
@@ -74,6 +82,7 @@ export class FileWatchDaemon {
   private ready = false;
   private lockHandle: WatcherLockHandle | undefined;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private heartbeatKeepalive: HeartbeatKeepaliveHandle | undefined;
   private readonly heartbeatWrites = new Set<Promise<void>>();
   private heartbeatEpoch = 0;
   private lastIndexedAtMs: number | undefined;
@@ -108,7 +117,7 @@ export class FileWatchDaemon {
     // Acquire the per-repo lock first, before any indexing work, so a second watcher on the same
     // repo fails fast (throwing WatcherLockError) instead of racing the live one as a second writer.
     if (this.options.manageLifecycleFiles !== false) {
-      this.lockHandle = acquireWatcherLock(this.repoRoot);
+      this.lockHandle = this.options.lifecycleLockHandle ?? acquireWatcherLock(this.repoRoot);
     }
     this.running = true;
     this.heartbeatEpoch += 1;
@@ -171,10 +180,12 @@ export class FileWatchDaemon {
     if (this.maxFlushTimer) clearTimeout(this.maxFlushTimer);
     if (this.flushRetryTimer) clearTimeout(this.flushRetryTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatKeepalive?.stop();
     this.flushTimer = undefined;
     this.maxFlushTimer = undefined;
     this.flushRetryTimer = undefined;
     this.heartbeatTimer = undefined;
+    this.heartbeatKeepalive = undefined;
     await this.watcher?.close();
     this.watcher = undefined;
     try {
@@ -191,10 +202,13 @@ export class FileWatchDaemon {
       //
       // Only touch lifecycle files if WE own the lock. A second watcher that failed to acquire the
       // lock (start() threw) reaches stop() via the CLI's shutdown path with lockHandle undefined —
-      // it must NOT clear the live watcher's heartbeat or release its lock.
+      // it must NOT clear the live watcher's heartbeat or release its lock. Likewise, a formerly
+      // live watcher that lost ownership must not clear the newer owner's heartbeat.
       if (this.options.manageLifecycleFiles !== false && this.lockHandle) {
         await Promise.allSettled([...this.heartbeatWrites]);
-        await clearHeartbeat(this.repoRoot).catch(() => undefined);
+        if (isWatcherLockOwner(this.repoRoot, this.lockHandle.info)) {
+          await clearHeartbeat(this.repoRoot).catch(() => undefined);
+        }
         this.lockHandle.release();
         this.lockHandle = undefined;
       }
@@ -217,6 +231,13 @@ export class FileWatchDaemon {
   // so an actively-indexing daemon heartbeats more often than the interval.
   private startHeartbeat(): void {
     if (this.options.manageLifecycleFiles === false) return;
+    if (this.lockHandle) {
+      this.heartbeatKeepalive = startHeartbeatKeepalive(
+        this.repoRoot,
+        this.lockHandle.info,
+        this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
+      );
+    }
     this.queueHeartbeat();
     const interval = this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.heartbeatTimer = setInterval(() => {
@@ -236,6 +257,13 @@ export class FileWatchDaemon {
   private async publishHeartbeat(epoch: number): Promise<void> {
     const lockHandle = this.lockHandle;
     if (this.options.manageLifecycleFiles === false || !lockHandle || !this.running || epoch !== this.heartbeatEpoch) return;
+    if (!isWatcherLockOwner(this.repoRoot, lockHandle.info)) {
+      this.setLastError("Watcher lock ownership lost; shutting down this stale watcher.");
+      void this.stop().catch((error: unknown) => {
+        this.setLastError(error);
+      });
+      return;
+    }
     const baseHeartbeat: WatcherHeartbeat = {
       pid: lockHandle.info.pid,
       hostname: lockHandle.info.hostname,
@@ -253,6 +281,13 @@ export class FileWatchDaemon {
     });
     const scheduler = await withTimeout(this.scheduler.status(), 500).catch(() => undefined);
     if (!this.running || epoch !== this.heartbeatEpoch || this.lockHandle !== lockHandle) return;
+    if (!isWatcherLockOwner(this.repoRoot, lockHandle.info)) {
+      this.setLastError("Watcher lock ownership lost; shutting down this stale watcher.");
+      void this.stop().catch((error: unknown) => {
+        this.setLastError(error);
+      });
+      return;
+    }
     if (scheduler?.lastIndexedAtMs) this.lastIndexedAtMs = scheduler.lastIndexedAtMs;
     const heartbeat: WatcherHeartbeat = {
       pid: lockHandle.info.pid,
