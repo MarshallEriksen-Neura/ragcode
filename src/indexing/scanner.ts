@@ -5,6 +5,7 @@ import { sha256 } from "../utils/hash.js";
 import { normalizeRepoPath } from "../utils/path.js";
 import { detectLanguage, isIndexableLanguage } from "./language.js";
 import { classifyRepoFile, shouldIgnoreDirectory, shouldIgnoreFile, skippedFile } from "./ignore-policy.js";
+import { loadGitIgnoreMatcher } from "./gitignore.js";
 
 export interface ScanOptions {
   maxFileBytes?: number;
@@ -24,6 +25,7 @@ export interface IndexableFileInventory {
 export async function listIndexableFilePaths(repoRoot: string, options: Pick<ScanOptions, "maxFileBytes"> = {}): Promise<IndexableFileInventory> {
   const absoluteRoot = path.resolve(repoRoot);
   const maxFileBytes = options.maxFileBytes ?? 512_000;
+  const gitignore = loadGitIgnoreMatcher(absoluteRoot);
   const filePaths: string[] = [];
   const skippedFiles: SkippedFile[] = [];
 
@@ -31,18 +33,20 @@ export async function listIndexableFilePaths(repoRoot: string, options: Pick<Sca
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       const absolutePath = path.join(dir, entry.name);
+      const relativePath = normalizeRepoPath(absoluteRoot, absolutePath);
       if (entry.isDirectory()) {
         const decision = shouldIgnoreDirectory(entry.name);
         if (decision.ignored) {
-          skippedFiles.push(skippedFile(normalizeRepoPath(absoluteRoot, absolutePath), decision));
+          skippedFiles.push(skippedFile(relativePath, decision));
         } else {
-          await walk(absolutePath);
+          const gitignoreDecision = gitignore.match(relativePath, true);
+          if (gitignoreDecision.ignored) skippedFiles.push(skippedFile(relativePath, gitignoreDecision));
+          else await walk(absolutePath);
         }
         continue;
       }
       if (!entry.isFile()) continue;
 
-      const relativePath = normalizeRepoPath(absoluteRoot, absolutePath);
       const stat = await fs.stat(absolutePath).catch((error: unknown) => {
         if (isNotFound(error)) return undefined;
         throw error;
@@ -51,6 +55,11 @@ export async function listIndexableFilePaths(repoRoot: string, options: Pick<Sca
       const decision = shouldIgnoreFile(relativePath, maxFileBytes, stat.size);
       if (decision.ignored) {
         skippedFiles.push(skippedFile(relativePath, decision));
+        continue;
+      }
+      const gitignoreDecision = gitignore.match(relativePath, false);
+      if (gitignoreDecision.ignored) {
+        skippedFiles.push(skippedFile(relativePath, gitignoreDecision));
         continue;
       }
       const language = detectLanguage(path.basename(relativePath));
@@ -69,6 +78,7 @@ export async function listIndexableFilePaths(repoRoot: string, options: Pick<Sca
 export async function scanRepo(repoRoot: string, projectId: string, options: ScanOptions = {}): Promise<ScanResult> {
   const absoluteRoot = path.resolve(repoRoot);
   const maxFileBytes = options.maxFileBytes ?? 512_000;
+  const gitignore = loadGitIgnoreMatcher(absoluteRoot);
   const files: CodeFile[] = [];
   const skippedFiles: SkippedFile[] = [];
 
@@ -86,18 +96,20 @@ export async function scanRepo(repoRoot: string, projectId: string, options: Sca
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       const absolutePath = path.join(dir, entry.name);
+      const relativePath = normalizeRepoPath(absoluteRoot, absolutePath);
       if (entry.isDirectory()) {
         const decision = shouldIgnoreDirectory(entry.name);
         if (decision.ignored) {
-          skippedFiles.push(skippedFile(normalizeRepoPath(absoluteRoot, absolutePath), decision));
+          skippedFiles.push(skippedFile(relativePath, decision));
         } else {
-          await walk(absolutePath);
+          const gitignoreDecision = gitignore.match(relativePath, true);
+          if (gitignoreDecision.ignored) skippedFiles.push(skippedFile(relativePath, gitignoreDecision));
+          else await walk(absolutePath);
         }
         continue;
       }
       if (!entry.isFile()) continue;
 
-      const relativePath = normalizeRepoPath(absoluteRoot, absolutePath);
       await scanFile(absolutePath, relativePath);
     }
   }
@@ -116,6 +128,11 @@ export async function scanRepo(repoRoot: string, projectId: string, options: Sca
       skippedFiles.push(skippedFile(relativePath, shouldIgnoreDirectory(ignoredDirectory)));
       return;
     }
+    const gitignoreDecision = gitignore.match(relativePath, false);
+    if (gitignoreDecision.ignored) {
+      skippedFiles.push(skippedFile(relativePath, gitignoreDecision));
+      return;
+    }
     await scanFile(path.join(absoluteRoot, relativePath), relativePath);
   }
 
@@ -129,6 +146,11 @@ export async function scanRepo(repoRoot: string, projectId: string, options: Sca
     const fileDecision = shouldIgnoreFile(relativePath, maxFileBytes, stat.size);
     if (fileDecision.ignored) {
       skippedFiles.push(skippedFile(relativePath, fileDecision));
+      return;
+    }
+    const gitignoreDecision = gitignore.match(relativePath, false);
+    if (gitignoreDecision.ignored) {
+      skippedFiles.push(skippedFile(relativePath, gitignoreDecision));
       return;
     }
 

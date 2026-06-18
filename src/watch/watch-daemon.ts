@@ -2,6 +2,7 @@ import path from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 import type { ContextEngine } from "../core/contracts.js";
 import { shouldIgnoreDirectory, shouldIgnoreFile } from "../indexing/ignore-policy.js";
+import { loadGitIgnoreMatcher, type GitIgnoreMatcher } from "../indexing/gitignore.js";
 import { createIndexProgressRecorder } from "../indexing/index-progress-state.js";
 import { indexRepoWithBootstrapBatch } from "../indexing/batch-bootstrap.js";
 import { normalizeRepoPath, normalizeUserPath } from "../utils/path.js";
@@ -69,6 +70,7 @@ export class FileWatchDaemon {
   private readonly journal: FileEventJournal;
   private readonly scheduler: WatchIndexScheduler;
   private readonly repoRoot: string;
+  private readonly gitignore: GitIgnoreMatcher;
   private readonly bufferedPaths = new Set<string>();
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private maxFlushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -93,6 +95,7 @@ export class FileWatchDaemon {
     private readonly options: FileWatchDaemonOptions = {}
   ) {
     this.repoRoot = path.resolve(repoRoot);
+    this.gitignore = loadGitIgnoreMatcher(this.repoRoot);
     this.journal = options.journal ?? FileEventJournal.forRepo(this.repoRoot);
     this.scheduler = new WatchIndexScheduler(engine, this.repoRoot, {
       ...options,
@@ -453,6 +456,7 @@ export class FileWatchDaemon {
     if (!relative) return false;
     const parts = relative.split("/");
     if (parts.some((part) => shouldIgnoreDirectory(part).ignored)) return true;
+    if (this.gitignore.match(relative, stats?.isDirectory()).ignored) return true;
     if (stats?.isDirectory()) return false;
     if (stats?.isFile()) return shouldIgnoreFile(relative, this.options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES, stats.size).ignored;
     return false;

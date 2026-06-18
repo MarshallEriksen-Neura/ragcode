@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { WatcherEventOptions } from "../core/types.js";
+import { loadGitIgnoreMatcher } from "../indexing/gitignore.js";
 import { normalizeRepoPath, normalizeUserPath } from "../utils/path.js";
 
 export interface CoalescedFileEvents {
@@ -15,9 +16,11 @@ const DEFAULT_MAX_DIRTY_FILES = 1_000;
 
 export function coalesceFileEvents(repoRoot: string, filePaths: string[], options: WatcherEventOptions = {}): CoalescedFileEvents {
   const eventCountByFile = new Map<string, number>();
+  const gitignore = loadGitIgnoreMatcher(repoRoot);
   for (const filePath of filePaths) {
     const normalized = normalizeEventPath(repoRoot, filePath);
     if (!normalized) continue;
+    if (gitignore.match(normalized, false).ignored) continue;
     eventCountByFile.set(normalized, (eventCountByFile.get(normalized) ?? 0) + 1);
   }
 

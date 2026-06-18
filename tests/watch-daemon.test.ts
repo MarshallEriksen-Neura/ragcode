@@ -29,6 +29,7 @@ import type {
   WatcherState
 } from "../src/core/types.js";
 import { FileEventJournal, type WatchEventJournalEntry } from "../src/watch/event-journal.js";
+import { coalesceFileEvents } from "../src/watch/file-event-coalescer.js";
 import { WatchIndexScheduler } from "../src/watch/index-scheduler.js";
 import { FileWatchDaemon } from "../src/watch/watch-daemon.js";
 import {
@@ -99,6 +100,46 @@ describe("file watch daemon", () => {
     expect(events.map((event) => event.filePath)).toContain("src/watched.ts");
     expect(engine.recordedBatches.flat()).toContain("src/watched.ts");
     expect(await journal.replay()).toEqual([]);
+  });
+
+  it("does not record file events ignored by the repository .gitignore", async () => {
+    const root = await createTempRepo("ragcode-watch-gitignore-");
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.mkdir(path.join(root, ".omc"), { recursive: true });
+    await fs.writeFile(path.join(root, ".gitignore"), ".omc/\n");
+    await fs.writeFile(path.join(root, "src", "tracked.ts"), "export const value = 1;\n");
+
+    const engine = new FakeEngine(root);
+    const daemon = new FileWatchDaemon(engine, root, {
+      autoIndex: false,
+      indexOnStart: false,
+      flushEventsMs: 20,
+      awaitWriteFinishMs: 10,
+      pollIntervalMs: 20,
+      usePolling: true
+    });
+
+    await daemon.start();
+    await waitFor(async () => (await daemon.status()).ready);
+    await fs.writeFile(path.join(root, ".omc", "session.json"), "{\"runtime\":true}\n");
+    await fs.writeFile(path.join(root, "src", "tracked.ts"), "export const value = 2;\n");
+
+    await waitFor(() => engine.recordedBatches.some((batch) => batch.includes("src/tracked.ts")), 3_000);
+    await daemon.stop();
+
+    expect(engine.recordedBatches.flat()).toContain("src/tracked.ts");
+    expect(engine.recordedBatches.flat()).not.toContain(".omc/session.json");
+  });
+
+  it("filters gitignored paths before writing the dirty-file queue", async () => {
+    const root = await createTempRepo("ragcode-watch-record-gitignore-");
+    await fs.writeFile(path.join(root, ".gitignore"), ".omc/\n");
+    await fs.mkdir(path.join(root, ".omc"), { recursive: true });
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+
+    const coalesced = coalesceFileEvents(root, [".omc/session.json", "src/tracked.ts"]);
+
+    expect(coalesced.dirtyFiles).toEqual(["src/tracked.ts"]);
   });
 
   it("uses a numeric polling interval default when polling is enabled", async () => {
