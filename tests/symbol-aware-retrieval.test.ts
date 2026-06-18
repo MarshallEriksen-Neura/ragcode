@@ -95,6 +95,45 @@ describe("symbol-aware retrieval", () => {
       .toEqual(expect.arrayContaining([expect.stringContaining("test default demotion")]));
   });
 
+  it("keeps exact identifier owners ahead of broad message symbol piles", async () => {
+    await writeScratchBridgeFixture(tempRoot);
+    const engine = new RagCodeEngine();
+    await engine.indexRepo(tempRoot);
+
+    const owners = await engine.findOwner(
+      tempRoot,
+      "Scratch AI assistant bridge ScratchEditor AIAssistantBubble useScratchBridge postMessage",
+      6
+    );
+    const files = owners.map((owner) => owner.filePath);
+
+    expect(files[0]).toBe("lobehub/src/features/ScratchEditor/index.tsx");
+    expect(indexOf(files, "lobehub/src/features/ScratchEditor/index.tsx")).toBeLessThan(indexOf(files, "lobehub/packages/builtin-tool-message/src/types.ts"));
+    expect(owners[0]?.reasons).toEqual(expect.arrayContaining([expect.stringContaining("exact identifier owner boost")]));
+    expect(owners.find((owner) => owner.filePath === "lobehub/packages/builtin-tool-message/src/types.ts")?.reasons)
+      .toEqual(expect.arrayContaining([expect.stringContaining("symbol pile normalization")]));
+  });
+
+  it("applies owner symbol normalization with SQLite FTS", async () => {
+    await writeScratchBridgeFixture(tempRoot);
+    const dbDir = path.join(tempRoot, ".ragcode-owner-symbols");
+    await fs.mkdir(dbDir, { recursive: true });
+    const store = new SQLiteGraphStore(path.join(dbDir, "graph.sqlite"));
+    openStores.push(store);
+    const engine = new RagCodeEngine({ graphStore: store });
+    await engine.indexRepo(tempRoot);
+
+    const owners = await engine.findOwner(
+      tempRoot,
+      "Scratch AI assistant bridge ScratchEditor AIAssistantBubble useScratchBridge postMessage",
+      6
+    );
+    const files = owners.map((owner) => owner.filePath);
+
+    expect(files[0]).toBe("lobehub/src/features/ScratchEditor/index.tsx");
+    expect(indexOf(files, "lobehub/src/features/ScratchEditor/index.tsx")).toBeLessThan(indexOf(files, "lobehub/packages/builtin-tool-message/src/types.ts"));
+  });
+
   it("keeps explicitly requested test owners eligible for the top owner result", async () => {
     const engine = new RagCodeEngine();
     await engine.indexRepo(tempRoot);
@@ -175,6 +214,49 @@ async function writeVitePluginFixture(root: string): Promise<void> {
   ].join("\n"));
   await writeFile(root, "docs/plugins.md", "resolve plugins build hooks ".repeat(240));
   await writeFile(root, "playground/plugins/fixture.ts", "export const fixture = 'resolve plugins build hooks '.repeat(120);");
+}
+
+async function writeScratchBridgeFixture(root: string): Promise<void> {
+  await writeFile(root, "lobehub/src/features/ScratchEditor/index.tsx", [
+    "import { AIAssistantBubble } from './AIAssistantBubble';",
+    "import { useScratchBridge } from './useScratchBridge';",
+    "",
+    "export function ScratchEditor() {",
+    "  const bridge = useScratchBridge();",
+    "  bridge.postMessage({ type: 'scratch-ai-assistant-bridge' });",
+    "  return <AIAssistantBubble onGenerateBlocks={() => bridge.postMessage({ type: 'generate-blocks' })} />;",
+    "}"
+  ].join("\n"));
+  await writeFile(root, "lobehub/src/features/ScratchEditor/AIAssistantBubble.tsx", [
+    "export interface AIAssistantBubbleProps {",
+    "  onGenerateBlocks: () => void;",
+    "}",
+    "",
+    "export function AIAssistantBubble(props: AIAssistantBubbleProps) {",
+    "  return <button onClick={props.onGenerateBlocks}>AI</button>;",
+    "}"
+  ].join("\n"));
+  await writeFile(root, "lobehub/src/features/ScratchEditor/useScratchBridge.ts", [
+    "export function useScratchBridge() {",
+    "  return {",
+    "    postMessage(message: unknown) {",
+    "      window.postMessage(message, '*');",
+    "    }",
+    "  };",
+    "}"
+  ].join("\n"));
+
+  const messageTypes = Array.from({ length: 80 }, (_, index) => [
+    `export interface MessageBridgeAssistantState${index} {`,
+    "  assistantMessage: string;",
+    "  postMessage: string;",
+    "}"
+  ].join("\n")).join("\n\n");
+  await writeFile(root, "lobehub/packages/builtin-tool-message/src/types.ts", [
+    "export const MessageToolIdentifier = 'lobe-message';",
+    "export interface MessagePlatform { assistant: string; postMessage: string; }",
+    messageTypes
+  ].join("\n\n"));
 }
 
 async function writeFile(root: string, relativePath: string, content: string): Promise<void> {

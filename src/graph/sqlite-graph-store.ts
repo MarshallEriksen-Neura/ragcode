@@ -29,7 +29,7 @@ import { SqliteStatements } from "./sqlite-statements.js";
 import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
 import { buildQueryMatchProfile, scoreChunkText, scoreSymbolText } from "../retrieval/query-matching.js";
 import { extractChangedFiles } from "./diff-files.js";
-import { applyOwnerPathIntent } from "./owner-ranking.js";
+import { rankOwnerCandidates } from "./owner-ranking.js";
 
 export class SQLiteGraphStore implements GraphStore {
   private readonly db: DatabaseSync;
@@ -422,32 +422,13 @@ export class SQLiteGraphStore implements GraphStore {
   }
 
   async findOwner(repoRoot: string, query: string, limit = 5): Promise<OwnerCandidate[]> {
-    const hits = await this.searchText({ repoRoot, query, limit: limit * 4 });
+    const hits = await this.searchText({ repoRoot, query, limit: Math.max(limit * 8, 50) });
     const symbols = await this.getSymbols(repoRoot);
     const profile = buildQueryMatchProfile(query, symbols);
-    const candidates = new Map<string, OwnerCandidate>();
-
-    for (const hit of hits) {
-      const current = candidates.get(hit.chunk.filePath) ?? { filePath: hit.chunk.filePath, score: 0, reasons: [], symbols: [] };
-      current.score += hit.score;
-      current.reasons.push(hit.reason);
-      candidates.set(hit.chunk.filePath, current);
-    }
-
-    for (const symbol of symbols) {
-      const match = scoreSymbolText(symbol, profile);
-      if (!match) continue;
-      const current = candidates.get(symbol.filePath) ?? { filePath: symbol.filePath, score: 0, reasons: [], symbols: [] };
-      current.score += 1 + match.score;
-      current.reasons.push(match.reason);
-      current.symbols.push(symbol);
-      candidates.set(symbol.filePath, current);
-    }
-
-    const ranked = applyOwnerPathIntent([...candidates.values()]
-      .map((candidate) => ({ ...candidate, reasons: [...new Set(candidate.reasons)], symbols: uniqueSymbols(candidate.symbols) })), query);
-    return ranked
-      .sort((a, b) => b.score - a.score)
+    const symbolMatches = symbols
+      .map((symbol) => ({ symbol, match: scoreSymbolText(symbol, profile) }))
+      .filter((item): item is { symbol: SymbolNode; match: NonNullable<ReturnType<typeof scoreSymbolText>> } => Boolean(item.match));
+    return rankOwnerCandidates({ hits, query, symbolMatches })
       .slice(0, limit);
   }
 
@@ -942,10 +923,6 @@ function ftsQueryForTerms(terms: string[]): string {
 
 function formatRank(rank: number): string {
   return Number.isFinite(rank) ? rank.toFixed(6) : "nan";
-}
-
-function uniqueSymbols(symbols: SymbolNode[]): SymbolNode[] {
-  return [...new Map(symbols.map((symbol) => [symbol.id, symbol])).values()];
 }
 
 function groupByPath<T extends { filePath: string }>(items: T[]): Map<string, T[]> {

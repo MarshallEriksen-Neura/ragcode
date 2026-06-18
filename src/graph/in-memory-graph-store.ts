@@ -24,7 +24,7 @@ import { normalizeUserPath } from "../utils/path.js";
 import { coalesceFileEvents } from "../watch/file-event-coalescer.js";
 import { buildQueryMatchProfile, scoreChunkText, scoreSymbolText } from "../retrieval/query-matching.js";
 import { extractChangedFiles } from "./diff-files.js";
-import { applyOwnerPathIntent } from "./owner-ranking.js";
+import { rankOwnerCandidates } from "./owner-ranking.js";
 
 interface RepoGraphState {
   projectId?: string;
@@ -304,43 +304,14 @@ export class InMemoryGraphStore implements GraphStore {
   async findOwner(repoRoot: string, query: string, limit = 5): Promise<OwnerCandidate[]> {
     const state = this.ensureRepo(repoRoot);
     const profile = buildQueryMatchProfile(query, [...state.symbols.values()]);
-    const candidates = new Map<string, OwnerCandidate>();
-
-    for (const hit of await this.searchText({ repoRoot, query, limit: limit * 4 })) {
-      const existing = candidates.get(hit.chunk.filePath) ?? {
-        filePath: hit.chunk.filePath,
-        score: 0,
-        reasons: [],
-        symbols: []
-      };
-      existing.score += hit.score;
-      existing.reasons.push(hit.reason);
-      candidates.set(hit.chunk.filePath, existing);
-    }
-
-    for (const symbol of state.symbols.values()) {
-      const match = scoreSymbolText(symbol, profile);
-      if (!match) continue;
-      const existing = candidates.get(symbol.filePath) ?? {
-        filePath: symbol.filePath,
-        score: 0,
-        reasons: [],
-        symbols: []
-      };
-      existing.score += 1 + match.score;
-      existing.reasons.push(match.reason);
-      existing.symbols.push(symbol);
-      candidates.set(symbol.filePath, existing);
-    }
-
-    const ranked = applyOwnerPathIntent([...candidates.values()]
-      .map((candidate) => ({
-        ...candidate,
-        reasons: [...new Set(candidate.reasons)],
-        symbols: uniqueSymbols(candidate.symbols)
-      })), query);
-    return ranked
-      .sort((a, b) => b.score - a.score)
+    const symbolMatches = [...state.symbols.values()]
+      .map((symbol) => ({ symbol, match: scoreSymbolText(symbol, profile) }))
+      .filter((item): item is { symbol: SymbolNode; match: NonNullable<ReturnType<typeof scoreSymbolText>> } => Boolean(item.match));
+    return rankOwnerCandidates({
+      hits: await this.searchText({ repoRoot, query, limit: Math.max(limit * 8, 50) }),
+      query,
+      symbolMatches
+    })
       .slice(0, limit);
   }
 
@@ -491,10 +462,6 @@ function semanticStatusOrDefault(state: RepoGraphState, projectId: string): Sema
 function requireRepoRoot(repoRoot: string | undefined): string {
   if (!repoRoot) throw new Error("Internal error: graph search requires a resolved repoRoot.");
   return repoRoot;
-}
-
-function uniqueSymbols(symbols: SymbolNode[]): SymbolNode[] {
-  return [...new Map(symbols.map((symbol) => [symbol.id, symbol])).values()];
 }
 
 function isTestFile(filePath: string): boolean {
