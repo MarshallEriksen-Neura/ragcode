@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
+import { HumanStatusApp, renderHumanStatusText } from "../src/cli/tui/human-status.js";
 import { IndexProgressApp } from "../src/cli/tui/index-progress.js";
 import { WatchStatusApp } from "../src/cli/tui/watch-status.js";
-import type { RepoIndex } from "../src/core/types.js";
+import type { IndexStatus, RepoIndex } from "../src/core/types.js";
+import type { WatcherLiveness } from "../src/watch/watcher-liveness.js";
 
 describe("terminal status TUI", () => {
   it("renders real index progress phases and final counts", () => {
@@ -55,6 +57,29 @@ describe("terminal status TUI", () => {
     expect(lastFrame()).toContain("scheduled");
     expect(lastFrame()).toContain("indexing");
   });
+
+  it("renders human status for people instead of JSON", () => {
+    const status = indexStatus();
+    const watcher = watcherLiveness();
+    const { lastFrame } = render(<HumanStatusApp status={status} watcher={watcher} />);
+
+    expect(lastFrame()).toContain("RagCode Status");
+    expect(lastFrame()).toContain("Watch:");
+    expect(lastFrame()).toContain("running, fresh heartbeat");
+    expect(lastFrame()).toContain("Files: indexed 8/10, pending 3, stale 2, skipped 1");
+    expect(lastFrame()).toContain("Embedding:");
+    expect(lastFrame()).toContain("failed");
+    expect(lastFrame()).toContain("Embedding error: fetch failed");
+    expect(lastFrame()).toContain("Dirty files: src/a.ts (pending)");
+  });
+
+  it("renders human status to a deterministic non-TTY text frame", () => {
+    const output = renderHumanStatusText(indexStatus(), watcherLiveness());
+
+    expect(output).toContain("RagCode Status");
+    expect(output).not.toContain('"fileCount"');
+    expect(output).toContain("Chunks/Symbols/Edges: 20 / 12 / 7");
+  });
 });
 
 function repoIndex(counts: { files: number; chunks: number; changedFiles: number; refreshedFiles: number }): RepoIndex {
@@ -92,5 +117,83 @@ function repoIndex(counts: { files: number; chunks: number; changedFiles: number
     edges: [],
     skippedFiles: [{ filePath: "dist", reason: "ignored directory: dist", classification: { role: "build", reason: "build output" } }],
     analysisWarnings: [{ kind: "parser_fallback", message: "tree-sitter rust analysis skipped: Invalid argument", count: 2, samples: ["src/a.rs", "src/b.rs"] }]
+  };
+}
+
+function indexStatus(): IndexStatus {
+  return {
+    repoRoot: "/repo",
+    projectId: "project",
+    indexedAtMs: 1_700_000_000_000,
+    fileCount: 10,
+    chunkCount: 20,
+    symbolCount: 12,
+    edgeCount: 7,
+    freshFileCount: 8,
+    staleFileCount: 2,
+    pendingFileCount: 3,
+    indexingFileCount: 0,
+    skippedFileCount: 1,
+    burstMode: false,
+    droppedEventCount: 0,
+    graphFresh: false,
+    semanticGeneration: 4,
+    semanticFresh: false,
+    semanticCoverage: "indexed_graph",
+    semanticRebuildNeeded: true,
+    semanticLastError: "fetch failed",
+    freshness: {
+      projectId: "project",
+      indexGeneration: 5,
+      indexedAtMs: 1_700_000_000_000,
+      graphFresh: false,
+      semanticGeneration: 4,
+      semanticFresh: false,
+      semanticCoverage: "indexed_graph",
+      semanticRebuildNeeded: true,
+      semanticLastError: "fetch failed",
+      staleFiles: ["src/a.ts", "src/b.ts"],
+      pendingFiles: ["src/a.ts", "src/b.ts", "src/c.ts"],
+      indexingFiles: [],
+      skippedFiles: [{ filePath: "dist", reason: "ignored directory: dist" }],
+      dirtyFiles: [{
+        projectId: "project",
+        filePath: "src/a.ts",
+        status: "pending",
+        reason: "watcher file event",
+        firstSeenAtMs: 1,
+        lastSeenAtMs: 2,
+        eventCount: 1
+      }],
+      burstMode: false,
+      droppedEvents: 0
+    }
+  };
+}
+
+function watcherLiveness(): WatcherLiveness {
+  return {
+    state: "running",
+    processAlive: true,
+    heartbeatFresh: true,
+    diagnostic: "live_watcher",
+    heartbeatAgeMs: 1_200,
+    lock: {
+      pid: 123,
+      hostname: "host",
+      repoRoot: "/repo",
+      startedAtMs: 1_700_000_000_000
+    },
+    heartbeat: {
+      pid: 123,
+      hostname: "host",
+      repoRoot: "/repo",
+      startedAtMs: 1_700_000_000_000,
+      lastHeartbeatMs: 1_700_000_001_000,
+      lastIndexedAtMs: 1_700_000_000_000,
+      pendingFiles: 3,
+      indexingFiles: 0,
+      ready: true
+    }
   };
 }

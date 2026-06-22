@@ -5,6 +5,21 @@ All notable changes to RagCode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-06-22
+
+### Added
+- **Human-readable status command**: Added `ragcode status-human <repoRoot>` with `status-ui` alias. It renders an Ink summary for watcher liveness, indexed/pending/stale file counts, graph freshness, embedding freshness/rebuild/error state, and chunk/symbol/edge totals.
+- **Agent guidance installer**: Added CLI support for installing repo-local RagCode agent guidance into agent configuration surfaces.
+
+### Changed
+- **Status documentation**: Clarified that `ragcode status <repoRoot>` remains the JSON contract for agents and scripts, while `status-human` is the terminal-first view for people.
+
+### Tested
+- `npm run check`
+- `npm run build`
+- `npm test`
+- `npm pack --dry-run`
+
 ## [0.1.8] - 2026-06-16
 
 ### Added

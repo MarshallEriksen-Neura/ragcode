@@ -143,7 +143,7 @@ ragcode index . --semantic-on-bootstrap   # also write vectors for the first par
 ragcode index . --full                    # force the legacy all-at-once index
 ```
 
-Progress is durable under `.ragcode/index-state.json` and `.ragcode/index-progress.jsonl`. `ragcode status .` reports `graphFresh`, `pendingFileCount`, `indexingFileCount`, `semanticFresh`, `semanticCoverage`, and `semanticRebuildNeeded` so agents can tell whether retrieval covers the whole repo or only the indexed graph slice.
+Progress is durable under `.ragcode/index-state.json` and `.ragcode/index-progress.jsonl`. `ragcode status .` keeps the machine-readable JSON contract for agents and scripts, reporting `graphFresh`, `pendingFileCount`, `indexingFileCount`, `semanticFresh`, `semanticCoverage`, and `semanticRebuildNeeded` so agents can tell whether retrieval covers the whole repo or only the indexed graph slice. For humans, `ragcode status-human .` renders the same index, watcher, and embedding health as an Ink terminal summary.
 
 For background freshness, `ragcode service install <repoRoot>` now registers and starts the watcher service without blocking on a full index. Add `--index-now` to run one bounded pre-install batch:
 
@@ -184,7 +184,8 @@ ragcode init [directory]            # Initialize configuration (interactive wiza
 ragcode index <repoRoot>            # Index a repository; empty indexes use bounded bootstrap by default
 ragcode refresh <repoRoot>          # Refresh an already-indexed repository
 ragcode search <repoRoot> <query>   # Search code
-ragcode status <repoRoot>           # Check index status
+ragcode status <repoRoot>           # JSON index/freshness status for agents and scripts
+ragcode status-human <repoRoot>     # Human-readable watch/index/embedding status (alias: status-ui)
 ragcode context <repoRoot> <query>  # Build a context pack
 ragcode mcp                         # Start the MCP server (stdio)
 ragcode setup-mcp                   # Register MCP for Claude Desktop

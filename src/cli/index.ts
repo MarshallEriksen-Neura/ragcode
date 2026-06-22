@@ -146,6 +146,24 @@ program
   });
 
 program
+  .command("status-human")
+  .alias("status-ui")
+  .argument("<repoRoot>")
+  .description("Show a human-readable index, watcher, and embedding status summary")
+  .action(async (repoRoot: string) => {
+    await withEngine(repoRoot, async (engine) => {
+      const status = await engine.indexStatus(repoRoot);
+      const watcher = await readWatcherLiveness(path.resolve(status.repoRoot));
+      const { renderHumanStatusText, runHumanStatusTui } = await import("./tui/human-status.js");
+      if (process.stdout.isTTY) {
+        runHumanStatusTui(status, watcher);
+      } else {
+        console.log(renderHumanStatusText(status, watcher));
+      }
+    });
+  });
+
+program
   .command("context")
   .argument("<repoRoot>")
   .argument("<query>")

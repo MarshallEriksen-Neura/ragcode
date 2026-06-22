@@ -85,6 +85,13 @@ describe("CLI persisted reads", () => {
     expect(indexStatus.freshness.semanticCoverage).toBe("indexed_graph");
     expect(indexStatus.freshness.pendingFiles).toEqual(expect.arrayContaining(["src/auth.ts", "src/new-file.ts"]));
 
+    const humanStatus = await runCli(["status-human", root], env);
+    expect(humanStatus.stdout).toContain("RagCode Status");
+    expect(humanStatus.stdout).toContain("Files: indexed");
+    expect(humanStatus.stdout).toContain("pending 2");
+    expect(humanStatus.stdout).toContain("Embedding:");
+    expect(() => JSON.parse(humanStatus.stdout)).toThrow();
+
     const staleRead = await runCli(["search", root, "new-file-marker", "--limit", "5"], env);
     expect(JSON.parse(staleRead.stdout)).toEqual([]);
 
