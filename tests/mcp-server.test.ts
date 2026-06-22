@@ -11,6 +11,18 @@ describe("MCP server", () => {
     expect(runtimeTools.map((tool) => tool.name)).toEqual(listToolDefinitions().map((tool) => tool.name));
     expect(runtimeTools).toHaveLength(19);
   });
+
+  it("steers agents toward proactive repo-context tools", () => {
+    const descriptions = Object.fromEntries(
+      listRuntimeToolDefinitions().map((tool) => [tool.name, tool.description])
+    );
+
+    expect(descriptions.get_context).toContain("PRIMARY tool");
+    expect(descriptions.get_context).toContain("before manual grep/file reads");
+    expect(descriptions.find_owner).toContain("Use early");
+    expect(descriptions.find_reuse_candidates).toContain("Use proactively");
+    expect(descriptions.trace_request_flow).toContain("runtime ownership");
+  });
 });
 
 function createNoopEngine(): ContextEngine {

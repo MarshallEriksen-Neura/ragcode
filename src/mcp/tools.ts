@@ -126,12 +126,12 @@ export function listRuntimeToolDefinitions(): McpRuntimeToolDefinition[] {
     },
     {
       name: "search_code",
-      description: "Run hybrid code search over keyword and semantic indexes.",
+      description: "Run hybrid keyword + semantic code search. Use when the user asks for repo-local implementation facts, mentions code that may exist somewhere, or when a quick evidence-backed lookup is better than guessing from memory.",
       inputSchema: SearchCodeInput
     },
     {
       name: "get_context",
-      description: "Build an agent-ready context pack for a code question under a character budget.",
+      description: "PRIMARY tool for code-understanding, debugging, editing, refactor, review, and architecture questions. Call before manual grep/file reads when you need current repo context, owner hints, relevant snippets, and next files under a budget.",
       inputSchema: GetContextInput
     },
     {
@@ -156,12 +156,12 @@ export function listRuntimeToolDefinitions(): McpRuntimeToolDefinition[] {
     },
     {
       name: "find_owner",
-      description: "Find likely owner files and symbols for a feature, bug, or architecture question.",
+      description: "Find likely owner files and symbols for a feature, bug, route, behavior, or architecture question. Use early to decide where truth lives before proposing edits or explaining implementation.",
       inputSchema: FindOwnerInput
     },
     {
       name: "find_reuse_candidates",
-      description: "Find existing helpers, services, hooks, components, wrappers, schemas, or fixtures that should be reused before writing new code.",
+      description: "Find existing helpers, services, hooks, components, wrappers, schemas, fixtures, or patterns that should be reused before writing new code. Use proactively before adding abstractions or duplicating functionality.",
       inputSchema: FindReuseCandidatesInput
     },
     {
@@ -171,12 +171,12 @@ export function listRuntimeToolDefinitions(): McpRuntimeToolDefinition[] {
     },
     {
       name: "explain_impact",
-      description: "Return a verified minimal blast-radius subgraph with coverage signals, risk score, and edit-readiness guidance.",
+      description: "Return a verified minimal blast-radius subgraph with coverage signals, risk score, and edit-readiness guidance. Use before changing shared files, exported symbols, routes, schemas, or cross-module contracts.",
       inputSchema: ExplainImpactInput
     },
     {
       name: "related_tests",
-      description: "Find likely related test files for a file or symbol target.",
+      description: "Find likely related test files for a file, symbol, feature, or route. Use before selecting verification for a code change or when reviewing test gaps.",
       inputSchema: RelatedTestsInput
     },
     {
@@ -186,12 +186,12 @@ export function listRuntimeToolDefinitions(): McpRuntimeToolDefinition[] {
     },
     {
       name: "trace_request_flow",
-      description: "Return an ordered verified request/data-flow subgraph from an entry symbol or file hint.",
+      description: "Return an ordered verified request/data-flow subgraph from an entry symbol, route, handler, component, or file hint. Use when runtime ownership, callbacks, adapters, reducers, APIs, or cross-boundary flow matter.",
       inputSchema: TraceRequestFlowInput
     },
     {
       name: "review_diff",
-      description: "Review changed files or a unified diff for risk and related tests.",
+      description: "Review changed files or a unified diff for behavioral risk, blast radius, and related tests. Use for code-review tasks and before claiming a risky change is safe.",
       inputSchema: ReviewDiffInput
     }
   ];

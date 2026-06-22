@@ -22,6 +22,7 @@ import { printInitOnboardingSummary, runInitOnboarding } from "./init-onboarding
 import { parseSetupMcpArgs, setupMCP } from "../../scripts/setup-mcp.js";
 import { runUpdate } from "./update.js";
 import { truncateContextPack } from "../context/truncate-context-pack.js";
+import { installAgentGuidance } from "../agent-guidance.js";
 
 loadDotEnv();
 
@@ -567,6 +568,21 @@ program
       cwd: process.cwd(),
       env: process.env
     });
+  });
+
+program
+  .command("install-guidance")
+  .argument("[repoRoot]", "repository root to receive agent guidance", ".")
+  .option("--file <path>", "guidance file path relative to repoRoot", "AGENTS.md")
+  .option("--dry-run", "show what would be installed without writing")
+  .description("Install repo-local agent instructions that tell coding agents to use RagCode proactively")
+  .action(async (repoRoot: string, options: { file?: string; dryRun?: boolean }) => {
+    const result = await installAgentGuidance({
+      repoRoot,
+      fileName: options.file,
+      dryRun: options.dryRun
+    });
+    console.log(JSON.stringify(result, null, 2));
   });
 
 program

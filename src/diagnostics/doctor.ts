@@ -7,6 +7,7 @@ import type { IndexStatus, RepoIndex, SearchHit } from "../core/types.js";
 import { createMcpServer } from "../mcp/server.js";
 import { listToolDefinitions } from "../mcp/tools.js";
 import { readWatcherLiveness, type WatcherLivenessState } from "../watch/watcher-liveness.js";
+import { inspectAgentGuidance } from "../agent-guidance.js";
 
 export interface DoctorOptions {
   cwd?: string;
@@ -45,6 +46,10 @@ export interface DoctorReport {
     heartbeatAgeMs?: number;
     pendingFiles?: number;
     indexingFiles?: number;
+  };
+  agentGuidance?: DoctorCheck & {
+    installed: boolean;
+    path: string;
   };
   smoke?: DoctorCheck & {
     repoRoot: string;
@@ -100,7 +105,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   };
 
   if (options.repoRoot) {
-    report.watcher = await buildWatcherCheck(path.resolve(cwd, options.repoRoot));
+    const absoluteRepoRoot = path.resolve(cwd, options.repoRoot);
+    report.watcher = await buildWatcherCheck(absoluteRepoRoot);
+    report.agentGuidance = await buildAgentGuidanceCheck(absoluteRepoRoot);
     report.smoke = await runRepoSmoke({
       cwd,
       env,
@@ -121,6 +128,16 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   ].filter((check): check is DoctorCheck => Boolean(check)).every((check) => check.ok);
 
   return report;
+}
+
+async function buildAgentGuidanceCheck(repoRoot: string): Promise<NonNullable<DoctorReport["agentGuidance"]>> {
+  const status = await inspectAgentGuidance(repoRoot);
+  return {
+    ok: status.installed,
+    message: status.message,
+    installed: status.installed,
+    path: status.path
+  };
 }
 
 // Watcher liveness is informational: a repo with no running watcher is a valid (if not-auto-fresh)

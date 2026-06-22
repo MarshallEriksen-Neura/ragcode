@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runDoctor } from "../src/index.js";
+import { AGENT_GUIDANCE_START, installAgentGuidance, runDoctor } from "../src/index.js";
 
 const tempRoots: string[] = [];
 
@@ -48,6 +48,33 @@ describe("doctor", () => {
     expect(report.watcher).toBeDefined();
     expect(report.watcher?.state).toBe("not_running");
     expect(report.watcher?.processAlive).toBe(false);
+    expect(report.agentGuidance?.installed).toBe(false);
+    expect(report.agentGuidance?.ok).toBe(false);
+    expect(report.ok).toBe(true);
+  }, 20_000);
+
+  it("detects installed repo-local agent guidance", async () => {
+    const repoRoot = await tempDir("ragcode-doctor-guidance-");
+    await fs.writeFile(path.join(repoRoot, "sample.ts"), "export const guided = true;\n");
+
+    const install = await installAgentGuidance({ repoRoot });
+    const guidance = await fs.readFile(path.join(repoRoot, "AGENTS.md"), "utf8");
+    const report = await runDoctor({
+      cwd: repoRoot,
+      env: {
+        RAGCODE_GRAPH_STORE: "memory",
+        RAGCODE_SEMANTIC_STORE: "memory",
+        RAGCODE_EMBEDDING_PROVIDER: "deterministic"
+      },
+      repoRoot,
+      searchQuery: "guided"
+    });
+
+    expect(install.created).toBe(true);
+    expect(guidance).toContain(AGENT_GUIDANCE_START);
+    expect(report.agentGuidance?.installed).toBe(true);
+    expect(report.agentGuidance?.ok).toBe(true);
+    expect(report.ok).toBe(true);
   }, 20_000);
 
   it("reports invalid runtime env instead of throwing", async () => {

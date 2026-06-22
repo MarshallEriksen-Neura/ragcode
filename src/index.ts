@@ -28,7 +28,7 @@ export * from "./retrieval/hybrid-retriever.js";
 export * from "./retrieval/path-classification.js";
 export * from "./diagnostics/doctor.js";
 export * from "./diagnostics/embedding-test.js";
+export * from "./agent-guidance.js";
 export * from "./mcp/tools.js";
 export * from "./mcp/server.js";
-
 
